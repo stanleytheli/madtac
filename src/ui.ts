@@ -1,0 +1,155 @@
+/**
+ * Screen-space HUD primitives. Drawn unscaled (after the camera transform is
+ * restored), in CSS pixels around the screen center.
+ */
+
+/** A simple static crosshair centered at (cx, cy): four ticks around a gap. */
+export function drawCrosshair(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
+  const gap = 5; // empty space at the very center
+  const len = 9; // length of each tick
+  ctx.save();
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.lineWidth = 2;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  // up / down / left / right
+  ctx.moveTo(cx, cy - gap);
+  ctx.lineTo(cx, cy - gap - len);
+  ctx.moveTo(cx, cy + gap);
+  ctx.lineTo(cx, cy + gap + len);
+  ctx.moveTo(cx - gap, cy);
+  ctx.lineTo(cx - gap - len, cy);
+  ctx.moveTo(cx + gap, cy);
+  ctx.lineTo(cx + gap + len, cy);
+  ctx.stroke();
+  ctx.restore();
+}
+
+export interface ProgressBarStyle {
+  width: number;
+  height: number;
+  fill: string;
+  bg: string;
+  border: string;
+}
+
+const DEFAULT_BAR: ProgressBarStyle = {
+  width: 80,
+  height: 8,
+  fill: "#ffd21a",
+  bg: "rgba(0, 0, 0, 0.55)",
+  border: "rgba(255, 255, 255, 0.7)",
+};
+
+/**
+ * A general horizontal progress bar centered at (cx, cy). `fraction` is clamped
+ * to [0, 1]. Reused for anything timed (reloading, healing items, etc.).
+ */
+export function drawProgressBar(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  fraction: number,
+  style: Partial<ProgressBarStyle> = {},
+): void {
+  const s = { ...DEFAULT_BAR, ...style };
+  const f = Math.max(0, Math.min(1, fraction));
+  const x = cx - s.width / 2;
+  const y = cy - s.height / 2;
+
+  ctx.save();
+  ctx.fillStyle = s.bg;
+  ctx.fillRect(x, y, s.width, s.height);
+  ctx.fillStyle = s.fill;
+  ctx.fillRect(x, y, s.width * f, s.height);
+  ctx.strokeStyle = s.border;
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(x, y, s.width, s.height);
+  ctx.restore();
+}
+
+/** Fill a rounded-rect ("squircle"). Shared by the HUD so everything matches. */
+export function fillSquircle(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  r: number,
+  color: string,
+): void {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  ctx.fill();
+}
+
+const clamp01 = (v: number): number => Math.max(0, Math.min(1, v));
+
+/**
+ * Color of the health fill as a function of remaining fraction:
+ *   - full       -> slightly gray (240) so "full" reads as a distinct state
+ *   - 50%..full  -> white
+ *   - below 50%  -> lerp white -> balanced red (255, 55, 55) toward empty
+ */
+function hpColor(frac: number): string {
+  if (frac >= 1) return "rgb(240, 240, 240)";
+  if (frac >= 0.5) return "rgb(255, 255, 255)";
+  const t = 1 - frac / 0.5; // 0 at 50% HP, 1 at empty
+  const gb = Math.round(255 - t * 200); // 255 -> 55
+  return `rgb(255, ${gb}, ${gb})`;
+}
+
+export interface HealthBarStyle {
+  width: number;
+  height: number;
+  radius: number;
+  pad: number; // inset of the fill squircle inside the black background
+}
+
+/**
+ * The surviv-style health bar: a black squircle background with a colored
+ * squircle fill that shrinks with health. Its own object (not the generic
+ * progress bar) so it can grow special behaviors later (damage flash, lag bar,
+ * smooth drain, etc.).
+ */
+export class HealthBar {
+  readonly style: HealthBarStyle;
+  displayFrac: number;
+
+  constructor(style: Partial<HealthBarStyle> = {}) {
+    this.style = { width: 450, height: 28, radius: 10, pad: 4, ...style };
+    this.displayFrac = 1;
+  }
+
+
+  /** Draw centered horizontally at `cx`, with the bar's vertical center at `cy`. */
+  draw(ctx: CanvasRenderingContext2D, cx: number, cy: number, frac: number): void {
+    const f = clamp01(frac);
+    const { width, height, radius, pad } = this.style;
+    const x = cx - width / 2;
+    const y = cy - height / 2;
+
+    fillSquircle(ctx, x, y, width, height, radius, "rgba(0, 0, 0, 0.6)");
+
+    const innerH = height - pad * 2;
+    const innerR = Math.max(0, radius - pad);
+
+    const fillWdisplay = (width - pad * 2) * this.displayFrac;
+    if (fillWdisplay > 0) {
+      fillSquircle(ctx, x + pad, y + pad, fillWdisplay, innerH, innerR, "rgb(255, 255, 255, 0.5)");
+    }
+    if (this.displayFrac < frac) {
+      this.displayFrac = frac
+    } else {
+      this.displayFrac += (frac - this.displayFrac) * 0.05
+      this.displayFrac -= 0.0005
+    }
+
+    const fillW = (width - pad * 2) * f;
+    if (fillW > 0) {
+      fillSquircle(ctx, x + pad, y + pad, fillW, innerH, innerR, hpColor(f));
+    }
+
+  }
+}

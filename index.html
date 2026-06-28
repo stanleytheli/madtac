@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>madness tactica</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #1b1f24;
+      }
+      #game {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+      }
+      #hud {
+        position: fixed;
+        left: 12px;
+        top: 10px;
+        font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace;
+        color: #cdd3da;
+        text-shadow: 0 1px 2px #000;
+        pointer-events: none;
+        user-select: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <div id="hud">
+      WASD to move &nbsp;·&nbsp; mouse to aim &nbsp;·&nbsp; 1 rifle / 2 pistol / 3 unarmed
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
