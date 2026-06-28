@@ -1,8 +1,10 @@
 import { Character } from "./actor.ts";
-import { BODY_RADIUS, DEFAULT_SKIN, ENEMY_SKIN } from "./character.ts";
+import { Body } from "./body.ts";
+import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
 import { resolveCircleVsCircle, resolveCircleVsCrate } from "./collision.ts";
 import { Gun } from "./gun.ts";
-import { M16, M9, Deagle, UNARMED } from "./guns.ts";
+import { M16, Deagle, UNARMED } from "./guns.ts";
+import { ELITE_ROBOT_SKIN, Robot } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
 import { drawCrosshair, drawProgressBar, fillSquircle, HealthBar } from "./ui.ts";
@@ -27,15 +29,15 @@ initInput(canvas);
 
 const player = new Character(vec(0, 0), DEFAULT_SKIN, {
   primary: new Gun(M16),
-  secondary: new Gun(M9),
+  secondary: new Gun(Deagle),
   hand: new Gun(UNARMED),
 });
-const enemy = new Character(vec(320, -260), ENEMY_SKIN, {
-  primary: new Gun(M16),
-  hand: new Gun(UNARMED),
-});
-enemy.forward = vec(0, 1); // faces "down"; does nothing for now
-const characters = [player, enemy];
+const enemy_1 = new Robot(vec(-100, 500), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: M16, delay:10})
+const enemy_0 = new Robot(vec(320, -260));
+const enemy_2 = new Robot(vec(450, -400));
+
+let characters: Character[] = [player, enemy_0, enemy_1, enemy_2];
+const bodies: Body[] = [];
 
 const world = createWorld();
 
@@ -62,52 +64,77 @@ let last = performance.now();
 
 function resolvePlayerCollisions(): void {
   let pos = player.pos;
-  // Two passes so corners (crate + crate, or crate + enemy) settle.
+  // Two passes so corners (crate + crate, or crate + character) settle.
   for (let i = 0; i < 2; i++) {
     for (const c of world.crates) pos = resolveCircleVsCrate(pos, BODY_RADIUS, c);
-    pos = resolveCircleVsCircle(pos, BODY_RADIUS, enemy.pos, BODY_RADIUS);
+    for (const other of characters) {
+      if (other === player) continue;
+      pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
+    }
   }
   player.pos = pos;
+}
+
+/** Convert any character that hit 0 HP into a Body and remove it from play. */
+function reapDead(): void {
+  for (let i = characters.length - 1; i >= 0; i--) {
+    if (characters[i].hp <= 0) {
+      bodies.push(Body.fromCharacter(characters[i]));
+      characters.splice(i, 1);
+    }
+  }
 }
 
 let jDown = false
 let kDown = false
 
 function update(): void {
-  if (isDown("1")) player.equip("primary");
-  if (isDown("2")) player.equip("secondary");
-  if (isDown("3")) player.equip("hand");
-  if (isDown("r")) player.reload();
+  const playerAlive = player.hp > 0;
 
-  if (isDown("j")) {
-    if (!jDown) player._takeDamage(22);
-    jDown = true;
+  if (playerAlive) {
+    if (isDown("1")) player.equip("primary");
+    if (isDown("2")) player.equip("secondary");
+    if (isDown("3")) player.equip("hand");
+    if (isDown("r")) player.reload();
+
+    if (isDown("j")) {
+      if (!jDown) player._takeDamage(22);
+      jDown = true;
+    } else jDown = false;
+    if (isDown("k")) {
+      if (!kDown) player._heal(10);
+      kDown = true;
+    } else kDown = false;
   }
-  else jDown = false;
-  if (isDown("k")) {
-    if (!kDown) player._heal(10);
-    kDown = true;
-  }
-  else kDown = false;
 
   // Ease the camera zoom toward the equipped weapon's target.
   camera.size += (player.gun.spec.zoom - camera.size) * ZOOM_EASE;
 
-  player.forward = aimForward();
-  player.move(moveAxis(), player.gun.spec.speed);
-  resolvePlayerCollisions();
+  if (playerAlive) {
+    player.forward = aimForward();
+    player.move(moveAxis(), player.gun.spec.speed);
+    resolvePlayerCollisions();
+  }
 
   for (const c of characters) c.tickWeapon();
 
   // Player firing: held trigger for auto, click edge for semi.
   const f = player.gun.spec.fire;
-  if (f) {
+  if (playerAlive && f) {
     const wantFire = f.auto ? pointer.down : pointer.down && !prevDown;
     if (wantFire) player.fire(world);
   }
   prevDown = pointer.down;
 
+  // Enemy AI: look for the player and shoot.
+  if (enemy_0.hp > 0) enemy_0.think(world, player);
+  if (enemy_1.hp > 0) enemy_1.think(world, player);
+  if (enemy_2.hp > 0) enemy_2.think(world, player);
+
   updateBullets(world, characters);
+
+  for (const b of bodies) b.update(world.crates);
+  reapDead();
 }
 
 const GRID = 64;
@@ -150,7 +177,7 @@ function drawCrate(c: Crate): void {
   ctx.stroke();
 }
 
-const TRAIL_LEN = 120; // world px the tracer streak extends behind the bullet
+const TRAIL_LEN = 150; // world px the tracer streak extends behind the bullet
 
 function drawBullets(): void {
   ctx.lineWidth = 3;
@@ -200,8 +227,8 @@ function render(): void {
   drawGrid(camPos, center, w, h, zoom);
   for (const c of world.crates) drawCrate(c);
 
-  enemy.draw(ctx);
-  player.draw(ctx);
+  for (const b of bodies) b.draw(ctx); // corpses lie under the living
+  for (const c of characters) c.draw(ctx);
 
   drawBullets();
   drawParticles(ctx, world.particles);
@@ -214,13 +241,7 @@ function render(): void {
 // Screen-space overlay: crosshair (at the mouse), reload bar, and the
 // surviv-style bottom block (big HP bar with the ammo readout above it).
 function drawHud(w: number, h: number, _center: Vec2): void {
-  // Crosshair tracks the mouse; the reload bar sits just under it.
-  drawCrosshair(ctx, mouse.x, mouse.y);
-
   const gun = player.gun;
-  if (gun.reloading) {
-    drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
-  }
 
   // --- bottom block: health bar with ammo above it ---
   const barCx = w / 2;
@@ -230,6 +251,13 @@ function drawHud(w: number, h: number, _center: Vec2): void {
   healthBar.draw(ctx, barCx, barCy, player.hp / player.maxHp);
 
   drawAmmo(gun, barCx, barTop - 12);
+  // Crosshair tracks the mouse; the reload bar sits just under it.
+  drawCrosshair(ctx, mouse.x, mouse.y);
+
+  if (gun.reloading) {
+    drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
+  }
+
 }
 
 // Ammo readout above the HP bar: the big mag count on a black squircle (centered

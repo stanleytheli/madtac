@@ -110,7 +110,7 @@ export class Character {
     const dir = rotate(this.forward, offset);
     const f = spec.fire!;
     const muzzleLen = spec.barrel ? spec.barrel.end : 0;
-    spawnBullet(world, this.pos, dir, f.bulletSpeed, f.bulletLife, muzzleLen, this, spec.damage);
+    spawnBullet(world, this.pos, dir, f.bulletSpeed, f.bulletLife, muzzleLen + 50, this, gun.damage);
     return true;
   }
 

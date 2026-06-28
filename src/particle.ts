@@ -51,7 +51,7 @@ export const CRATE_SHRAPNEL: ParticleStyle = {
 export const BLOOD: ParticleStyle = {
   color: "#d11a1a",
   shape: "circle",
-  size: 5,
+  size: 7,
   speed: 3.5,
   spread: 1.2,
   life: 14,

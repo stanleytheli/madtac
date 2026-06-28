@@ -61,3 +61,45 @@ export function pointInCrate(p: Vec2, c: Crate): boolean {
   const b = crateAabb(c);
   return p.x >= b.minx && p.x <= b.maxx && p.y >= b.miny && p.y <= b.maxy;
 }
+
+/** Slab test: does the segment a->b intersect the axis-aligned box? */
+function segmentIntersectsAabb(a: Vec2, b: Vec2, box: AABB): boolean {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+
+  // X slab
+  if (Math.abs(dx) < 1e-9) {
+    if (a.x < box.minx || a.x > box.maxx) return false;
+  } else {
+    let lo = (box.minx - a.x) / dx;
+    let hi = (box.maxx - a.x) / dx;
+    if (lo > hi) [lo, hi] = [hi, lo];
+    t0 = Math.max(t0, lo);
+    t1 = Math.min(t1, hi);
+    if (t0 > t1) return false;
+  }
+
+  // Y slab
+  if (Math.abs(dy) < 1e-9) {
+    if (a.y < box.miny || a.y > box.maxy) return false;
+  } else {
+    let lo = (box.miny - a.y) / dy;
+    let hi = (box.maxy - a.y) / dy;
+    if (lo > hi) [lo, hi] = [hi, lo];
+    t0 = Math.max(t0, lo);
+    t1 = Math.min(t1, hi);
+    if (t0 > t1) return false;
+  }
+
+  return true;
+}
+
+/** True if no crate blocks the straight line from `a` to `b` (clear line of sight). */
+export function hasLineOfSight(a: Vec2, b: Vec2, crates: readonly Crate[]): boolean {
+  for (const c of crates) {
+    if (segmentIntersectsAabb(a, b, crateAabb(c))) return false;
+  }
+  return true;
+}

@@ -1,6 +1,6 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
 import type { GunSpec } from "./guns.ts";
-import { add, angleOf, dist, mid, perp, scale, sub, type Vec2 } from "./vec.ts";
+import { add, angleOf, deg2rad, dist, mid, perp, scale, sub, type Vec2 } from "./vec.ts";
 
 /** Draw a rounded bar from p0 to p1 of thickness `w`. Shared by gun rendering. */
 function drawBar(
@@ -55,6 +55,11 @@ export class Gun {
 
   get reloading(): boolean {
     return this.reloadTicks > 0;
+  }
+
+  /** Damage dealt per bullet by this gun. Subclasses (e.g. enemies) may override. */
+  get damage(): number {
+    return this.spec.damage;
   }
 
   get canFire(): boolean {
@@ -194,5 +199,38 @@ export class Gun {
     this.flashTicks = FLASH_TICKS;
 
     return pattern + random;
+  }
+}
+
+/**
+ * A gun wielded by an enemy. Replaces the skill-based recoil pattern with a flat
+ * uniform spread, so enemies are dangerous without having to "control" a spray.
+ * Ammo is effectively infinite (no mag drain), so no enemy reload AI is needed.
+ */
+export class EnemyGun extends Gun {
+  readonly spreadRad: number;
+  private readonly enemyDamage: number;
+  private readonly delay: number;
+
+  constructor(spec: GunSpec, opts: { damage?: number; spreadDeg?: number, delay? : number } = {}) {
+    super(spec);
+    this.enemyDamage = opts.damage ?? 10;
+    this.spreadRad = deg2rad(opts.spreadDeg ?? 15);
+    this.delay = opts.delay ?? 10;
+  }
+
+  /** Enemies deal their own flat damage, not the gun's player-facing value. */
+  get damage(): number {
+    return this.enemyDamage;
+  }
+
+  /** Fire with a constant uniform spread in [-spread, +spread]; never runs dry. */
+  shoot(_speedRatio: number): number {
+    const f = this.spec.fire!;
+    this.fireCooldown = this.delay;
+    // set = visualRecoil, prevents hands/gun going into robot
+    this.kickback = this.spec.visualRecoil;
+    this.flashTicks = FLASH_TICKS;
+    return (Math.random() * 2 - 1) * this.spreadRad;
   }
 }
