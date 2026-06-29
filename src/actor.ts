@@ -1,8 +1,8 @@
 import { drawCharacter, type Skin } from "./character.ts";
 import { Gun } from "./gun.ts";
 import type { GunSpec } from "./guns.ts";
-import { add, len, rotate, scale, vec, type Vec2 } from "./vec.ts";
-import { spawnBullet, type World } from "./world.ts";
+import { add, len, scale, vec, type Vec2 } from "./vec.ts";
+import type { World } from "./world.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
 
@@ -68,6 +68,33 @@ export class Character {
     this.gun.resetRecoil();
   }
 
+  /**
+   * Put `gun` into its natural slot (primary/secondary per its spec), equip it,
+   * and return whatever was in that slot before (for the caller to drop), or null
+   * if the slot was empty. The `hand` slot is never replaced this way.
+   */
+  holster(gun: Gun): Gun | null {
+    const slot: SlotName = gun.spec.primary ? "primary" : "secondary";
+    const prev = this.slots[slot];
+    prev?.resetRecoil();
+    prev?.cancelReload();
+    this.slots[slot] = gun;
+    // this.equipped = slot;
+    gun.resetRecoil();
+    return prev;
+  }
+
+  /** The droppable weapons this character carries: real guns in primary/secondary
+   *  (never the fists in the hand slot), as their ground-version (see dropClone). */
+  dropWeapons(): Gun[] {
+    const out: Gun[] = [];
+    for (const slot of ["primary", "secondary"] as const) {
+      const g = this.slots[slot];
+      if (g) out.push(g.dropClone());
+    }
+    return out;
+  }
+
   /** Start reloading the equipped gun (no-op if full / no spare / already reloading). */
   reload(): void {
     this.gun.startReload();
@@ -99,19 +126,8 @@ export class Character {
    */
   fire(world: World): boolean {
     const gun = this.gun;
-    if (!gun.canFire) return false;
-    const spec = gun.spec;
-
-    const speedRatio = this.speed / maxSpeedFor(spec);
-    const offset = gun.shoot(speedRatio);
-
-    // Project from the head center (not the muzzle) so shots can't originate past
-    // objects/walls in front of the character.
-    const dir = rotate(this.forward, offset);
-    const f = spec.fire!;
-    const muzzleLen = spec.barrel ? spec.barrel.end : 0;
-    spawnBullet(world, this.pos, dir, f.bulletSpeed, f.bulletLife, muzzleLen + 50, this, gun.damage);
-    return true;
+    const speedRatio = this.speed / maxSpeedFor(gun.spec);
+    return gun.fire(world, this.pos, this.forward, this, speedRatio);
   }
 
   /**

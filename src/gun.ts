@@ -1,6 +1,7 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
 import type { GunSpec } from "./guns.ts";
-import { add, angleOf, deg2rad, dist, mid, perp, scale, sub, type Vec2 } from "./vec.ts";
+import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "./vec.ts";
+import { spawnBullet, type Hittable, type World } from "./world.ts";
 
 /** Draw a rounded bar from p0 to p1 of thickness `w`. Shared by gun rendering. */
 function drawBar(
@@ -60,6 +61,15 @@ export class Gun {
   /** Damage dealt per bullet by this gun. Subclasses (e.g. enemies) may override. */
   get damage(): number {
     return this.spec.damage;
+  }
+
+  /**
+   * The gun to leave on the ground when the holder drops it or dies. A normal gun
+   * drops itself (keeping its ammo state); subclasses may substitute a different
+   * instance (e.g. an enemy gun yields a normal, player-usable version).
+   */
+  dropClone(): Gun {
+    return this;
   }
 
   get canFire(): boolean {
@@ -161,6 +171,33 @@ export class Gun {
   }
 
   /**
+   * Fire from `origin` along `forward` (unit) if able, spawning the bullet with the
+   * recoil offset applied. Returns true if a shot went out. `owner` is protected
+   * from its own bullet until it clears them; `speedRatio` drives move-inaccuracy.
+   */
+  fire(world: World, origin: Vec2, forward: Vec2, owner: Hittable, speedRatio: number): boolean {
+    if (!this.canFire) return false;
+    const f = this.spec.fire!;
+    // Project from the head center (not the muzzle) so shots can't originate past
+    // objects/walls in front of the shooter.
+    const dir = rotate(forward, this.shoot(speedRatio));
+    const muzzleLen = this.spec.barrel ? this.spec.barrel.end : 0;
+    spawnBullet(
+      world,
+      origin,
+      dir,
+      f.bulletSpeed,
+      f.bulletLife,
+      muzzleLen + 50,
+      owner,
+      this.damage,
+      f.tracerWidth,
+      f.tracerLength,
+    );
+    return true;
+  }
+
+  /**
    * Register a shot. `speedRatio` = shooter speed / max speed (0..~1). Returns
    * the aim offset (radians) to add to the shot direction.
    *
@@ -195,7 +232,7 @@ export class Gun {
     this.idleTicks = 0;
 
     this.fireCooldown = f.delay;
-    this.kickback += s.visualRecoil;
+    this.kickback = s.visualRecoil;
     this.flashTicks = FLASH_TICKS;
 
     return pattern + random;
@@ -224,9 +261,13 @@ export class EnemyGun extends Gun {
     return this.enemyDamage;
   }
 
+  /** Drop a normal, player-usable gun of the same spec (not this AI wrapper). */
+  dropClone(): Gun {
+    return new Gun(this.spec);
+  }
+
   /** Fire with a constant uniform spread in [-spread, +spread]; never runs dry. */
   shoot(_speedRatio: number): number {
-    const f = this.spec.fire!;
     this.fireCooldown = this.delay;
     // set = visualRecoil, prevents hands/gun going into robot
     this.kickback = this.spec.visualRecoil;

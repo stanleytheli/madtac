@@ -47,6 +47,17 @@ export const CRATE_SHRAPNEL: ParticleStyle = {
   count: 7,
 };
 
+/** Gray concrete chips kicked off a wall when shot. */
+export const WALL_SHRAPNEL: ParticleStyle = {
+  color: "#3a3d40",
+  shape: "square",
+  size: 4,
+  speed: 4.0,
+  spread: 1.0,
+  life: 14,
+  count: 6,
+};
+
 /** Stylized red "blood" hitmarker when a character is struck. */
 export const BLOOD: ParticleStyle = {
   color: "#d11a1a",

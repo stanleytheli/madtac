@@ -1,9 +1,9 @@
 import type { Character } from "./actor.ts";
 import { BODY_RADIUS, drawCharacter, type Skin } from "./character.ts";
-import { resolveCircleVsCrate } from "./collision.ts";
+import { resolveCircleVsBox } from "./collision.ts";
 import { UNARMED } from "./guns.ts";
 import { add, angleOf, fromAngle, perp, scale, type Vec2 } from "./vec.ts";
-import type { Crate } from "./world.ts";
+import type { Obstacle } from "./world.ts";
 
 const LIN_FRICTION = 0.9; // per-tick velocity retention as the corpse slides to rest
 const ANG_FRICTION = 0.92; // ...and for its spin
@@ -72,13 +72,13 @@ export class Body {
     );
   }
 
-  /** Slide + spin toward rest, pushing out of any crates. */
-  update(crates: readonly Crate[]): void {
+  /** Slide + spin toward rest, pushing out of any solid obstacles. */
+  update(obstacles: readonly Obstacle[]): void {
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, LIN_FRICTION);
     this.angle += this.angularVel;
     this.angularVel *= ANG_FRICTION;
-    for (const c of crates) this.pos = resolveCircleVsCrate(this.pos, BODY_RADIUS, c);
+    for (const o of obstacles) this.pos = resolveCircleVsBox(this.pos, BODY_RADIUS, o);
   }
 
   draw(ctx: CanvasRenderingContext2D): void {

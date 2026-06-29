@@ -32,6 +32,10 @@ export interface FireSpec {
   reserveMags: number;
   /** Ticks a full reload takes. */
   reloadTime: number;
+  /** Tracer streak thickness in world px (cosmetic). */
+  tracerWidth: number;
+  /** Tracer streak length behind the bullet, in world px (cosmetic). */
+  tracerLength: number;
 }
 
 /** Fraction of damage that passes through each armor tier (0..1). Armor lands later. */
@@ -43,6 +47,9 @@ export interface ArmorPen {
 
 export interface GunSpec {
   name: string;
+  primary: boolean;
+  /** Icon asset basename in /assets (e.g. "m16" -> /assets/m16.png) for ground rendering. */
+  icon?: string;
   rightGrip: GripLocal;
   leftGrip: GripLocal;
   /** Barrel drawn as a rounded bar from `barrel.start` to `barrel.end` along forward. */
@@ -87,7 +94,9 @@ export interface GunSpec {
 }
 
 export const M16: GunSpec = {
-  name: "m16",
+  name: "M-16",
+  primary: true,
+  icon: "m16",
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 65, l: -6 },
   barrel: { start: 35, end: 110, width: 11 },
@@ -103,8 +112,10 @@ export const M16: GunSpec = {
     auto: true,
     spread: 0.02,
     magSize: 30,
-    reserveMags: 3,
+    reserveMags: 4,
     reloadTime: 150,
+    tracerWidth: 3.5,
+    tracerLength: 150,
   },
   visualRecoil: 8,
   recoilRecovery: 2,
@@ -116,8 +127,45 @@ export const M16: GunSpec = {
   movingFirstShotRecoilMax: 8.0,
 };
 
+export const AK47: GunSpec = {
+  name: "AK-47",
+  primary: true,
+  icon: "ak47",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 65, l: -6 },
+  barrel: { start: 35, end: 110, width: 11 },
+  color: "#53360b",
+  damage: 25,
+  armorPen: { l1: 0.9, l2: 0.8, l3: 0.6 },
+  zoom: 2.2,
+  speed: 0.8,
+  fire: {
+    delay: 8,
+    bulletSpeed: 35,
+    bulletLife: 70,
+    auto: true,
+    spread: 0.025,
+    magSize: 30,
+    reserveMags: 3,
+    reloadTime: 150,
+    tracerWidth: 4.5,
+    tracerLength: 160,
+  },
+  visualRecoil: 10,
+  recoilRecovery: 2,
+  recoilCoef: 0.15,
+  recoilGain: 5.5,
+  recoilDelay: 30,
+  movePenalty: 3.5,
+  movingFirstShotRecoilMin: 7.0,
+  movingFirstShotRecoilMax: 8.0,
+};
+
+
 export const M9: GunSpec = {
-  name: "m9",
+  name: "M9",
+  primary: false,
+  icon: "m9",
   rightGrip: { f: 50, l: 0 },
   leftGrip: { f: 55, l: -9 },
   //leftGrip: { f: 35, l: 20 },
@@ -138,6 +186,8 @@ export const M9: GunSpec = {
     magSize: 12,
     reserveMags: 4,
     reloadTime: 70,
+    tracerWidth: 3,
+    tracerLength: 110,
   },
   visualRecoil: 12,
   recoilRecovery: 3,
@@ -151,16 +201,18 @@ export const M9: GunSpec = {
 
 export const Deagle: GunSpec = {
   name: "Desert Eagle",
+  primary: false,
+  icon: "deagle",
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
   barrel: { start: 55, end: 110, width: 11 },
   color: "#7e858f",
-  damage: 35,
+  damage: 40,
   armorPen: { l1: 0.9, l2: 0.85, l3: 0.8 },
   zoom: 1.8,
   speed: 0.8,
   fire: {
-    delay: 15,
+    delay: 10,
     bulletSpeed: 35,
     bulletLife: 60,
     auto: false,
@@ -168,12 +220,14 @@ export const Deagle: GunSpec = {
     magSize: 7,
     reserveMags: 3,
     reloadTime: 90,
+    tracerWidth: 5,
+    tracerLength: 140,
   },
   visualRecoil: 17,
   recoilRecovery: 1,
   recoilCoef: 0.17,
   recoilGain: 15.0,
-  recoilDelay: 40,
+  recoilDelay: 30,
   movePenalty: 1.5,
   movingFirstShotRecoilMin: 35.0,
   movingFirstShotRecoilMax: 40.0,
@@ -183,6 +237,7 @@ export const Deagle: GunSpec = {
 /** Unarmed: hands rest out to the sides, no barrel. Shortest "range", fastest move. */
 export const UNARMED: GunSpec = {
   name: "unarmed",
+  primary: false,
   rightGrip: { f: 55, l: 30 },
   leftGrip: { f: 60, l: -25 },
   color: "#000000", // no barrel, so unused

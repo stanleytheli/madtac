@@ -68,6 +68,44 @@ export function drawProgressBar(
   ctx.restore();
 }
 
+/**
+ * Interaction prompt centered at (cx, cy): a key glyph on its own squircle (e.g.
+ * "E") with a label squircle (e.g. an item name) to its right. Generic so any
+ * "press X to ..." prompt can reuse it.
+ */
+export function drawKeyPrompt(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  key: string,
+  label: string,
+): void {
+  const h = 30;
+  const gap = 10;
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  const keyW = h; // square glyph
+  ctx.font = "bold 15px system-ui, sans-serif";
+  const labelW = ctx.measureText(label).width + 28;
+  // const totalW = keyW + gap + labelW;
+  const left = cx;
+  const top = cy - h / 2;
+
+  fillSquircle(ctx, left - 5, top - 5, keyW + 10, h + 10, 10, "rgba(0, 0, 0, 0.5)");
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 25px system-ui, sans-serif";
+  ctx.fillText(key, left + keyW / 2, cy + 1);
+
+  fillSquircle(ctx, left + keyW + gap, top, labelW, h, 7, "rgba(0, 0, 0, 0.5)");
+  ctx.fillStyle = "#ffffff";
+  ctx.font = "bold 15px system-ui, sans-serif";
+  ctx.fillText(label, left + keyW + gap + labelW / 2, cy + 1);
+
+  ctx.restore();
+}
+
 /** Fill a rounded-rect ("squircle"). Shared by the HUD so everything matches. */
 export function fillSquircle(
   ctx: CanvasRenderingContext2D,

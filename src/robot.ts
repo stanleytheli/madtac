@@ -128,6 +128,6 @@ export class Robot extends Character {
       vec(p.x - r, p.y + r),
       vec(p.x + r, p.y + r),
     ];
-    return points.some((pt) => hasLineOfSight(this.pos, pt, world.crates));
+    return points.some((pt) => hasLineOfSight(this.pos, pt, world.obstacles));
   }
 }

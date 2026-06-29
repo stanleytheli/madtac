@@ -1,5 +1,5 @@
 import { vec, type Vec2 } from "./vec.ts";
-import type { Crate } from "./world.ts";
+import type { Obstacle } from "./world.ts";
 
 interface AABB {
   minx: number;
@@ -8,16 +8,16 @@ interface AABB {
   maxy: number;
 }
 
-export const crateAabb = (c: Crate): AABB => ({
-  minx: c.pos.x - c.w / 2,
-  maxx: c.pos.x + c.w / 2,
-  miny: c.pos.y - c.h / 2,
-  maxy: c.pos.y + c.h / 2,
+export const boxAabb = (o: Obstacle): AABB => ({
+  minx: o.pos.x - o.w / 2,
+  maxx: o.pos.x + o.w / 2,
+  miny: o.pos.y - o.h / 2,
+  maxy: o.pos.y + o.h / 2,
 });
 
-/** Push a circle out of a crate (axis-aligned box) if overlapping. Returns the corrected center. */
-export function resolveCircleVsCrate(pos: Vec2, r: number, c: Crate): Vec2 {
-  const b = crateAabb(c);
+/** Push a circle out of a box (axis-aligned obstacle) if overlapping. Returns the corrected center. */
+export function resolveCircleVsBox(pos: Vec2, r: number, o: Obstacle): Vec2 {
+  const b = boxAabb(o);
   const cx = Math.max(b.minx, Math.min(pos.x, b.maxx));
   const cy = Math.max(b.miny, Math.min(pos.y, b.maxy));
   const dx = pos.x - cx;
@@ -57,8 +57,8 @@ export function resolveCircleVsCircle(pos: Vec2, r: number, other: Vec2, otherR:
   return vec(pos.x + (dx / d) * push, pos.y + (dy / d) * push);
 }
 
-export function pointInCrate(p: Vec2, c: Crate): boolean {
-  const b = crateAabb(c);
+export function pointInBox(p: Vec2, o: Obstacle): boolean {
+  const b = boxAabb(o);
   return p.x >= b.minx && p.x <= b.maxx && p.y >= b.miny && p.y <= b.maxy;
 }
 
@@ -96,10 +96,10 @@ function segmentIntersectsAabb(a: Vec2, b: Vec2, box: AABB): boolean {
   return true;
 }
 
-/** True if no crate blocks the straight line from `a` to `b` (clear line of sight). */
-export function hasLineOfSight(a: Vec2, b: Vec2, crates: readonly Crate[]): boolean {
-  for (const c of crates) {
-    if (segmentIntersectsAabb(a, b, crateAabb(c))) return false;
+/** True if no obstacle blocks the straight line from `a` to `b` (clear line of sight). */
+export function hasLineOfSight(a: Vec2, b: Vec2, obstacles: readonly Obstacle[]): boolean {
+  for (const o of obstacles) {
+    if (segmentIntersectsAabb(a, b, boxAabb(o))) return false;
   }
   return true;
 }
