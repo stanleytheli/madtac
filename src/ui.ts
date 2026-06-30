@@ -3,6 +3,11 @@
  * restored), in CSS pixels around the screen center.
  */
 
+import type { Character } from "./actor.ts";
+import type { Gun } from "./gun.ts";
+import { gunIcon } from "./item.ts";
+import type { Vec2 } from "./vec.ts";
+
 /** A simple static crosshair centered at (cx, cy): four ticks around a gap. */
 export function drawCrosshair(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
   const gap = 5; // empty space at the very center
@@ -190,4 +195,156 @@ export class HealthBar {
     }
 
   }
+}
+
+// --- full HUD layout -------------------------------------------------------
+// Everything the HUD needs to draw a frame, passed in so ui.ts stays decoupled
+// from the game loop's module-level state.
+export interface HudOptions {
+  w: number;
+  h: number;
+  center: Vec2;
+  player: Character;
+  healthBar: HealthBar;
+  mouse: Vec2;
+  /** Label for the "press E" pickup prompt, or null when nothing is reachable. */
+  interactableLabel: string | null;
+}
+
+/**
+ * Draw the whole screen-space HUD: pickup prompt, the bottom health bar with the
+ * ammo readout above it, the crosshair (at the mouse) with the reload/draw timer
+ * under it, and the bottom-right loadout panel.
+ */
+export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
+  const { w, h, center, player, healthBar, mouse } = o;
+  const gun = player.gun;
+
+  // Pickup prompt, just above the player (who is at screen center).
+  if (o.interactableLabel) {
+    drawKeyPrompt(ctx, center.x + 15, center.y - 60, "E", o.interactableLabel);
+  }
+
+  // Bottom block: health bar with ammo above it.
+  const barCx = w / 2;
+  const barCy = h - 28 - healthBar.style.height / 2;
+  const barTop = barCy - healthBar.style.height / 2;
+
+  healthBar.draw(ctx, barCx, barCy, player.hp / player.maxHp);
+  drawAmmo(ctx, gun, barCx, barTop - 12);
+
+  // Crosshair tracks the mouse; the reload/draw timer sits just under it.
+  drawCrosshair(ctx, mouse.x, mouse.y);
+  if (gun.reloading) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
+  else if (gun.drawing) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.drawProgress);
+
+  drawLoadout(ctx, player, w, h);
+}
+
+// Loadout panel, bottom-right: the primary and secondary slots stacked, with the
+// equipped one outlined. Empty slots show only their hotkey number.
+const SLOT_W = 190;
+const SLOT_H = 72;
+const SLOT_GAP = 8;
+const SLOT_MARGIN = 22;
+
+function drawLoadout(ctx: CanvasRenderingContext2D, player: Character, w: number, h: number): void {
+  const rows: { key: string; gun: Gun | null }[] = [
+    { key: "1", gun: player.slots.primary },
+    { key: "2", gun: player.slots.secondary },
+  ];
+  const x = w - SLOT_MARGIN - SLOT_W;
+  let y = h - SLOT_MARGIN - (SLOT_H * rows.length + SLOT_GAP * (rows.length - 1));
+  for (const row of rows) {
+    drawLoadoutSlot(ctx, x, y, row.key, row.gun, row.gun !== null && row.gun === player.gun);
+    y += SLOT_H + SLOT_GAP;
+  }
+}
+
+function drawLoadoutSlot(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  key: string,
+  gun: Gun | null,
+  equipped: boolean,
+): void {
+  fillSquircle(ctx, x, y, SLOT_W, SLOT_H, 10, "rgba(0, 0, 0, 0.5)");
+  if (equipped) {
+    // Highlight the held weapon with a soft outline.
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(x + 1, y + 1, SLOT_W - 2, SLOT_H - 2, 10);
+    ctx.stroke();
+  }
+
+  ctx.save();
+  ctx.textBaseline = "middle";
+  const cy = y + SLOT_H / 2;
+
+  // Hotkey badge on the left (shown even for empty slots).
+  ctx.textAlign = "left";
+  ctx.font = "bold 15px system-ui, sans-serif";
+  ctx.fillStyle = equipped ? "#ffffff" : "rgba(255, 255, 255, 0.55)";
+  ctx.fillText(key, x + 12, cy + 1);
+
+  if (gun) {
+    // Weapon name, centered under the icon.
+    ctx.font = "bold 15px system-ui, sans-serif";
+    ctx.fillStyle = equipped ? "#ffffff" : "rgba(255, 255, 255, 0.8)";
+    const gunName = gun.spec.name;
+    const gunNameW = ctx.measureText(gunName).width;
+    ctx.fillText(gunName, x + SLOT_W / 2 - gunNameW / 2, cy + 18);
+
+    // Icon centered above the name.
+    const img = gunIcon(gun.spec);
+    if (img) {
+      const k = 0.35;
+      const iw = img.naturalWidth * k;
+      const ih = img.naturalHeight * k;
+      ctx.translate(x + SLOT_W / 2, cy);
+      ctx.drawImage(img, -iw / 2, -ih + 6, iw, ih);
+    }
+  }
+  ctx.restore();
+}
+
+// Ammo readout above the HP bar: the big mag count on a black squircle (centered
+// at `cx`), with the spare-mag count on its own smaller squircle to the right,
+// bottom-aligned with the mag squircle. `bottom` is the shared bottom edge.
+// Melee weapons (fists) carry no ammo, so nothing is drawn for them.
+function drawAmmo(ctx: CanvasRenderingContext2D, gun: Gun, cx: number, bottom: number): void {
+  if (!gun.spec.fire || gun.spec.melee) return;
+
+  ctx.save();
+  ctx.textBaseline = "middle";
+
+  // Mag squircle, centered, width sized to its number (min square-ish).
+  const magH = 46;
+  const magTop = bottom - magH;
+  ctx.font = "bold 34px system-ui, sans-serif";
+  const magText = String(gun.mag);
+  const magW = Math.max(magH, ctx.measureText(magText).width + 28);
+  const magLeft = cx - magW / 2;
+
+  fillSquircle(ctx, magLeft, magTop, magW, magH, 12, "rgba(0, 0, 0, 0.5)");
+  ctx.textAlign = "center";
+  ctx.fillStyle = gun.mag === 0 ? "#ff6b6b" : "#ffffff";
+  ctx.fillText(magText, cx, magTop + magH / 2 + 1);
+
+  // Reserve squircle to the right, sharing the same bottom edge.
+  if (gun.reserveMags > 0) {
+    const resH = 32;
+    const resTop = bottom - resH;
+    ctx.font = "bold 22px system-ui, sans-serif";
+    const resText = String(gun.reserveMags);
+    const resW = Math.max(resH, ctx.measureText(resText).width + 20);
+    const resLeft = magLeft + magW + 10;
+
+    fillSquircle(ctx, resLeft, resTop, resW, resH, 9, "rgba(0, 0, 0, 0.5)");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(resText, resLeft + resW / 2, resTop + resH / 2 + 1);
+  }
+  ctx.restore();
 }

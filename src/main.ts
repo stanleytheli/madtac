@@ -4,11 +4,11 @@ import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
 import { hasLineOfSight, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
 import { Gun } from "./gun.ts";
 import { Golden_Deagle, M16, AK47, M9, UNARMED } from "./guns.ts";
-import { GunItem, gunIcon, separateItems } from "./item.ts";
+import { GunItem, separateItems } from "./item.ts";
 import { ELITE_ROBOT_SKIN, Robot } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
-import { drawCrosshair, drawKeyPrompt, drawProgressBar, fillSquircle, HealthBar } from "./ui.ts";
+import { drawHud, HealthBar } from "./ui.ts";
 import { dist, fromAngle, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import { createWorld, updateBullets, type Floor, type Obstacle } from "./world.ts";
 
@@ -82,6 +82,14 @@ function pickUp(item: GunItem): void {
   interactable = null;
 }
 
+/** Drop the player's currently equipped weapon into the world (Q). Fists can't be dropped. */
+function dropEquippedWeapon(): void {
+  const dropped = player.dropEquipped();
+  if (!dropped) return;
+  const vel = fromAngle(Math.random() * Math.PI * 2, 9.5);
+  world.items.push(new GunItem(vec(player.pos.x, player.pos.y), dropped, vel));
+}
+
 const healthBar = new HealthBar({ width: 450, height: 35 });
 
 let prevDown = false; // pointer state last tick, for semi-auto edge detection
@@ -131,6 +139,7 @@ function reapDead(): void {
 let jDown = false
 let kDown = false
 let eDown = false
+let qDown = false
 
 function update(): void {
   const playerAlive = player.hp > 0;
@@ -146,6 +155,11 @@ function update(): void {
       if (!eDown && interactable) pickUp(interactable);
       eDown = true;
     } else eDown = false;
+
+    if (isDown("q")) {
+      if (!qDown) dropEquippedWeapon();
+      qDown = true;
+    } else qDown = false;
 
     if (isDown("j")) {
       if (!jDown) player._takeDamage(22);
@@ -295,146 +309,15 @@ function render(): void {
 
   ctx.restore();
 
-  drawHud(w, h, center);
-}
-
-// Screen-space overlay: crosshair (at the mouse), reload bar, and the
-// surviv-style bottom block (big HP bar with the ammo readout above it).
-function drawHud(w: number, h: number, center: Vec2): void {
-  const gun = player.gun;
-
-  // Pickup prompt, just above the player (who is at screen center).
-  if (interactable) {
-    drawKeyPrompt(ctx, center.x + 15, center.y - 60, "E", interactable.label);
-  }
-
-  // --- bottom block: health bar with ammo above it ---
-  const barCx = w / 2;
-  const barCy = h - 28 - healthBar.style.height / 2;
-  const barTop = barCy - healthBar.style.height / 2;
-
-  healthBar.draw(ctx, barCx, barCy, player.hp / player.maxHp);
-
-  drawAmmo(gun, barCx, barTop - 12);
-  // Crosshair tracks the mouse; the reload bar sits just under it.
-  drawCrosshair(ctx, mouse.x, mouse.y);
-
-  if (gun.reloading) {
-    drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
-  }
-
-  drawLoadout(w, h);
-}
-
-// Loadout panel, bottom-right: the primary and secondary slots stacked, with the
-// equipped one highlighted. Each row shows its hotkey, the weapon name, and icon.
-const SLOT_W = 190;
-const SLOT_H = 72;
-const SLOT_GAP = 8;
-const SLOT_MARGIN = 22;
-
-function drawLoadout(w: number, h: number): void {
-  const rows: { key: string; gun: Gun | null }[] = [
-    { key: "1", gun: player.slots.primary },
-    { key: "2", gun: player.slots.secondary },
-  ];
-  const x = w - SLOT_MARGIN - SLOT_W;
-  let y = h - SLOT_MARGIN - (SLOT_H * rows.length + SLOT_GAP * (rows.length - 1));
-  for (const row of rows) {
-    drawLoadoutSlot(x, y, row.key, row.gun, row.gun !== null && row.gun === player.gun);
-    y += SLOT_H + SLOT_GAP;
-  }
-}
-
-function drawLoadoutSlot(
-  x: number,
-  y: number,
-  key: string,
-  gun: Gun | null,
-  equipped: boolean,
-): void {
-  fillSquircle(ctx, x, y, SLOT_W, SLOT_H, 10, "rgba(0, 0, 0, 0.5)");
-  if (equipped) {
-    // Highlight: a lighter overlay + a soft outline so the held weapon stands out.
-    // fillSquircle(ctx, x, y, SLOT_W, SLOT_H, 10, "rgba(255, 255, 255, 0.18)");
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.roundRect(x + 1, y + 1, SLOT_W - 2, SLOT_H - 2, 10);
-    ctx.stroke();
-  }
-
-  ctx.save();
-  ctx.textBaseline = "middle";
-  const cy = y + SLOT_H / 2;
-
-  // Hotkey badge on the left.
-  ctx.textAlign = "left";
-  ctx.font = "bold 15px system-ui, sans-serif";
-  ctx.fillStyle = equipped ? "#ffffff" : "rgba(255, 255, 255, 0.55)";
-  ctx.fillText(key, x + 12, cy + 1);
-
-  if (gun) {
-    // Weapon name.
-    ctx.font = "bold 15px system-ui, sans-serif";
-    ctx.fillStyle = equipped ? "#ffffff" : "rgba(255, 255, 255, 0.8)";
-
-    const gunName = String(gun.spec.name);
-    const gunNameW = ctx.measureText(gunName).width;
-    ctx.fillText(gun.spec.name, x + SLOT_W / 2 - gunNameW / 2, cy + 18);
-
-    // Icon on the right, rotated 45° CCW to match the ground aesthetic.
-    const img = gunIcon(gun.spec);
-    if (img) {
-      // const box = SLOT_H - 12; // fit within the row height
-      // const k = box / Math.max(img.naturalWidth, img.naturalHeight);
-      const k = 0.35;
-      const iw = img.naturalWidth * k;
-      const ih = img.naturalHeight * k;
-      ctx.translate(x + SLOT_W / 2, cy);
-      // ctx.rotate(-Math.PI / 4);
-      ctx.drawImage(img, -iw / 2, -ih + 6, iw, ih);
-    }
-  }
-  ctx.restore();
-}
-
-// Ammo readout above the HP bar: the big mag count on a black squircle (centered
-// at `cx`), with the spare-mag count on its own smaller squircle to the right,
-// bottom-aligned with the mag squircle. `bottom` is the shared bottom edge.
-function drawAmmo(gun: typeof player.gun, cx: number, bottom: number): void {
-  if (!gun.spec.fire) return;
-
-  ctx.save();
-  ctx.textBaseline = "middle";
-
-  // Mag squircle, centered, width sized to its number (min square-ish).
-  const magH = 46;
-  const magTop = bottom - magH;
-  ctx.font = "bold 34px system-ui, sans-serif";
-  const magText = String(gun.mag);
-  const magW = Math.max(magH, ctx.measureText(magText).width + 28);
-  const magLeft = cx - magW / 2;
-
-  fillSquircle(ctx, magLeft, magTop, magW, magH, 12, "rgba(0, 0, 0, 0.5)");
-  ctx.textAlign = "center";
-  ctx.fillStyle = gun.mag === 0 ? "#ff6b6b" : "#ffffff";
-  ctx.fillText(magText, cx, magTop + magH / 2 + 1);
-
-  // Reserve squircle to the right, sharing the same bottom edge.
-  if (gun.reserveMags > 0) {
-    const resH = 32;
-    const resTop = bottom - resH;
-    ctx.font = "bold 22px system-ui, sans-serif";
-    const resText = String(gun.reserveMags);
-    const resW = Math.max(resH, ctx.measureText(resText).width + 20);
-    const resLeft = magLeft + magW + 10;
-
-    fillSquircle(ctx, resLeft, resTop, resW, resH, 9, "rgba(0, 0, 0, 0.5)");
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(resText, resLeft + resW / 2, resTop + resH / 2 + 1);
-  }
-  ctx.restore();
+  drawHud(ctx, {
+    w,
+    h,
+    center,
+    player,
+    healthBar,
+    mouse,
+    interactableLabel: interactable ? interactable.label : null,
+  });
 }
 
 function frame(now: number): void {

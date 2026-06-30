@@ -32,6 +32,8 @@ export interface FireSpec {
   reserveMags: number;
   /** Ticks a full reload takes. */
   reloadTime: number;
+  /** time since drawing weapon to being able to fire */
+  drawTime: number;
   /** Tracer streak thickness in world px (cosmetic). */
   tracerWidth: number;
   /** Tracer streak length behind the bullet, in world px (cosmetic). */
@@ -64,8 +66,16 @@ export interface GunSpec {
   zoom: number;
   /** Movement speed multiplier while equipped (CSGO-style: heavier guns are slower). */
   speed: number;
-  /** Firing behaviour. Omitted for weapons that can't shoot (e.g. unarmed). */
+  /** Firing behaviour. Omitted for weapons that can't shoot at all. */
   fire?: FireSpec;
+  /**
+   * Melee weapon (fists, and knives/bats later). Modeled as a gun that fires a
+   * very short-range, invisible bullet: it reuses the whole shooting/hit pipeline
+   * but never drains ammo, never reloads, draws no tracer, and plays a punch
+   * animation instead of a muzzle flash. (This is why fists aren't a special case —
+   * a melee weapon is just a gun with a stubby invisible "bullet".)
+   */
+  melee?: boolean;
 
   // --- visual kick (gun + hands pushed back, recovers over time) ---
   /** How far (world px) the gun + hands kick back per shot. */
@@ -114,6 +124,7 @@ export const M16: GunSpec = {
     magSize: 30,
     reserveMags: 4,
     reloadTime: 150,
+    drawTime: 40,
     tracerWidth: 3.5,
     tracerLength: 150,
   },
@@ -148,6 +159,7 @@ export const AK47: GunSpec = {
     magSize: 30,
     reserveMags: 3,
     reloadTime: 150,
+    drawTime: 40,
     tracerWidth: 4.5,
     tracerLength: 160,
   },
@@ -186,6 +198,7 @@ export const M9: GunSpec = {
     magSize: 12,
     reserveMags: 4,
     reloadTime: 70,
+    drawTime: 30,
     tracerWidth: 3,
     tracerLength: 110,
   },
@@ -220,6 +233,7 @@ export const Deagle: GunSpec = {
     magSize: 7,
     reserveMags: 3,
     reloadTime: 90,
+    drawTime: 40,
     tracerWidth: 5,
     tracerLength: 140,
   },
@@ -254,6 +268,7 @@ export const Golden_Deagle: GunSpec = {
     magSize: 7,
     reserveMags: 3,
     reloadTime: 90,
+    drawTime: 50,
     tracerWidth: 5,
     tracerLength: 140,
   },
@@ -268,17 +283,35 @@ export const Golden_Deagle: GunSpec = {
 };
 
 
-/** Unarmed: hands rest out to the sides, no barrel. Shortest "range", fastest move. */
+/**
+ * Unarmed fists: hands rest out to the sides, no barrel. A melee weapon — each
+ * "shot" is a short, invisible bullet (the punch's reach) that deals contact
+ * damage. Never drains ammo / reloads; the punch animation lives in the Gun.
+ */
 export const UNARMED: GunSpec = {
   name: "unarmed",
   primary: false,
+  melee: true,
   rightGrip: { f: 55, l: 30 },
   leftGrip: { f: 60, l: -25 },
   color: "#000000", // no barrel, so unused
-  damage: 8, // melee, for later
+  damage: 20,
   armorPen: { l1: 0, l2: 0, l3: 0 },
   zoom: 1.8,
   speed: 1.0,
+  fire: {
+    delay: 16, // punch cadence (ticks between hits)
+    bulletSpeed: 20, // with bulletLife -> ~90px of effective punch reach
+    bulletLife: 6,
+    auto: false, // click to punch
+    spread: 0,
+    magSize: 1, // unused: melee never drains
+    reserveMags: 0,
+    reloadTime: 0,
+    drawTime: 0, // quick to bring the fists up
+    tracerWidth: 0, // invisible (the punch isn't a visible projectile)
+    tracerLength: 0,
+  },
   visualRecoil: 0,
   recoilRecovery: 0,
   recoilCoef: 0,

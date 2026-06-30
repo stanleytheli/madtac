@@ -3,6 +3,9 @@ import type { GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "./vec.ts";
 import { spawnBullet, type Hittable, type World } from "./world.ts";
 
+const PUNCH_TICKS = 8; // duration of one punch's hand thrust
+const PUNCH_REACH = 20; // world px the punching hand lunges forward at full extension
+
 /** Draw a rounded bar from p0 to p1 of thickness `w`. Shared by gun rendering. */
 function drawBar(
   ctx: CanvasRenderingContext2D,
@@ -46,12 +49,23 @@ export class Gun {
   reserveMags = 0; // spare full magazines
   reloadTicks = 0; // ticks left in the current reload (0 = not reloading)
 
+  drawTicks = 0; // ticks left in drawing
+
+  /** Punch animation (melee only): ticks left in the current thrust, and which
+   *  hand is throwing it (+1 right / -1 left), alternating each punch. */
+  private meleeTicks = 0;
+  private meleeHand: 1 | -1 = -1;
+
   constructor(spec: GunSpec) {
     this.spec = spec;
     if (spec.fire) {
       this.mag = spec.fire.magSize;
       this.reserveMags = spec.fire.reserveMags;
     }
+  }
+
+  get drawing(): boolean {
+    return this.drawTicks > 0;
   }
 
   get reloading(): boolean {
@@ -74,14 +88,18 @@ export class Gun {
 
   get canFire(): boolean {
     return (
-      this.spec.fire !== undefined && this.fireCooldown <= 0 && !this.reloading && this.mag > 0
+      this.spec.fire !== undefined &&
+      this.fireCooldown <= 0 &&
+      !this.reloading &&
+      (this.spec.melee || this.mag > 0) && // melee never runs dry
+      !this.drawing
     );
   }
 
   /** Can a reload start now? (Has a mag that isn't full, a spare, and isn't already reloading.) */
   get canReload(): boolean {
     const f = this.spec.fire;
-    return f !== undefined && !this.reloading && this.mag < f.magSize && this.reserveMags > 0;
+    return f !== undefined && !this.reloading && this.mag < f.magSize && this.reserveMags > 0 && !this.drawing;
   }
 
   /** Reload progress in [0, 1] (0 just started, 1 done). 0 when not reloading. */
@@ -89,6 +107,12 @@ export class Gun {
     const f = this.spec.fire;
     if (!f || !this.reloading) return 0;
     return 1 - this.reloadTicks / f.reloadTime;
+  }
+
+  get drawProgress(): number {
+    const f = this.spec.fire;
+    if (!f || !this.drawing) return 0;
+    return 1 - this.drawTicks / f.drawTime; 
   }
 
   /** Begin a reload if allowed. No-op otherwise (e.g. full mag or no spare). */
@@ -113,6 +137,8 @@ export class Gun {
   tick(): void {
     if (this.fireCooldown > 0) this.fireCooldown -= 1;
     if (this.flashTicks > 0) this.flashTicks -= 1;
+    if (this.drawTicks > 0 ) this.drawTicks -= 1;
+    if (this.meleeTicks > 0) this.meleeTicks -= 1;
     this.kickback = Math.max(0, this.kickback - this.spec.recoilRecovery);
 
     if (this.reloadTicks > 0) {
@@ -122,6 +148,16 @@ export class Gun {
 
     this.idleTicks += 1;
     if (this.idleTicks >= this.spec.recoilDelay) this.currentRecoil = 0;
+  }
+
+  resetDraw(): void {
+    this.drawTicks = this.spec.fire!.drawTime;
+  }
+
+  /** Begin a punch thrust, alternating which hand throws it. */
+  private startPunch(): void {
+    this.meleeHand = this.meleeHand === 1 ? -1 : 1;
+    this.meleeTicks = PUNCH_TICKS;
   }
 
   /** Reset the spray (e.g. when this gun is holstered or freshly equipped). */
@@ -139,7 +175,18 @@ export class Gun {
     const side = perp(forward); // unit vector to the holder's right
     const grip = (g: { f: number; l: number }): Vec2 =>
       add(headCenter, add(scale(forward, g.f - this.kickback), scale(side, g.l)));
-    return { right: grip(this.spec.rightGrip), left: grip(this.spec.leftGrip) };
+    let right = grip(this.spec.rightGrip);
+    let left = grip(this.spec.leftGrip);
+
+    // Punch: thrust the active hand forward and back over the animation (sin = a
+    // quick out-and-return). The arm IK follows the hand, so the whole arm jabs.
+    if (this.meleeTicks > 0) {
+      const t = 1 - this.meleeTicks / PUNCH_TICKS; // 0 -> 1 over the thrust
+      const offset = scale(forward, Math.sin(t * Math.PI) * PUNCH_REACH);
+      if (this.meleeHand === 1) right = add(right, offset);
+      else left = add(left, offset);
+    }
+    return { right, left };
   }
 
   /**
@@ -182,13 +229,16 @@ export class Gun {
     // objects/walls in front of the shooter.
     const dir = rotate(forward, this.shoot(speedRatio));
     const muzzleLen = this.spec.barrel ? this.spec.barrel.end : 0;
+    // Melee "bullets" are never drawn (the punch is the visual); guns hide the
+    // bullet until it has cleared the muzzle.
+    const renderAfter = this.spec.melee ? Infinity : muzzleLen + 50;
     spawnBullet(
       world,
       origin,
       dir,
       f.bulletSpeed,
       f.bulletLife,
-      muzzleLen + 50,
+      renderAfter,
       owner,
       this.damage,
       f.tracerWidth,
@@ -224,8 +274,9 @@ export class Gun {
       s.recoilCoef * s.recoilCoef * Math.sqrt(recoilForPattern) * Math.sin(recoilForPattern);
     const random = (Math.random() * 2 - 1) * f.spread * moveMul;
 
-    // Spend the round.
-    this.mag -= 1;
+    // Spend the round (melee weapons never drain) and, if melee, throw a punch.
+    if (s.melee) this.startPunch();
+    else this.mag -= 1;
 
     // Then grow the spray; movement makes it grow faster.
     this.currentRecoil += s.recoilGain * moveMul;

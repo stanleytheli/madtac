@@ -65,7 +65,8 @@ export class Character {
     old?.resetRecoil();
     old?.cancelReload(); // switching weapons aborts a reload in progress
     this.equipped = slot;
-    this.gun.resetRecoil();
+    // this.gun.resetRecoil();
+    this.gun.resetDraw();
   }
 
   /**
@@ -81,7 +82,24 @@ export class Character {
     this.slots[slot] = gun;
     // this.equipped = slot;
     gun.resetRecoil();
+    gun.resetDraw();
     return prev;
+  }
+
+  /**
+   * Drop the currently equipped weapon as its ground-version, empty that slot, and
+   * fall back to fists. Returns the dropped gun for the caller to place in the
+   * world, or null if nothing droppable is equipped (fists can't be dropped).
+   */
+  dropEquipped(): Gun | null {
+    if (this.equipped === "hand") return null; // fists/melee aren't droppable
+    const g = this.slots[this.equipped];
+    if (!g) return null;
+    g.cancelReload();
+    this.slots[this.equipped] = null;
+    this.equipped = "hand";
+    this.gun.resetDraw(); // bringing the fists up takes its draw time
+    return g.dropClone();
   }
 
   /** The droppable weapons this character carries: real guns in primary/secondary
