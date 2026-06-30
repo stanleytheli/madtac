@@ -3,7 +3,7 @@ import { Body } from "./body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
 import { hasLineOfSight, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
 import { Gun } from "./gun.ts";
-import { Deagle, M16, AK47, M9, UNARMED } from "./guns.ts";
+import { Golden_Deagle, M16, AK47, M9, UNARMED } from "./guns.ts";
 import { GunItem, gunIcon, separateItems } from "./item.ts";
 import { ELITE_ROBOT_SKIN, Robot } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
@@ -43,7 +43,7 @@ const bodies: Body[] = [];
 const world = createWorld();
 
 // Some guns lying around to pick up.
-world.items.push(new GunItem(vec(-120, -80), new Gun(Deagle)));
+world.items.push(new GunItem(vec(-120, -80), new Gun(Golden_Deagle)));
 world.items.push(new GunItem(vec(80, 120), new Gun(AK47)));
 
 // Camera: position follows the player; `size` eases toward the weapon's zoom.

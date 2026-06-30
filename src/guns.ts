@@ -233,6 +233,40 @@ export const Deagle: GunSpec = {
   movingFirstShotRecoilMax: 40.0,
 };
 
+export const Golden_Deagle: GunSpec = {
+  name: "Golden DEagle",
+  primary: false,
+  icon: "golden_deagle",
+  rightGrip: { f: 55, l: 0 },
+  leftGrip: { f: 60, l: 0 },
+  barrel: { start: 55, end: 110, width: 11 },
+  color: "#f0d313",
+  damage: 50,
+  armorPen: { l1: 0.9, l2: 0.85, l3: 0.8 },
+  zoom: 2.0,
+  speed: 0.75,
+  fire: {
+    delay: 13,
+    bulletSpeed: 35,
+    bulletLife: 60,
+    auto: false,
+    spread: 0.01,
+    magSize: 7,
+    reserveMags: 3,
+    reloadTime: 90,
+    tracerWidth: 5,
+    tracerLength: 140,
+  },
+  visualRecoil: 19,
+  recoilRecovery: 1,
+  recoilCoef: 0.17,
+  recoilGain: 15.0,
+  recoilDelay: 40,
+  movePenalty: 1.5,
+  movingFirstShotRecoilMin: 35.0,
+  movingFirstShotRecoilMax: 40.0,
+};
+
 
 /** Unarmed: hands rest out to the sides, no barrel. Shortest "range", fastest move. */
 export const UNARMED: GunSpec = {
