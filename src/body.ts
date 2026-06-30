@@ -10,10 +10,10 @@ const ANG_FRICTION = 0.92; // ...and for its spin
 const DARKEN = 0.45; // multiply skin colors by this to read as "dead"
 
 // Initial death "pop": small but clearly visible launch + tumble.
-const SPAWN_SPEED_MIN = 4.5;
-const SPAWN_SPEED_MAX = 5.5;
-const SPAWN_SPIN_MIN = 0.03; // rad/tick
-const SPAWN_SPIN_MAX = 0.05;
+const SPAWN_SPEED_MIN = 5.5;
+const SPAWN_SPEED_MAX = 6.0;
+const SPAWN_SPIN_MIN = 0.02; // rad/tick
+const SPAWN_SPIN_MAX = 0.07;
 
 /** Multiply one #rrggbb color by `f`, clamped. */
 function darkenHex(hex: string, f: number): string {

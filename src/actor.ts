@@ -1,10 +1,16 @@
 import { drawCharacter, type Skin } from "./character.ts";
 import { Gun } from "./gun.ts";
 import type { GunSpec } from "./guns.ts";
-import { add, len, scale, vec, type Vec2 } from "./vec.ts";
+import { gunIcon } from "./item.ts";
+import { add, angleOf, deg2rad, len, scale, vec, type Vec2 } from "./vec.ts";
 import type { World } from "./world.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
+
+// A holstered primary is drawn slung across the back, behind the body.
+const SLUNG_SCALE = 0.5; // icon scale (matches the ground-item icon size)
+const SLUNG_ANGLE_DEG = 100; // rotation off the aim direction (diagonal across the back)
+const SLUNG_BACK_OFFSET = 40; // world px shifted opposite the aim, so it peeks out behind
 
 // Movement tuning (per 60 Hz tick).
 const ACCEL = 1.4; // velocity gained per tick at full input
@@ -174,10 +180,32 @@ export class Character {
    * Character draws the body around the head and the hands on top of the gun.
    */
   draw(ctx: CanvasRenderingContext2D): void {
+    this.drawSlung(ctx); // behind the body, so the torso covers its middle
     const gun = this.gun;
     const { right, left } = gun.handPositions(this.pos, this.forward);
     drawCharacter(ctx, this.pos, this.forward, right, left, this.skin, () =>
       gun.draw(ctx, this.pos, this.forward, this.skin.outline),
     );
+  }
+
+  /**
+   * Draw the holstered primary slung diagonally across the back. Only when a
+   * primary is carried but not the equipped weapon; rendered first (under the
+   * body) so the torso covers its middle and the ends poke out behind.
+   */
+  private drawSlung(ctx: CanvasRenderingContext2D): void {
+    const primary = this.slots.primary;
+    if (!primary || this.equipped === "primary") return;
+    const img = gunIcon(primary.spec);
+    if (!img) return;
+
+    const w = img.naturalWidth * SLUNG_SCALE;
+    const h = img.naturalHeight * SLUNG_SCALE;
+    const center = add(this.pos, scale(this.forward, -SLUNG_BACK_OFFSET));
+    ctx.save();
+    ctx.translate(center.x, center.y);
+    ctx.rotate(angleOf(this.forward) + deg2rad(SLUNG_ANGLE_DEG));
+    ctx.drawImage(img, -w / 2, - h / 2, w, h);
+    ctx.restore();
   }
 }
