@@ -292,8 +292,8 @@ export const UNARMED: GunSpec = {
   name: "unarmed",
   primary: false,
   melee: true,
-  rightGrip: { f: 55, l: 30 },
-  leftGrip: { f: 60, l: -25 },
+  rightGrip: { f: 55, l: 20 },
+  leftGrip: { f: 65, l: -20 },
   color: "#000000", // no barrel, so unused
   damage: 20,
   armorPen: { l1: 0, l2: 0, l3: 0 },
@@ -301,7 +301,7 @@ export const UNARMED: GunSpec = {
   speed: 1.0,
   fire: {
     delay: 16, // punch cadence (ticks between hits)
-    bulletSpeed: 20, // with bulletLife -> ~90px of effective punch reach
+    bulletSpeed: 23, // with bulletLife -> ~90px of effective punch reach
     bulletLife: 6,
     auto: false, // click to punch
     spread: 0,

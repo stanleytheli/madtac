@@ -3,8 +3,8 @@ import type { GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "./vec.ts";
 import { spawnBullet, type Hittable, type World } from "./world.ts";
 
-const PUNCH_TICKS = 8; // duration of one punch's hand thrust
-const PUNCH_REACH = 20; // world px the punching hand lunges forward at full extension
+const PUNCH_TICKS = 10; // duration of one punch's hand thrust
+const PUNCH_REACH = 30; // world px the punching hand lunges forward at full extension
 
 /** Draw a rounded bar from p0 to p1 of thickness `w`. Shared by gun rendering. */
 function drawBar(
