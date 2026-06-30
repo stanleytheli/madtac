@@ -9,18 +9,30 @@ import type { World } from "./world.ts";
 /** Flat gray placeholder enemy. */
 export const ROBOT_SKIN: Skin = {
   head: "#9aa0a6",
-  shoulder: "#5f6368",
-  arm: "#9aa0a6",
-  hand: "#5f6368",
+  rightShoulder: "#5f6368",
+  leftShoulder: "#5f6368",
+  rightUpperarm: "#9aa0a6",
+  leftUpperarm: "#9aa0a6",
+  rightForearm: "#9aa0a6",
+  leftForearm: "#9aa0a6",
+  rightHand: "#5f6368",
+  leftHand: "#5f6368",
   outline: "#000000",
 };
 
 /** Placeholder "elite" variant — darker, with a red tint. Tweak freely. */
 export const ELITE_ROBOT_SKIN: Skin = {
   head: "#6b4a4a",
-  shoulder: "#3a2a2a",
-  arm: "#6b4a4a",
-  hand: "#3a2a2a",
+  rightShoulder: "#3a2a2a",
+  leftShoulder: "#3a2a2a",
+
+  rightUpperarm: "#6b4a4a",
+  leftUpperarm: "#6b4a4a",
+  rightForearm: "#6b4a4a",
+  leftForearm: "#6b4a4a",
+
+  rightHand: "#3a2a2a",
+  leftHand: "#3a2a2a",
   outline: "#000000",
 };
 

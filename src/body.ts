@@ -28,9 +28,14 @@ function darkenHex(hex: string, f: number): string {
 function darkenSkin(skin: Skin, f: number): Skin {
   return {
     head: darkenHex(skin.head, f),
-    shoulder: darkenHex(skin.shoulder, f),
-    arm: darkenHex(skin.arm, f),
-    hand: darkenHex(skin.hand, f),
+    rightShoulder: darkenHex(skin.rightShoulder, f),
+    leftShoulder: darkenHex(skin.leftShoulder, f),
+    rightUpperarm: darkenHex(skin.rightUpperarm, f),
+    leftUpperarm: darkenHex(skin.leftUpperarm, f),
+    rightForearm: darkenHex(skin.rightForearm, f),
+    leftForearm: darkenHex(skin.leftForearm, f),
+    rightHand: darkenHex(skin.rightHand, f),
+    leftHand: darkenHex(skin.leftHand, f),
     outline: skin.outline, // already black; keep it
   };
 }

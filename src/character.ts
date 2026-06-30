@@ -15,25 +15,40 @@ import {
 
 export interface Skin {
   head: string;
-  shoulder: string;
-  arm: string;
-  hand: string;
+  rightShoulder: string;
+  leftShoulder: string;
+  rightUpperarm: string;
+  leftUpperarm: string;
+  rightForearm: string;
+  leftForearm: string;
+  rightHand: string;
+  leftHand: string;
   outline: string;
 }
 
 export const DEFAULT_SKIN: Skin = {
   head: "#e5d176",
-  shoulder: "#2c2b2a",
-  arm: "#e5d176",
-  hand: "#e5d176",
+  rightShoulder: "#2c2b2a",
+  leftShoulder: "#2c2b2a",
+  rightUpperarm: "#e5d176",
+  leftUpperarm: "#e5d176",
+  rightForearm: "#e5d176",
+  leftForearm: "#e5d176",
+  rightHand: "#e5d176",
+  leftHand: "#e5d176",
   outline: "#000000",
 };
 
 export const ENEMY_SKIN: Skin = {
   head: "#e5d176", // blue, to read as "not the player"
-  shoulder: "#2f6bd0",
-  arm: "#9cc0ff",
-  hand: "#e5d176",
+  rightShoulder: "#2f6bd0",
+  leftShoulder: "#2f6bd0",
+  rightUpperarm: "#9cc0ff",
+  leftUpperarm: "#9cc0ff",
+  rightForearm: "#9cc0ff",
+  leftForearm: "#9cc0ff",
+  rightHand: "#e5d176",
+  leftHand: "#e5d176",
   outline: "#000000",
 };
 
@@ -223,19 +238,19 @@ export function drawCharacter(
     outlineEllipse(e);
     fillEllipse(e, color);
   };
-  const drawLimb = (limb: LimbSolution) => {
-    drawPart(limb.lowerArm, skin.arm);
-    drawPart(limb.upperArm, skin.arm);
-    drawPart(limb.shoulder, skin.shoulder);
-  };
 
-  drawLimb(leftLimb);
-  drawLimb(rightLimb);
+  drawPart(leftLimb.lowerArm, skin.leftForearm)
+  drawPart(leftLimb.upperArm, skin.leftUpperarm)
+  drawPart(leftLimb.shoulder, skin.leftShoulder)
+
+  drawPart(rightLimb.lowerArm, skin.rightForearm)
+  drawPart(rightLimb.upperArm, skin.rightUpperarm)
+  drawPart(rightLimb.shoulder, skin.rightShoulder)
 
   drawGun();
 
-  drawCircle(leftHand, p.rHand, skin.hand);
-  drawCircle(rightHand, p.rHand, skin.hand);
+  drawCircle(leftHand, p.rHand, skin.leftHand);
+  drawCircle(rightHand, p.rHand, skin.rightHand);
 
   drawCircle(headCenter, p.rHead, skin.head);
 }
