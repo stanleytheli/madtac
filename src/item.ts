@@ -21,7 +21,7 @@ export interface GroundItem {
   draw(ctx: CanvasRenderingContext2D): void;
 }
 
-const ITEM_RADIUS = 25; // collision radius vs walls/crates
+const ITEM_RADIUS = 35; // collision radius vs walls/crates
 const ITEM_FRICTION = 0.85; // per-tick velocity retention as it slides to rest
 const SEPARATION_RATE = 0.25; // fraction of overlap resolved per tick (soft, gradual)
 

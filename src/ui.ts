@@ -41,7 +41,7 @@ export interface ProgressBarStyle {
 const DEFAULT_BAR: ProgressBarStyle = {
   width: 80,
   height: 8,
-  fill: "#ffd21a",
+  fill: "#ffffff",
   bg: "rgba(0, 0, 0, 0.55)",
   border: "rgba(255, 255, 255, 0.7)",
 };
@@ -222,7 +222,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
 
   // Pickup prompt, just above the player (who is at screen center).
   if (o.interactableLabel) {
-    drawKeyPrompt(ctx, center.x + 15, center.y - 60, "E", o.interactableLabel);
+    drawKeyPrompt(ctx, center.x + 15, center.y + 60, "E", o.interactableLabel);
   }
 
   // Bottom block: health bar with ammo above it.

@@ -299,9 +299,10 @@ function render(): void {
   drawGrid(camPos, center, w, h, zoom);
   for (const fl of world.floors) drawFloor(fl); // decorative ground, under everything
   for (const o of world.obstacles) drawObstacle(o);
+  for (const b of bodies) b.draw(ctx); // corpses lie under the living
+
   for (const it of world.items) it.draw(ctx); // ground pickups
 
-  for (const b of bodies) b.draw(ctx); // corpses lie under the living
   for (const c of characters) c.draw(ctx);
 
   drawBullets();

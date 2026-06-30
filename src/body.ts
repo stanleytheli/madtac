@@ -61,17 +61,18 @@ export class Body {
     this.skin = skin;
   }
 
-  /** Spawn a body where a character just died, inheriting its position & facing. */
+  /** Spawn a body where a character just died, inheriting its position & facing.
+   *  It's flung in the direction of the killing bullet (random if unknown). */
   static fromCharacter(c: Character): Body {
-    const dir = Math.random() * Math.PI * 2;
     const speed = SPAWN_SPEED_MIN + Math.random() * (SPAWN_SPEED_MAX - SPAWN_SPEED_MIN);
+    const launchDir = c.lastHitDir ?? fromAngle(Math.random() * Math.PI * 2);
     const spin =
       (Math.random() < 0.5 ? -1 : 1) *
       (SPAWN_SPIN_MIN + Math.random() * (SPAWN_SPIN_MAX - SPAWN_SPIN_MIN));
     return new Body(
       { x: c.pos.x, y: c.pos.y },
       angleOf(c.forward),
-      fromAngle(dir, speed),
+      scale(launchDir, speed),
       spin,
       darkenSkin(c.skin, DARKEN),
     );

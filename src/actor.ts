@@ -34,6 +34,10 @@ export class Character {
   maxHp = 100;
   hp = 100;
 
+  /** Travel direction (unit) of the most recent bullet to hit this character; the
+   *  body launches this way on death. Null if never hit (e.g. test damage). */
+  lastHitDir: Vec2 | null = null;
+
   readonly slots: Record<SlotName, Gun | null>;
   private equipped: SlotName;
 
@@ -153,7 +157,8 @@ export class Character {
    * dealing `damage`. (Armor mitigation will hook in here later.) The world
    * spawns the blood particle for the impact.
    */
-  registerHit(_dir: Vec2, _point: Vec2, damage: number): void {
+  registerHit(dir: Vec2, _point: Vec2, damage: number): void {
+    this.lastHitDir = dir;
     this.hp = Math.max(0, this.hp - damage);
   }
 

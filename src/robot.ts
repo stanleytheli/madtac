@@ -11,7 +11,7 @@ export const ROBOT_SKIN: Skin = {
   head: "#9aa0a6",
   rightShoulder: "#5f6368",
   leftShoulder: "#5f6368",
-  rightUpperarm: "#9aa0a6",
+  rightUpperarm: "#608dd0",
   leftUpperarm: "#9aa0a6",
   rightForearm: "#9aa0a6",
   leftForearm: "#9aa0a6",

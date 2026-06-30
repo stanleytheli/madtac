@@ -187,7 +187,7 @@ export const M9: GunSpec = {
   color: "#33373d",
   damage: 15,
   armorPen: { l1: 0.7, l2: 0.45, l3: 0.2 },
-  zoom: 1.5,
+  zoom: 1.8,
   speed: 0.9,
   fire: {
     delay: 6,
@@ -292,8 +292,8 @@ export const UNARMED: GunSpec = {
   name: "unarmed",
   primary: false,
   melee: true,
-  rightGrip: { f: 55, l: 20 },
-  leftGrip: { f: 65, l: -20 },
+  rightGrip: { f: 50, l: 15 },
+  leftGrip: { f: 70, l: -20 },
   color: "#000000", // no barrel, so unused
   damage: 20,
   armorPen: { l1: 0, l2: 0, l3: 0 },
