@@ -3,8 +3,8 @@ import { vec, type Vec2 } from "./vec.ts";
 const keys = new Set<string>();
 /** Mouse position in screen pixels. */
 export const mouse: Vec2 = vec(0, 0);
-/** Pointer button state. `down` = left button currently held. */
-export const pointer = { down: false };
+/** Pointer button state: `down` = left held (fire), `rightDown` = right held (drop). */
+export const pointer = { down: false, rightDown: false };
 
 export function initInput(canvas: HTMLCanvasElement): void {
   window.addEventListener("keydown", (e) => keys.add(e.key.toLowerCase()));
@@ -13,6 +13,7 @@ export function initInput(canvas: HTMLCanvasElement): void {
   window.addEventListener("blur", () => {
     keys.clear();
     pointer.down = false;
+    pointer.rightDown = false;
   });
 
   canvas.addEventListener("mousemove", (e) => {
@@ -23,9 +24,11 @@ export function initInput(canvas: HTMLCanvasElement): void {
 
   canvas.addEventListener("mousedown", (e) => {
     if (e.button === 0) pointer.down = true;
+    else if (e.button === 2) pointer.rightDown = true;
   });
   window.addEventListener("mouseup", (e) => {
     if (e.button === 0) pointer.down = false;
+    else if (e.button === 2) pointer.rightDown = false;
   });
   // Suppress the right-click menu so it doesn't interrupt play.
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());

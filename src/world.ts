@@ -10,6 +10,7 @@ import {
   type ParticleStyle,
 } from "./particle.ts";
 import type { GroundItem } from "./item.ts";
+import type { ArmorPen } from "./guns.ts";
 import { add, dist, norm, scale, vec, type Vec2 } from "./vec.ts";
 
 /**
@@ -55,7 +56,7 @@ export function makeFloor(pos: Vec2, w: number, h: number, color: string): Floor
  */
 export interface Hittable {
   pos: Vec2;
-  registerHit(dir: Vec2, point: Vec2, damage: number): void;
+  registerHit(dir: Vec2, point: Vec2, damage: number, armorPen: ArmorPen): void;
 }
 
 export interface Bullet {
@@ -69,6 +70,8 @@ export interface Bullet {
   damage: number; // damage dealt on hit (from the firing gun)
   tracerWidth: number; // cosmetic streak thickness (from the firing gun)
   tracerLength: number; // cosmetic streak length behind the bullet (from the firing gun)
+  tracerColor: string; // cosmetic streak color "#rrggbb" (from the firing gun)
+  armorPen: ArmorPen; // per-tier penetration (from the firing gun), applied on hit
 }
 
 /** Static map data plus live projectiles, particle debris, and ground items. */
@@ -158,7 +161,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       for (const t of targets) {
         if (t === b.owner) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
-          t.registerHit(norm(b.vel), sample, b.damage);
+          t.registerHit(norm(b.vel), sample, b.damage, b.armorPen);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           spawnParticles(w.particles, at, backDir, BLOOD);
           consumed = true;
@@ -195,6 +198,8 @@ export function spawnBullet(
   damage: number,
   tracerWidth: number,
   tracerLength: number,
+  tracerColor: string,
+  armorPen: ArmorPen,
 ): void {
   w.bullets.push({
     pos: origin,
@@ -207,5 +212,7 @@ export function spawnBullet(
     damage,
     tracerWidth,
     tracerLength,
+    tracerColor,
+    armorPen,
   });
 }

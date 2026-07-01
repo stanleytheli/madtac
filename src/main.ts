@@ -1,14 +1,15 @@
 import { Character } from "./actor.ts";
+import { Armor, ARMOR_L1, ARMOR_L2, ARMOR_L3, ARMOR_L4 } from "./armor.ts";
 import { Body } from "./body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
 import { hasLineOfSight, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
 import { Gun } from "./gun.ts";
 import { Golden_Deagle, M16, AK47, M9, UNARMED } from "./guns.ts";
-import { GunItem, separateItems } from "./item.ts";
+import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
 import { ELITE_ROBOT_SKIN, Robot } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
-import { drawHud, HealthBar } from "./ui.ts";
+import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
 import { dist, fromAngle, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import { createWorld, updateBullets, type Floor, type Obstacle } from "./world.ts";
 
@@ -37,6 +38,9 @@ const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10,
 const enemy_0 = new Robot(vec(320, -260));
 const enemy_2 = new Robot(vec(450, -400));
 
+// The elite wears armor, to show it off (and prove enemies use the same pipeline).
+enemy_1.equipArmor(new Armor(ARMOR_L3));
+
 let characters: Character[] = [player, enemy_0, enemy_1, enemy_2];
 const bodies: Body[] = [];
 
@@ -46,19 +50,24 @@ const world = createWorld();
 world.items.push(new GunItem(vec(-120, -80), new Gun(Golden_Deagle)));
 world.items.push(new GunItem(vec(80, 120), new Gun(AK47)));
 
+// ...and some armor to try on.
+world.items.push(new ArmorItem(vec(-40, 90), new Armor(ARMOR_L1)));
+world.items.push(new ArmorItem(vec(-40, 90), new Armor(ARMOR_L2)));
+world.items.push(new ArmorItem(vec(-40, 90), new Armor(ARMOR_L3)));
+world.items.push(new ArmorItem(vec(170, -40), new Armor(ARMOR_L4)));
+
 // Camera: position follows the player; `size` eases toward the weapon's zoom.
 const camera = { size: player.gun.spec.zoom };
 const ZOOM_EASE = 0.12;
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
-let interactable: GunItem | null = null; // nearest reachable item this tick (for prompt + E)
+let interactable: GroundItem | null = null; // nearest reachable item this tick (for prompt + E)
 
 /** Nearest ground item within reach and with a clear line of sight, or null. */
-function findInteractable(): GunItem | null {
-  let best: GunItem | null = null;
+function findInteractable(): GroundItem | null {
+  let best: GroundItem | null = null;
   let bestD = Infinity;
   for (const it of world.items) {
-    if (!(it instanceof GunItem)) continue; // future item types handled elsewhere
     const d = dist(player.pos, it.pos);
     if (d > PICKUP_RANGE || d >= bestD) continue;
     if (!hasLineOfSight(player.pos, it.pos, world.obstacles)) continue; // can't reach through walls
@@ -68,16 +77,25 @@ function findInteractable(): GunItem | null {
   return best;
 }
 
-/** Pick up a ground gun into its slot, dropping whatever was there before. */
-function pickUp(item: GunItem): void {
-  const dropped = player.holster(item.gun);
+/** A small random outward toss impulse for anything spawned on the player. */
+function tossVel(): Vec2 {
+  return fromAngle(Math.random() * Math.PI * 2, 9.5);
+}
+
+/** Pick up a ground item: guns go into their slot, armor gets worn. Whatever was
+ *  displaced (a gun in that slot, or the previously worn armor) drops back out. */
+function pickUp(item: GroundItem): void {
   const idx = world.items.indexOf(item);
   if (idx >= 0) world.items.splice(idx, 1);
-  if (dropped) {
-    // Spawn it on the player and toss it out with a small random impulse; physics
-    // slides it clear of any object it might otherwise spawn inside of.
-    const vel = fromAngle(Math.random() * Math.PI * 2, 9.5);
-    world.items.push(new GunItem(vec(player.pos.x, player.pos.y), dropped, vel));
+  const here = (): Vec2 => vec(player.pos.x, player.pos.y);
+
+  if (item instanceof GunItem) {
+    const dropped = player.holster(item.gun);
+    // Physics slides the tossed item clear of anything it might spawn inside of.
+    if (dropped) world.items.push(new GunItem(here(), dropped, tossVel()));
+  } else if (item instanceof ArmorItem) {
+    const prev = player.equipArmor(item.armor);
+    if (prev) world.items.push(new ArmorItem(here(), prev, tossVel()));
   }
   interactable = null;
 }
@@ -90,7 +108,22 @@ function dropEquippedWeapon(): void {
   world.items.push(new GunItem(vec(player.pos.x, player.pos.y), dropped, vel));
 }
 
+/** Drop whatever the player right-clicked in the HUD: a specific weapon slot, or
+ *  the worn armor. No-op if that slot is empty. */
+function dropFromHud(kind: SlotKind): void {
+  const at = vec(player.pos.x, player.pos.y);
+  if (kind === "armor") {
+    const a = player.dropArmor();
+    if (a) world.items.push(new ArmorItem(at, a, tossVel()));
+  } else {
+    const g = player.dropSlot(kind);
+    if (g) world.items.push(new GunItem(at, g, tossVel()));
+  }
+}
+
 const healthBar = new HealthBar({ width: 450, height: 35 });
+// Slightly shorter cyan bar for armor, stacked above the health bar.
+const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", radius: 0, displayLoss: false,});
 
 let prevDown = false; // pointer state last tick, for semi-auto edge detection
 
@@ -130,6 +163,10 @@ function reapDead(): void {
         const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
         world.items.push(new GunItem(vec(c.pos.x, c.pos.y), gun, vel));
       }
+      const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
+      const a = c.dropArmor()
+      if (a) world.items.push(new ArmorItem(vec(c.pos.x, c.pos.y), a, vel));
+
       bodies.push(Body.fromCharacter(c));
       characters.splice(i, 1);
     }
@@ -140,6 +177,7 @@ let jDown = false
 let kDown = false
 let eDown = false
 let qDown = false
+let rmbDown = false // right mouse button last tick, for click-edge detection
 
 function update(): void {
   const playerAlive = player.hp > 0;
@@ -161,6 +199,15 @@ function update(): void {
       qDown = true;
     } else qDown = false;
 
+    // Right-click a HUD weapon/armor slot to drop that item.
+    if (pointer.rightDown) {
+      if (!rmbDown) {
+        const kind = hudHitTest(mouse, window.innerWidth, window.innerHeight, player);
+        if (kind) dropFromHud(kind);
+      }
+      rmbDown = true;
+    } else rmbDown = false;
+
     if (isDown("j")) {
       if (!jDown) player._takeDamage(22);
       jDown = true;
@@ -176,7 +223,12 @@ function update(): void {
 
   if (playerAlive) {
     player.forward = aimForward();
-    player.move(moveAxis(), player.gun.spec.speed);
+    let speedMult = 1.0;
+    speedMult *= player.gun.spec.speed;
+    if (player.armor) { // Armor speed value -- NOTE: deliberately not used in player max speed calculations
+      speedMult *= player.armor.spec.speed;
+    }
+    player.move(moveAxis(), speedMult);
     resolvePlayerCollisions();
   }
 
@@ -212,7 +264,7 @@ function drawGrid(camPos: Vec2, center: Vec2, w: number, h: number, zoom: number
   const top = camPos.y - center.y * zoom;
   const bottom = camPos.y + (h - center.y) * zoom;
 
-  ctx.strokeStyle = "#74c185";
+  ctx.strokeStyle = "#5ca76c";
   ctx.lineWidth = zoom; // 1/zoom context scale -> ~1px on screen
   ctx.beginPath();
   for (let x = Math.ceil(left / GRID) * GRID; x <= right; x += GRID) {
@@ -250,6 +302,15 @@ function drawObstacle(o: Obstacle): void {
   }
 }
 
+/** "#rrggbb" -> "r,g,b" for building rgba() strings with a chosen alpha. */
+function rgbTriple(hex: string): string {
+  const h = hex.replace("#", "");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `${r},${g},${b}`;
+}
+
 function drawBullets(): void {
   ctx.lineCap = "round";
   for (const b of world.bullets) {
@@ -266,9 +327,11 @@ function drawBullets(): void {
     const tip = b.pos;
     const tail = sub(tip, scale(dir, tailLen));
 
+    // Fade the gun's tracer color from transparent at the tail to solid at the tip.
+    const rgb = rgbTriple(b.tracerColor);
     const grad = ctx.createLinearGradient(tail.x, tail.y, tip.x, tip.y);
-    grad.addColorStop(0, "rgba(255,226,107,0)");
-    grad.addColorStop(1, "rgba(255,240,160,0.95)");
+    grad.addColorStop(0, `rgba(${rgb},0)`);
+    grad.addColorStop(1, `rgba(${rgb},0.95)`);
     ctx.strokeStyle = grad;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);
@@ -287,7 +350,7 @@ function render(): void {
   const camPos = player.pos; // camera centers on the player
 
   // Background fill (unscaled, always covers the screen).
-  ctx.fillStyle = "#61ae65";
+  ctx.fillStyle = "#70c575";
   ctx.fillRect(0, 0, w, h);
 
   // Camera transform: world -> screen, scaled by 1/zoom around the screen center.
@@ -316,6 +379,7 @@ function render(): void {
     center,
     player,
     healthBar,
+    armorBar,
     mouse,
     interactableLabel: interactable ? interactable.label : null,
   });

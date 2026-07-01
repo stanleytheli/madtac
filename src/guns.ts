@@ -38,13 +38,18 @@ export interface FireSpec {
   tracerWidth: number;
   /** Tracer streak length behind the bullet, in world px (cosmetic). */
   tracerLength: number;
+  /** Tracer streak color, "#rrggbb" (cosmetic). The streak fades from transparent
+   *  at the tail to this color at the bullet's tip. */
+  tracerColor: string;
 }
 
-/** Fraction of damage that passes through each armor tier (0..1). Armor lands later. */
+/** Fraction of damage that passes through each armor tier (0..1). Indexed by the
+ *  worn armor's level: l1..l4. Lower fraction = the armor stops more. */
 export interface ArmorPen {
   l1: number;
   l2: number;
   l3: number;
+  l4: number;
 }
 
 export interface GunSpec {
@@ -103,6 +108,12 @@ export interface GunSpec {
   movingFirstShotRecoilMax: number;
 }
 
+const DEFAULT_AP_MELEE = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
+const DEFAULT_AP_9MM =   { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
+const DEFAULT_AP_556 =   { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
+const DEFAULT_AP_762 =   { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
+const DEFAULT_AP_50AE =  { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
+
 export const M16: GunSpec = {
   name: "M-16",
   primary: true,
@@ -112,7 +123,7 @@ export const M16: GunSpec = {
   barrel: { start: 35, end: 110, width: 11 },
   color: "#26292e",
   damage: 20,
-  armorPen: { l1: 0.9, l2: 0.7, l3: 0.5 },
+  armorPen: DEFAULT_AP_556,
   zoom: 2.2,
   speed: 0.8,
   fire: {
@@ -127,6 +138,7 @@ export const M16: GunSpec = {
     drawTime: 40,
     tracerWidth: 3.5,
     tracerLength: 150,
+    tracerColor: "#ffe26b"
   },
   visualRecoil: 8,
   recoilRecovery: 2,
@@ -147,7 +159,7 @@ export const AK47: GunSpec = {
   barrel: { start: 35, end: 110, width: 11 },
   color: "#53360b",
   damage: 25,
-  armorPen: { l1: 0.9, l2: 0.8, l3: 0.6 },
+  armorPen: DEFAULT_AP_762,
   zoom: 2.2,
   speed: 0.8,
   fire: {
@@ -162,6 +174,7 @@ export const AK47: GunSpec = {
     drawTime: 40,
     tracerWidth: 4.5,
     tracerLength: 160,
+    tracerColor: "#ffe26b"
   },
   visualRecoil: 10,
   recoilRecovery: 2,
@@ -185,8 +198,8 @@ export const M9: GunSpec = {
 
   barrel: { start: 50, end: 100, width: 8 },
   color: "#33373d",
-  damage: 15,
-  armorPen: { l1: 0.7, l2: 0.45, l3: 0.2 },
+  damage: 17,
+  armorPen: DEFAULT_AP_9MM,
   zoom: 1.8,
   speed: 0.9,
   fire: {
@@ -195,12 +208,13 @@ export const M9: GunSpec = {
     bulletLife: 60,
     auto: false,
     spread: 0.01,
-    magSize: 12,
+    magSize: 15,
     reserveMags: 4,
     reloadTime: 70,
     drawTime: 30,
     tracerWidth: 3,
     tracerLength: 110,
+    tracerColor: "#ffe26b"
   },
   visualRecoil: 12,
   recoilRecovery: 3,
@@ -221,7 +235,7 @@ export const Deagle: GunSpec = {
   barrel: { start: 55, end: 110, width: 11 },
   color: "#7e858f",
   damage: 40,
-  armorPen: { l1: 0.9, l2: 0.85, l3: 0.8 },
+  armorPen: DEFAULT_AP_50AE,
   zoom: 1.8,
   speed: 0.8,
   fire: {
@@ -236,6 +250,7 @@ export const Deagle: GunSpec = {
     drawTime: 40,
     tracerWidth: 5,
     tracerLength: 140,
+    tracerColor: "#ffe26b"
   },
   visualRecoil: 17,
   recoilRecovery: 1,
@@ -256,7 +271,7 @@ export const Golden_Deagle: GunSpec = {
   barrel: { start: 55, end: 110, width: 11 },
   color: "#f0d313",
   damage: 50,
-  armorPen: { l1: 0.9, l2: 0.85, l3: 0.8 },
+  armorPen: DEFAULT_AP_50AE,
   zoom: 2.0,
   speed: 0.75,
   fire: {
@@ -271,6 +286,7 @@ export const Golden_Deagle: GunSpec = {
     drawTime: 50,
     tracerWidth: 5,
     tracerLength: 140,
+    tracerColor: "#ae9131", // gold
   },
   visualRecoil: 19,
   recoilRecovery: 1,
@@ -296,7 +312,7 @@ export const UNARMED: GunSpec = {
   leftGrip: { f: 70, l: -20 },
   color: "#000000", // no barrel, so unused
   damage: 20,
-  armorPen: { l1: 0, l2: 0, l3: 0 },
+  armorPen: DEFAULT_AP_MELEE,
   zoom: 1.8,
   speed: 1.0,
   fire: {
@@ -311,6 +327,7 @@ export const UNARMED: GunSpec = {
     drawTime: 0, // quick to bring the fists up
     tracerWidth: 0, // invisible (the punch isn't a visible projectile)
     tracerLength: 0,
+    tracerColor: "#000000", // unused: never rendered
   },
   visualRecoil: 0,
   recoilRecovery: 0,

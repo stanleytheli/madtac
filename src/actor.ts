@@ -1,6 +1,7 @@
+import type { Armor } from "./armor.ts";
 import { drawCharacter, type Skin } from "./character.ts";
 import { Gun } from "./gun.ts";
-import type { GunSpec } from "./guns.ts";
+import type { ArmorPen, GunSpec } from "./guns.ts";
 import { gunIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, scale, vec, type Vec2 } from "./vec.ts";
 import type { World } from "./world.ts";
@@ -14,7 +15,7 @@ const SLUNG_BACK_OFFSET = 40; // world px shifted opposite the aim, so it peeks 
 
 // Movement tuning (per 60 Hz tick).
 const ACCEL = 1.4; // velocity gained per tick at full input
-const FRICTION = 0.82; // velocity retained per tick
+const FRICTION = 0.80; // velocity retained per tick
 
 /** Terminal speed of the accel/friction model, per the recoil spec's definition. */
 const maxSpeedFor = (spec: GunSpec): number => (ACCEL * spec.speed) / (1 - FRICTION);
@@ -43,6 +44,9 @@ export class Character {
   /** Travel direction (unit) of the most recent bullet to hit this character; the
    *  body launches this way on death. Null if never hit (e.g. test damage). */
   lastHitDir: Vec2 | null = null;
+
+  /** Worn armor, or null. Soaks bullet damage and renders on the head (see draw). */
+  armor: Armor | null = null;
 
   readonly slots: Record<SlotName, Gun | null>;
   private equipped: SlotName;
@@ -112,6 +116,36 @@ export class Character {
     return g.dropClone();
   }
 
+  /** Drop the gun in a specific slot (not the fists), regardless of what's equipped.
+   *  If that slot was the equipped one, fall back to fists. Returns the ground-version
+   *  to place in the world, or null if the slot was empty. */
+  dropSlot(slot: "primary" | "secondary"): Gun | null {
+    const g = this.slots[slot];
+    if (!g) return null;
+    g.cancelReload();
+    this.slots[slot] = null;
+    if (this.equipped === slot) {
+      this.equipped = "hand";
+      this.gun.resetDraw(); // bringing the fists up takes its draw time
+    }
+    return g.dropClone();
+  }
+
+  /** Put on `armor`, returning whatever was worn before (for the caller to drop),
+   *  or null if the character was unarmored. */
+  equipArmor(armor: Armor): Armor | null {
+    const prev = this.armor;
+    this.armor = armor;
+    return prev;
+  }
+
+  /** Take off and return the worn armor (for the caller to drop), or null if none. */
+  dropArmor(): Armor | null {
+    const a = this.armor;
+    this.armor = null;
+    return a;
+  }
+
   /** The droppable weapons this character carries: real guns in primary/secondary
    *  (never the fists in the hand slot), as their ground-version (see dropClone). */
   dropWeapons(): Gun[] {
@@ -163,9 +197,19 @@ export class Character {
    * dealing `damage`. (Armor mitigation will hook in here later.) The world
    * spawns the blood particle for the impact.
    */
-  registerHit(dir: Vec2, _point: Vec2, damage: number): void {
+  registerHit(dir: Vec2, _point: Vec2, damage: number, armorPen: ArmorPen): void {
     this.lastHitDir = dir;
-    this.hp = Math.max(0, this.hp - damage);
+
+    let toBody = damage;
+    const armor = this.armor;
+    if (armor && !armor.destroyed) {
+      // The body only takes the fraction that penetrates this armor's level...
+      const pen = armorPen[`l${armor.level}` as keyof ArmorPen];
+      toBody = damage * pen;
+      // ...while the armor soaks the full bullet damage, and may shatter.
+      if (armor.absorb(damage)) this.armor = null;
+    }
+    this.hp = Math.max(0, this.hp - toBody);
   }
 
   _takeDamage(damage: number): void {
@@ -183,8 +227,15 @@ export class Character {
     this.drawSlung(ctx); // behind the body, so the torso covers its middle
     const gun = this.gun;
     const { right, left } = gun.handPositions(this.pos, this.forward);
-    drawCharacter(ctx, this.pos, this.forward, right, left, this.skin, () =>
-      gun.draw(ctx, this.pos, this.forward, this.skin.outline),
+    drawCharacter(
+      ctx,
+      this.pos,
+      this.forward,
+      right,
+      left,
+      this.skin,
+      () => gun.draw(ctx, this.pos, this.forward, this.skin.outline),
+      this.armor,
     );
   }
 

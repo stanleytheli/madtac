@@ -1,3 +1,4 @@
+import type { Armor, ArmorSpec } from "./armor.ts";
 import { resolveCircleVsBox } from "./collision.ts";
 import type { Gun } from "./gun.ts";
 import type { GunSpec } from "./guns.ts";
@@ -56,6 +57,12 @@ export function gunIcon(spec: GunSpec): HTMLImageElement | null {
   return img.complete && img.naturalWidth > 0 ? img : null;
 }
 
+/** The decoded sprite for an armor spec, or null if it hasn't loaded yet. */
+export function armorIcon(spec: ArmorSpec): HTMLImageElement | null {
+  const img = getImage(`/assets/${spec.icon}.png`);
+  return img.complete && img.naturalWidth > 0 ? img : null;
+}
+
 // Lazy, cached <img> loader. Drawing is skipped until the image has decoded.
 const imageCache = new Map<string, HTMLImageElement>();
 function getImage(src: string): HTMLImageElement {
@@ -70,6 +77,39 @@ function getImage(src: string): HTMLImageElement {
 
 const ICON_SIZE = 72; // world px for the icon's longer side
 const ICON_ROT = -Math.PI / 4; // drawn rotated 45° counter-clockwise
+const ICON_SCALE = 0.5; // sprite -> world px scale for ground icons
+const GUN_BACKDROP = ICON_SIZE * 0.45; // soft shadow radius under a gun icon
+const ARMOR_BACKDROP = ICON_SIZE * 0.6; // ~2x the gun's — armor sprites are larger
+
+/**
+ * Draw a ground pickup: a soft dark backdrop (so the sprite reads on any floor)
+ * with the rotated icon on top. Shared by every GroundItem so they look uniform.
+ */
+function drawGroundIcon(
+  ctx: CanvasRenderingContext2D,
+  pos: Vec2,
+  iconSrc: string,
+  backdropRadius: number,
+  scale: number,
+  rotation: number,
+): void {
+  ctx.save();
+  ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, backdropRadius, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  const img = iconSrc ? getImage(iconSrc) : null;
+  if (!img || !img.complete || img.naturalWidth === 0) return;
+  const w = img.naturalWidth * scale;
+  const h = img.naturalHeight * scale;
+  ctx.save();
+  ctx.translate(pos.x, pos.y);
+  ctx.rotate(rotation);
+  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  ctx.restore();
+}
 
 /** A gun lying on the ground, tied to its Gun instance (so it keeps its ammo). */
 export class GunItem implements GroundItem {
@@ -98,25 +138,40 @@ export class GunItem implements GroundItem {
   }
 
   draw(ctx: CanvasRenderingContext2D): void {
-    // Soft backdrop so the icon reads against any floor.
-    ctx.save();
-    ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
-    ctx.beginPath();
-    ctx.arc(this.pos.x, this.pos.y, ICON_SIZE * 0.45, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.restore();
+    drawGroundIcon(ctx, this.pos, this.iconSrc, GUN_BACKDROP, ICON_SCALE, ICON_ROT);
+  }
+}
 
-    const img = this.iconSrc ? getImage(this.iconSrc) : null;
-    if (!img || !img.complete || img.naturalWidth === 0) return;
+const ARMOR_ICON_SCALE = 0.35;
+const ARMOR_ITEM_RADIUS = 45; // larger footprint than a gun (bigger sprite)
 
-    // const k = ICON_SIZE / Math.max(img.naturalWidth, img.naturalHeight);
-    const k = 0.5;
-    const w = img.naturalWidth * k;
-    const h = img.naturalHeight * k;
-    ctx.save();
-    ctx.translate(this.pos.x, this.pos.y);
-    ctx.rotate(ICON_ROT);
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
-    ctx.restore();
+/** A piece of armor lying on the ground, tied to its Armor instance (keeps its HP). */
+export class ArmorItem implements GroundItem {
+  pos: Vec2;
+  vel: Vec2;
+  readonly radius = ARMOR_ITEM_RADIUS;
+  readonly armor: Armor;
+  private readonly iconSrc: string;
+
+  constructor(pos: Vec2, armor: Armor, vel: Vec2 = vec(0, 0)) {
+    this.pos = pos;
+    this.vel = vel;
+    this.armor = armor;
+    this.iconSrc = `/assets/${armor.spec.icon}.png`;
+  }
+
+  get label(): string {
+    return this.armor.spec.name;
+  }
+
+  /** Slide toward rest, pushing out of any solid obstacles. */
+  update(obstacles: readonly Obstacle[]): void {
+    this.pos = add(this.pos, this.vel);
+    this.vel = scale(this.vel, ITEM_FRICTION);
+    for (const o of obstacles) this.pos = resolveCircleVsBox(this.pos, ARMOR_ITEM_RADIUS, o);
+  }
+
+  draw(ctx: CanvasRenderingContext2D): void {
+    drawGroundIcon(ctx, this.pos, this.iconSrc, ARMOR_BACKDROP, ARMOR_ICON_SCALE, 0);
   }
 }

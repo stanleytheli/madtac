@@ -1,3 +1,4 @@
+import type { Armor } from "./armor.ts";
 import {
   add,
   angleOf,
@@ -86,7 +87,7 @@ export interface CharParams {
 }
 
 export const DEFAULT_PARAMS: CharParams = {
-  rHead: 28,
+  rHead: 30,
   rShoulder: 20,
   shoulderMinor: 14,
   upperArmLen: 35,
@@ -100,7 +101,7 @@ export const DEFAULT_PARAMS: CharParams = {
   shoulderInset: 1.0,
   armAttach: 12, // arm attaches outboard of the shoulder center, toward its edge
   overlap: 4,
-  outline: 4,
+  outline: 3,
 };
 
 interface Ellipse {
@@ -217,6 +218,7 @@ export function drawCharacter(
   leftHand: Vec2,
   skin: Skin,
   drawGun: () => void,
+  armor: Armor | null = null,
   p: CharParams = DEFAULT_PARAMS,
 ): void {
   const rightLimb = solveLimb(headCenter, forward, +1, rightHand, p);
@@ -230,6 +232,7 @@ export function drawCharacter(
     circle(ctx, c, r + o, skin.outline);
     circle(ctx, c, r, color);
   };
+  
 
   // Draw one limb: upper arm, then forearm, then the static shoulder cap — each
   // as its own outline+fill, so the elbow shows a sticker seam (the classic .io
@@ -252,7 +255,11 @@ export function drawCharacter(
   drawCircle(leftHand, p.rHand, skin.leftHand);
   drawCircle(rightHand, p.rHand, skin.rightHand);
 
-  drawCircle(headCenter, p.rHead, skin.head);
+  // Head region: draw the head, then any worn armor as an inner border ring on top
+  // (keeps the silhouette size), then the helmet cap on top of that.
+  circle(ctx, headCenter, p.rHead, skin.head);
+  if (armor) armor.drawBorderOverHead(ctx, headCenter, p.rHead, o, skin.outline);
+  if (armor) armor.drawHelmetOverHead(ctx, headCenter, forward, p.rHead, o, skin.outline);
 }
 
 /** Ticks a muzzle flash stays visible after a shot. */

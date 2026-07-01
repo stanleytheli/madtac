@@ -243,6 +243,8 @@ export class Gun {
       this.damage,
       f.tracerWidth,
       f.tracerLength,
+      f.tracerColor,
+      this.spec.armorPen,
     );
     return true;
   }
