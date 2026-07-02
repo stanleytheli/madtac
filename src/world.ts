@@ -35,6 +35,14 @@ export function zsetHas(s: ZSet, z: number): boolean {
   return r.atLeast !== undefined ? z >= r.atLeast : z <= r.atMost!;
 }
 
+/** An axis-aligned region of the map (the same centered {pos,w,h} shape as
+ *  obstacles and floors). Used as a viewer-position trigger — see hideWhenIn. */
+export interface Region {
+  pos: Vec2;
+  w: number;
+  h: number;
+}
+
 /**
  * A solid, axis-aligned box that blocks movement, bullets, and line of sight —
  * but only against things on its own z level. Crates and walls are both
@@ -77,6 +85,13 @@ export interface Floor {
   visibleFrom: ZSet;
   /** Also hide it while the viewer is beneath it and inside its footprint (roofs). */
   hideWhenUnder?: boolean;
+  /** Also hide it while the viewer is beneath its *level* and inside any of
+   *  these regions — hideWhenUnder with the trigger decoupled from the
+   *  surface's own rect. This is how a wedding-cake building's lower roof
+   *  works: it lists the whole ground-story interior, so it clears out when
+   *  you're anywhere inside that room (not just directly under the overhang),
+   *  yet stays put while you look down on it from the story above. */
+  hideWhenIn?: readonly Region[];
   /** A solid ceiling: while the viewer is beneath it and inside its footprint,
    *  the *whole world* at this level and above is hidden — background included
    *  (see enclosureCap). This is the "sealed underground" rule: a bunker is
@@ -131,6 +146,7 @@ export interface FloorOptions {
   level: number;
   visibleFrom: ZSet;
   hideWhenUnder?: boolean;
+  hideWhenIn?: readonly Region[];
   enclosing?: boolean;
   infinite?: boolean;
   grid?: string;
@@ -190,11 +206,14 @@ export function enclosureCap(floors: readonly Floor[], viewerZ: number, viewerPo
 }
 
 /** Sharp floor visibility for a viewer: the enclosure cap, the z-set check, and
- *  roof-style hiding. */
+ *  roof-style hiding (by the surface's own footprint, or by explicit regions). */
 export function floorVisible(f: Floor, viewerZ: number, viewerPos: Vec2, cap = Infinity): boolean {
   if (f.level >= cap) return false;
   if (!zsetHas(f.visibleFrom, viewerZ)) return false;
-  if (f.hideWhenUnder && viewerZ < f.level && pointInBox(viewerPos, f)) return false;
+  if (viewerZ < f.level) {
+    if (f.hideWhenUnder && pointInBox(viewerPos, f)) return false;
+    if (f.hideWhenIn && f.hideWhenIn.some((r) => pointInBox(viewerPos, r))) return false;
+  }
   return true;
 }
 
@@ -357,6 +376,74 @@ export function createWorld(): World {
 
     // interior staircase along the west wall: north end is upstairs (z=1)
     stairs.push(makeStairs(vec(-1070, -380), 120, 200, "y", 1, 0, [0, 1], "#7c6034"));
+  }
+
+  // --- cake building (north) -------------------------------------------------
+  // Wedding-cake shape: the ground story spans the whole footprint, but the
+  // second story is only the west "tower" — the east half sticks out below it
+  // and wears its own roof one level down. Both roofs hide via hideWhenIn keyed
+  // on the shared building region: the stickout roof (level 1) clears whenever
+  // the viewer is anywhere inside at z=0, while the same region hides the tower
+  // roof (level 2) from z=0 *and* z=1 — the viewerZ < level test does the
+  // per-story split for free. From the tower you look down onto the lower roof,
+  // cake-style; from outside, both roofs seal the building normally.
+  {
+    // The shared trigger region: the ground story's slab (walls included), so
+    // the roofs start melting a step before you fully clear the doorway.
+    const footprint: Region = { pos: vec(-100, -805), w: 500 + 2 * EXT, h: 350 + 2 * EXT };
+
+    // ground story (z=0): footprint x:[-350,150], y:[-980,-630], door on the
+    // south face x:[-60,20]
+    obstacles.push(
+      makeWall(vec(-100, -980), 500 + WALL_T, WALL_T, 0), // north
+      makeWall(vec(-350, -805), WALL_T, 350 + WALL_T, 0), // west
+      makeWall(vec(150, -805), WALL_T, 350 + WALL_T, 0), // east
+      makeWall(vec(-205, -630), 290, WALL_T, 0), // south, west of the door
+      makeWall(vec(85, -630), 130, WALL_T, 0), // south, east of the door
+    );
+    // second story (z=1): just the tower, x:[-350,-120]
+    obstacles.push(
+      makeWall(vec(-235, -980), 230 + WALL_T, WALL_T, 1), // north
+      makeWall(vec(-350, -805), WALL_T, 350 + WALL_T, 1), // west
+      makeWall(vec(-235, -630), 230 + WALL_T, WALL_T, 1), // south
+      makeWall(vec(-120, -805), WALL_T, 350 + WALL_T, 1), // east, along the cake edge
+    );
+    // stair rails, same reasoning as the west building's: cap the top end and
+    // the open east side's upper half at z=0, the whole east side at z=1
+    obstacles.push(
+      makeFence(vec(-204, -815), 14, 110, 0),
+      makeFence(vec(-280, -875), 110, 14, 0),
+      makeFence(vec(-204, -760), 14, 210, 1),
+    );
+
+    floors.push(
+      // ground-story interior: tower + stickout as one room
+      makeFloor(footprint.pos, footprint.w, footprint.h, "#a08050", {
+        level: 0,
+        visibleFrom: [0],
+      }),
+      // tower's second-story floor: its footprint minus the stairwell hole
+      makeFloor(vec(-157, -805), 106, 350 + 2 * EXT, "#c2a06e", { level: 1, visibleFrom: [1] }),
+      makeFloor(vec(-288, -933), 156, 126, "#c2a06e", { level: 1, visibleFrom: [1] }),
+      makeFloor(vec(-288, -642), 156, 56, "#c2a06e", { level: 1, visibleFrom: [1] }),
+      // the stickout's roof, one level below the tower's: visible from the
+      // ground and from the tower (the cake view) — hidden only from inside the
+      // ground story, which its own footprint can't express (hence hideWhenIn)
+      makeFloor(vec(23, -805), 286, 350 + 2 * EXT, "#96593f", {
+        level: 1,
+        visibleFrom: [0, 1],
+        hideWhenIn: [footprint],
+      }),
+      // the tower roof: same trigger — hidden from anywhere inside, z=0 or z=1
+      makeFloor(vec(-235, -805), 262, 350 + 2 * EXT, "#8a4f3d", {
+        level: 2,
+        visibleFrom: [0, 1],
+        hideWhenIn: [footprint],
+      }),
+    );
+
+    // interior staircase in the tower: north end is upstairs (z=1)
+    stairs.push(makeStairs(vec(-270, -770), 120, 200, "y", 1, 0, [0, 1], "#7c6034"));
   }
 
   // --- bunker (east) ---------------------------------------------------------

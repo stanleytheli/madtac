@@ -45,29 +45,33 @@ const player = new Character(vec(0, 0), DEFAULT_SKIN, {
   secondary: new Gun(Guns.M9),
   hand: new Gun(Guns.UNARMED),
 });
-const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: Guns.M16, delay:10})
+// const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: Guns.M16, delay:10})
 const enemy_0 = new Robot(vec(320, -260));
 const enemy_2 = new Robot(vec(450, -400));
 // Verticality demo guards: one in the balcony doorway (straddling the hidden
 // second story and the always-visible balcony — from the ground you see only
 // its balcony half), one in the sealed bunker, one in the open-air trench
-// (visible from the surface, unlike the bunker guard). They only engage (and
-// can only be hit) once you share their level.
+// (visible from the surface, unlike the bunker guard), and one under the cake
+// building's stickout — hidden by the lower roof from outside, revealed the
+// moment you step in the door (hideWhenIn clears the whole ground story). They
+// only engage (and can only be hit) once you share their level.
 const enemy_balcony = new Robot(vec(-640, -450), { z: 1, gun: Guns.M9 });
 const enemy_bunker = new Robot(vec(880, -140), { z: -1 });
 const enemy_trench = new Robot(vec(260, 480), { z: -1, gun: Guns.M9 });
+const enemy_cake = new Robot(vec(60, -720), { gun: Guns.M9 });
 
 // The elite wears armor, to show it off (and prove enemies use the same pipeline).
-enemy_1.equipArmor(new Armors.Armor(Armors.ARMOR_L3));
+// enemy_1.equipArmor(new Armors.Armor(Armors.ARMOR_L3));
 
 let characters: Character[] = [
   player,
   enemy_0,
-  enemy_1,
+  // enemy_1,
   enemy_2,
   enemy_balcony,
   enemy_bunker,
   enemy_trench,
+  enemy_cake,
 ];
 const bodies: Body[] = [];
 
