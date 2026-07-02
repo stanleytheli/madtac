@@ -13,6 +13,7 @@ import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
 import { dist, fromAngle, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import {
   createWorld,
+  enclosureCap,
   floorVisible,
   stairsVisible,
   stairZ,
@@ -49,15 +50,25 @@ const enemy_0 = new Robot(vec(320, -260));
 const enemy_2 = new Robot(vec(450, -400));
 // Verticality demo guards: one in the balcony doorway (straddling the hidden
 // second story and the always-visible balcony — from the ground you see only
-// its balcony half), one in the bunker. They only engage (and can only be hit)
-// once you share their level.
+// its balcony half), one in the sealed bunker, one in the open-air trench
+// (visible from the surface, unlike the bunker guard). They only engage (and
+// can only be hit) once you share their level.
 const enemy_balcony = new Robot(vec(-640, -450), { z: 1, gun: Guns.M9 });
 const enemy_bunker = new Robot(vec(880, -140), { z: -1 });
+const enemy_trench = new Robot(vec(260, 480), { z: -1, gun: Guns.M9 });
 
 // The elite wears armor, to show it off (and prove enemies use the same pipeline).
 enemy_1.equipArmor(new Armors.Armor(Armors.ARMOR_L3));
 
-let characters: Character[] = [player, enemy_0, enemy_1, enemy_2, enemy_balcony, enemy_bunker];
+let characters: Character[] = [
+  player,
+  enemy_0,
+  enemy_1,
+  enemy_2,
+  enemy_balcony,
+  enemy_bunker,
+  enemy_trench,
+];
 const bodies: Body[] = [];
 
 const world = createWorld();
@@ -85,12 +96,15 @@ const ZOOM_EASE = 0.12;
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 let interactable: GroundItem | null = null; // nearest reachable item this tick (for prompt + E)
 
-/** Nearest ground item on the player's level, within reach and line of sight. */
+/** Nearest ground item on the player's level, within reach and line of sight.
+ *  Items lying on a staircase are grabbable across levels — a gun dropped on
+ *  the upper flight shouldn't need item-falling physics to be reachable. */
 function findInteractable(): GroundItem | null {
   let best: GroundItem | null = null;
   let bestD = Infinity;
   for (const it of world.items) {
-    if (it.z !== player.z) continue; // can't grab across levels
+    const onStairs = world.stairs.some((s) => stairZ(s, it.pos) !== null);
+    if (it.z !== player.z && !onStairs) continue; // can't grab across levels
     const d = dist(player.pos, it.pos);
     if (d > PICKUP_RANGE || d >= bestD) continue;
     if (!hasLineOfSight(player.pos, it.pos, world.obstacles, player.z)) continue; // can't reach through walls
@@ -459,6 +473,9 @@ interface Rect {
 // render half-covered and every hidden room shows as a faint 1px outline.
 const MASK_EPS = 1.5;
 
+// Visible stairs mask generously, covering their edge-mounted railings.
+const STAIR_MASK_PAD = 10;
+
 /** Pieces of `a` not covered by `b` (0-4 rects). */
 function subtractRect(a: Rect, b: Rect): Rect[] {
   const ax1 = a.x + a.w;
@@ -539,7 +556,7 @@ function levelMasks(z: number): {
       addHidden(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
     }
   }
-  const PAD = 10; // visible stairs mask generously: covers edge-mounted railings
+  const PAD = STAIR_MASK_PAD;
   for (const s of world.stairs) {
     if (s.zAtMin !== z && s.zAtMax !== z) continue;
     if (stairsVisible(s, player.z)) {
@@ -566,9 +583,15 @@ function render(): void {
   const zoom = camera.size;
   const camPos = player.pos; // camera centers on the player
 
+  // The enclosure cap: inside a sealed room (a bunker under its ceiling), the
+  // world at the ceiling's level and above is hidden — background included.
+  const cap = enclosureCap(world.floors, player.z, player.pos);
+
   // Background: the visible infinite floor (the ground), or the underground
   // backdrop once you're below the surface and can't see it.
-  const bgFloor = world.floors.find((f) => f.infinite && floorVisible(f, player.z, player.pos));
+  const bgFloor = world.floors.find(
+    (f) => f.infinite && floorVisible(f, player.z, player.pos, cap),
+  );
   ctx.fillStyle = bgFloor ? bgFloor.color : player.z < 0 ? UNDERGROUND_BG : VOID_BG;
   ctx.fillRect(0, 0, w, h);
   const gridColor = bgFloor
@@ -604,7 +627,6 @@ function render(): void {
       if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01) drawStairs(s);
     }
 
-    const m = levelMasks(z);
     const drawObjects = (): void => {
       for (const o of world.obstacles) if (o.z === z) drawObstacle(o);
       for (const b of bodies) if (b.z === z) b.draw(ctx); // corpses under the living
@@ -613,6 +635,33 @@ function render(): void {
       drawBullets(z);
       drawParticles(ctx, world.particles, z);
     };
+
+    // At and above the enclosure cap the world is hidden, except through the
+    // stairwell shafts that pierce it — so from inside a bunker you still see
+    // someone coming down the stairs before they cross the midpoint.
+    if (z >= cap) {
+      let shaft: Path2D | null = null;
+      for (const s of world.stairs) {
+        if (s.zAtMin !== z && s.zAtMax !== z) continue;
+        if (!stairsVisible(s, player.z, cap)) continue; // its low end must be below the cap
+        shaft = shaft ?? new Path2D();
+        shaft.rect(
+          s.pos.x - s.w / 2 - STAIR_MASK_PAD,
+          s.pos.y - s.h / 2 - STAIR_MASK_PAD,
+          s.w + STAIR_MASK_PAD * 2,
+          s.h + STAIR_MASK_PAD * 2,
+        );
+      }
+      if (shaft) {
+        ctx.save();
+        ctx.clip(shaft);
+        drawObjects();
+        ctx.restore();
+      }
+      continue;
+    }
+
+    const m = levelMasks(z);
 
     if (m.visibleInf) {
       // A visible infinite floor (the ground) backs the whole level: no masking.

@@ -77,6 +77,12 @@ export interface Floor {
   visibleFrom: ZSet;
   /** Also hide it while the viewer is beneath it and inside its footprint (roofs). */
   hideWhenUnder?: boolean;
+  /** A solid ceiling: while the viewer is beneath it and inside its footprint,
+   *  the *whole world* at this level and above is hidden — background included
+   *  (see enclosureCap). This is the "sealed underground" rule: a bunker is
+   *  just a room at z=-1 whose enclosing ceiling sits at level 0, while an
+   *  open-air trench has no ceiling and keeps the surface world in view. */
+  enclosing?: boolean;
   /** Covers the whole map (the ground): drawn as the screen background, and its
    *  level needs no clip mask — everything at that level is backed by it. */
   infinite?: boolean;
@@ -125,6 +131,7 @@ export interface FloorOptions {
   level: number;
   visibleFrom: ZSet;
   hideWhenUnder?: boolean;
+  enclosing?: boolean;
   infinite?: boolean;
   grid?: string;
 }
@@ -166,14 +173,35 @@ export function stairZ(s: Stairs, p: Vec2): number | null {
   return t < 0.5 ? s.zAtMin : s.zAtMax;
 }
 
-/** Sharp floor visibility for a viewer: the z-set check, plus roof-style hiding. */
-export function floorVisible(f: Floor, viewerZ: number, viewerPos: Vec2): boolean {
+/**
+ * The viewer's enclosure cap: the lowest `enclosing` ceiling covering them from
+ * above, or Infinity in the open. Everything at or above the cap is hidden —
+ * background included — except what shows through stairwell shafts (see the
+ * render loop in main.ts). This is what distinguishes a sealed bunker from an
+ * open-air trench: both viewers are at z=-1, but only the bunker has a ceiling.
+ */
+export function enclosureCap(floors: readonly Floor[], viewerZ: number, viewerPos: Vec2): number {
+  let cap = Infinity;
+  for (const f of floors) {
+    if (!f.enclosing || viewerZ >= f.level || f.level >= cap) continue;
+    if (pointInBox(viewerPos, f)) cap = f.level;
+  }
+  return cap;
+}
+
+/** Sharp floor visibility for a viewer: the enclosure cap, the z-set check, and
+ *  roof-style hiding. */
+export function floorVisible(f: Floor, viewerZ: number, viewerPos: Vec2, cap = Infinity): boolean {
+  if (f.level >= cap) return false;
   if (!zsetHas(f.visibleFrom, viewerZ)) return false;
   if (f.hideWhenUnder && viewerZ < f.level && pointInBox(viewerPos, f)) return false;
   return true;
 }
 
-export function stairsVisible(s: Stairs, viewerZ: number): boolean {
+/** A staircase stays visible while any level it touches is below the cap (you
+ *  can see your bunker's exit stairs from inside). */
+export function stairsVisible(s: Stairs, viewerZ: number, cap = Infinity): boolean {
+  if (Math.min(s.zAtMin, s.zAtMax) >= cap) return false;
   return zsetHas(s.visibleFrom, viewerZ);
 }
 
@@ -186,10 +214,11 @@ const FADE_OUT_RATE = 0.1; // surface alpha lost per tick (~10 ticks per full fa
  * Disappearing ones get the eased fade-out, per the design.
  */
 export function updateSurfaceAlphas(w: World, viewerZ: number, viewerPos: Vec2, snap = false): void {
+  const cap = enclosureCap(w.floors, viewerZ, viewerPos);
   const ease = (alpha: number, target: number): number =>
     snap || target > alpha ? target : Math.max(target, alpha - FADE_OUT_RATE);
-  for (const f of w.floors) f.alpha = ease(f.alpha, floorVisible(f, viewerZ, viewerPos) ? 1 : 0);
-  for (const s of w.stairs) s.alpha = ease(s.alpha, stairsVisible(s, viewerZ) ? 1 : 0);
+  for (const f of w.floors) f.alpha = ease(f.alpha, floorVisible(f, viewerZ, viewerPos, cap) ? 1 : 0);
+  for (const s of w.stairs) s.alpha = ease(s.alpha, stairsVisible(s, viewerZ, cap) ? 1 : 0);
 }
 
 /**
@@ -246,17 +275,19 @@ export function createWorld(): World {
   ];
 
   const floors: Floor[] = [
-    // The ground itself: an infinite grass surface at z=0, seen from any z >= 0.
-    // (Drawn as the screen background; its level never needs a clip mask.)
+    // The ground itself: an infinite grass surface at z=0, seen from z >= -1 —
+    // including from open-air trenches one level down. Sealed bunkers hide it
+    // via their enclosing ceiling (the cap), not via this set. (Drawn as the
+    // screen background; its level never needs a clip mask.)
     makeFloor(vec(0, 0), 0, 0, "#70c575", {
       level: 0,
-      visibleFrom: { atLeast: 0 },
+      visibleFrom: { atLeast: -1 },
       infinite: true,
       grid: "#5ca76c",
     }),
     // decorative patches on the ground
-    makeFloor(vec(0, 0), 260, 260, "#46603f", { level: 0, visibleFrom: { atLeast: 0 } }),
-    makeFloor(vec(220, 220), 180, 180, "#5a4a6a", { level: 0, visibleFrom: { atLeast: 0 } }),
+    makeFloor(vec(0, 0), 260, 260, "#46603f", { level: 0, visibleFrom: { atLeast: -1 } }),
+    makeFloor(vec(220, 220), 180, 180, "#5a4a6a", { level: 0, visibleFrom: { atLeast: -1 } }),
   ];
 
   const stairs: Stairs[] = [];
@@ -297,9 +328,9 @@ export function createWorld(): World {
     // teleport you up a story. The lower half needs no rail — side-entering it
     // is z-consistent (you're just stepping onto the bottom of the flight).
     obstacles.push(
-      makeFence(vec(-1010, -425), 14, 110, 0),
+      makeFence(vec(-990, -425), 14, 110, 0),
       makeFence(vec(-1080, -485), 110, 14, 0),
-      makeFence(vec(-1010, -425), 14, 110, 1),
+      makeFence(vec(-990, -370), 14, 210, 1),
     );
 
     floors.push(
@@ -314,7 +345,7 @@ export function createWorld(): World {
       makeFloor(vec(-1088, -257), 156, 46, "#b99664", { level: 1, visibleFrom: [1] }),
       // the balcony: z=1, seen from the ground and from up there (the overhang);
       // extends slightly past its railings' outer faces
-      makeFloor(vec(-560, -450), 180, 180, "#b5ab97", { level: 1, visibleFrom: [0, 1] }),
+      makeFloor(vec(-550, -450), 170, 180, "#b5ab97", { level: 1, visibleFrom: [0, 1], hideWhenUnder: false }),
       // the roof: covers the walls too (but stops at the east wall line so it
       // doesn't overhang the balcony doorway); melts away while you're under it
       makeFloor(vec(-908, -450), 500 + EXT, 400 + 2 * EXT, "#8a4f3d", {
@@ -329,14 +360,22 @@ export function createWorld(): World {
   }
 
   // --- bunker (east) ---------------------------------------------------------
-  // Outdoor stairs descend north into an underground room at z=-1. While you're
-  // down there the ground isn't visible, so the underground backdrop takes over.
+  // A building sunk one level down: outdoor stairs descend north into a room at
+  // z=-1 whose "roof" is an *enclosing* ceiling at ground level. Step under it
+  // and the cap hides the entire surface world (underground backdrop takes
+  // over); from above (or from a trench) the ceiling seals the interior.
   {
     stairs.push(makeStairs(vec(700, 160), 120, 200, "y", -1, 0, [-1, 0], "#6e6e74"));
     floors.push(
       makeFloor(vec(760, -90), 480 + 2 * EXT, 300 + 2 * EXT, "#5b5e66", {
         level: -1,
         visibleFrom: [-1],
+      }),
+      // the ceiling: a dirt slab at ground level covering the room (not the stairs)
+      makeFloor(vec(760, -90), 480 + 2 * EXT, 300 + 2 * EXT, "#57503f", {
+        level: 0,
+        visibleFrom: { atLeast: -1 },
+        enclosing: true,
       }),
     );
     obstacles.push(
@@ -354,6 +393,40 @@ export function createWorld(): World {
       makeFence(vec(640, 160), 14, 200, -1),
       makeFence(vec(760, 160), 14, 200, 0),
       makeFence(vec(760, 160), 14, 200, -1),
+    );
+  }
+
+  // --- trench (south) --------------------------------------------------------
+  // An *open-air* dig at z=-1: no ceiling, so the cap never engages and the
+  // surface world stays visible from inside (and the trench floor is visible
+  // from above — you can look right down into it). Stairs descend eastward at
+  // the west end; fences rim the hole so nobody walks in off the grass.
+  {
+    stairs.push(makeStairs(vec(-50, 480), 200, 120, "x", 0, -1, [-1, 0], "#6e6349"));
+    floors.push(
+      makeFloor(vec(200, 480), 300 + 2 * EXT, 120 + 2 * EXT, "#7a5f3a", {
+        level: -1,
+        visibleFrom: { atLeast: -1 },
+      }),
+    );
+    // trench sides (z=-1) hold the occupants in...
+    obstacles.push(
+      makeWall(vec(200, 420), 300 + WALL_T, WALL_T, -1), // north
+      makeWall(vec(200, 540), 300 + WALL_T, WALL_T, -1), // south
+      makeWall(vec(350, 480), WALL_T, 120 + WALL_T, -1), // east
+    );
+    // ...and a fence rims the hole at ground level (shoot across, don't fall in)
+    obstacles.push(
+      makeFence(vec(200, 420), 300, 14, 0),
+      makeFence(vec(200, 540), 300, 14, 0),
+      makeFence(vec(350, 480), 14, 120, 0),
+    );
+    // stair rails, at both levels the flight touches
+    obstacles.push(
+      makeFence(vec(-50, 420), 200, 14, 0),
+      makeFence(vec(-50, 420), 200, 14, -1),
+      makeFence(vec(-50, 540), 200, 14, 0),
+      makeFence(vec(-50, 540), 200, 14, -1),
     );
   }
 
