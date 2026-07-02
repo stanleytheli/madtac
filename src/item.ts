@@ -120,13 +120,19 @@ export class GunItem implements GroundItem {
   vel: Vec2;
   z: number;
   readonly radius = ITEM_RADIUS;
-  readonly gun: Gun;
-  private readonly iconSrc: string;
+  gun: Gun;
+  private iconSrc: string;
 
   constructor(pos: Vec2, gun: Gun, vel: Vec2 = vec(0, 0), z = 0) {
     this.pos = pos;
     this.vel = vel;
     this.z = z;
+    this.gun = gun;
+    this.iconSrc = gun.spec.icon ? `/assets/${gun.spec.icon}.png` : "";
+  }
+
+  /** Swap which gun this pickup holds (used by the level editor's inspector). */
+  setGun(gun: Gun): void {
     this.gun = gun;
     this.iconSrc = gun.spec.icon ? `/assets/${gun.spec.icon}.png` : "";
   }
@@ -159,13 +165,19 @@ export class ArmorItem implements GroundItem {
   vel: Vec2;
   z: number;
   readonly radius = ARMOR_ITEM_RADIUS;
-  readonly armor: Armor;
-  private readonly iconSrc: string;
+  armor: Armor;
+  private iconSrc: string;
 
   constructor(pos: Vec2, armor: Armor, vel: Vec2 = vec(0, 0), z = 0) {
     this.pos = pos;
     this.vel = vel;
     this.z = z;
+    this.armor = armor;
+    this.iconSrc = `/assets/${armor.spec.icon}.png`;
+  }
+
+  /** Swap which armor this pickup holds (used by the level editor's inspector). */
+  setArmor(armor: Armor): void {
     this.armor = armor;
     this.iconSrc = `/assets/${armor.spec.icon}.png`;
   }

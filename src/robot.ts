@@ -1,8 +1,9 @@
 import { Character } from "./actor.ts";
+import { Armor, ARMOR_L3, type ArmorSpec } from "./armor.ts";
 import { BODY_RADIUS, type Skin } from "./character.ts";
 import { hasLineOfSight } from "./collision.ts";
 import { EnemyGun, Gun } from "./gun.ts";
-import { M16, UNARMED, type GunSpec } from "./guns.ts";
+import { M16, M9, UNARMED, type GunSpec } from "./guns.ts";
 import { angleOf, deg2rad, fromAngle, sub, vec, type Vec2 } from "./vec.ts";
 import type { World } from "./world.ts";
 
@@ -148,4 +149,39 @@ export class Robot extends Character {
     ];
     return points.some((pt) => hasLineOfSight(this.pos, pt, world.obstacles, this.z));
   }
+}
+
+// --- enemy flavours -----------------------------------------------------------
+// The named enemy types levels can spawn. This is the single place a new unique
+// enemy is registered: add an entry and it shows up in the level editor's
+// palette and in level strings (keyed by the record key) automatically.
+
+export interface EnemyTypeDef {
+  /** Human-readable name (editor palette / inspector dropdown). */
+  label: string;
+  /** Robot construction options; the spawn's z overrides options.z. */
+  options: RobotOptions;
+  /** Armor worn from the start, if any. */
+  armor?: ArmorSpec;
+  /** Marker color in the level editor. */
+  color: string;
+}
+
+export const ENEMY_TYPES: Record<string, EnemyTypeDef> = {
+  grunt: { label: "Grunt (M16)", options: {}, color: "#c94f4f" },
+  pistol: { label: "Grunt (M9)", options: { gun: M9 }, color: "#d9913d" },
+  elite: {
+    label: "Elite",
+    options: { health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: M16, delay: 10 },
+    armor: ARMOR_L3,
+    color: "#8a4ad0",
+  },
+};
+
+/** Instantiate a live Robot from a named enemy type at a position and level. */
+export function spawnEnemy(type: string, pos: Vec2, z: number): Robot {
+  const t = ENEMY_TYPES[type] ?? ENEMY_TYPES.grunt;
+  const r = new Robot(pos, { ...t.options, z });
+  if (t.armor) r.equipArmor(new Armor(t.armor));
+  return r;
 }

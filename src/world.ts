@@ -276,7 +276,7 @@ export interface World {
   particles: Particle[];
 }
 
-const WALL_T = 26; // shared wall thickness for the demo map
+export const WALL_T = 26; // shared wall thickness (demo map + editor defaults)
 
 export function createWorld(): World {
   const obstacles: Obstacle[] = [

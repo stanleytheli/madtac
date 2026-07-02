@@ -3,10 +3,13 @@ import * as Armors from "./armor.ts";
 import { Body } from "./body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
 import { hasLineOfSight, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
+import { Editor } from "./editor.ts";
 import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
 import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
-import { ELITE_ROBOT_SKIN, Robot } from "./robot.ts";
+import { loadLevel, type EnemySpawn } from "./level.ts";
+import { LEVEL } from "./levels.ts";
+import { Robot, spawnEnemy } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
 import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
@@ -45,53 +48,62 @@ const player = new Character(vec(0, 0), DEFAULT_SKIN, {
   secondary: new Gun(Guns.M9),
   hand: new Gun(Guns.UNARMED),
 });
-// const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: Guns.M16, delay:10})
-const enemy_0 = new Robot(vec(320, -260));
-const enemy_2 = new Robot(vec(450, -400));
-// Verticality demo guards: one in the balcony doorway (straddling the hidden
-// second story and the always-visible balcony — from the ground you see only
-// its balcony half), one in the sealed bunker, one in the open-air trench
-// (visible from the surface, unlike the bunker guard), and one under the cake
-// building's stickout — hidden by the lower roof from outside, revealed the
-// moment you step in the door (hideWhenIn clears the whole ground story). They
-// only engage (and can only be hit) once you share their level.
-const enemy_balcony = new Robot(vec(-640, -450), { z: 1, gun: Guns.M9 });
-const enemy_bunker = new Robot(vec(880, -140), { z: -1 });
-const enemy_trench = new Robot(vec(260, 480), { z: -1, gun: Guns.M9 });
-const enemy_cake = new Robot(vec(60, -720), { gun: Guns.M9 });
+// ?edit=true boots the level editor instead of the game: no enemies or combat,
+// the player noclips, and the editor drives the camera + all world mutation.
+const EDIT = new URLSearchParams(location.search).get("edit") === "true";
 
-// The elite wears armor, to show it off (and prove enemies use the same pipeline).
-// enemy_1.equipArmor(new Armors.Armor(Armors.ARMOR_L3));
+// The map: a saved level string from levels.ts if one is set (as exported by
+// the editor), otherwise the hand-coded demo map below.
+const loaded = LEVEL ? loadLevel(LEVEL) : null;
+const world = loaded ? loaded.world : createWorld();
 
-let characters: Character[] = [
-  player,
-  enemy_0,
-  // enemy_1,
-  enemy_2,
-  enemy_balcony,
-  enemy_bunker,
-  enemy_trench,
-  enemy_cake,
-];
+// Enemy spawns as *data* (type keys ENEMY_TYPES in robot.ts) so the editor can
+// read/write them like any other entity. The demo cast: two grunts in the open,
+// one in the balcony doorway (straddling the hidden second story and the
+// always-visible balcony — from the ground you see only its balcony half), one
+// in the sealed bunker, one in the open-air trench (visible from the surface,
+// unlike the bunker guard), and one under the cake building's stickout
+// (revealed the moment you step in the door). They only engage — and can only
+// be hit — once you share their level.
+const spawns: EnemySpawn[] = loaded
+  ? loaded.spawns
+  : [
+      { type: "grunt", pos: vec(320, -260), z: 0 },
+      { type: "grunt", pos: vec(450, -400), z: 0 },
+      // { type: "elite", pos: vec(-500, 0), z: 0 },
+      { type: "pistol", pos: vec(-640, -450), z: 1 },
+      { type: "grunt", pos: vec(880, -140), z: -1 },
+      { type: "pistol", pos: vec(260, 480), z: -1 },
+      { type: "pistol", pos: vec(60, -720), z: 0 },
+    ];
+
+let characters: Character[] = [player];
+if (!EDIT) {
+  for (const s of spawns) characters.push(spawnEnemy(s.type, vec(s.pos.x, s.pos.y), s.z));
+}
 const bodies: Body[] = [];
 
-const world = createWorld();
+// Demo pickups for the hand-coded map (a saved level carries its own items).
+if (!loaded) {
+  // Some guns lying around to pick up.
+  world.items.push(new GunItem(vec(-120, -80), new Gun(Guns.Deagle)));
+  world.items.push(new GunItem(vec(80, 120), new Gun(Guns.M249)));
 
-// Some guns lying around to pick up.
-world.items.push(new GunItem(vec(-120, -80), new Gun(Guns.Deagle)));
-world.items.push(new GunItem(vec(80, 120), new Gun(Guns.M249)));
+  // ...and some armor to try on.
+  world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L1)));
+  world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L2)));
+  world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L3)));
+  world.items.push(new ArmorItem(vec(170, -40), new Armors.Armor(Armors.ARMOR_L4)));
 
-// ...and some armor to try on.
-world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L1)));
-world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L2)));
-world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L3)));
-world.items.push(new ArmorItem(vec(170, -40), new Armors.Armor(Armors.ARMOR_L4)));
-
-// Bunker loot: worth braving the dark (and its guard) for.
-world.items.push(new GunItem(vec(760, -100), new Gun(Guns.Golden_Deagle), vec(0, 0), -1));
+  // Bunker loot: worth braving the dark (and its guard) for.
+  world.items.push(new GunItem(vec(760, -100), new Gun(Guns.Golden_Deagle), vec(0, 0), -1));
+}
 
 // Start surface fades at their correct values so nothing fades in on frame one.
 updateSurfaceAlphas(world, player.z, player.pos, true);
+
+// In edit mode the Editor owns input, camera zoom, and enemy spawn markers.
+const editor = EDIT ? new Editor({ world, spawns }, player, canvas) : null;
 
 // Camera: position follows the player; `size` eases toward the weapon's zoom.
 const camera = { size: player.gun.spec.zoom };
@@ -225,6 +237,12 @@ let qDown = false
 let rmbDown = false // right mouse button last tick, for click-edge detection
 
 function update(): void {
+  // Edit mode replaces the whole simulation: fly, edit, nothing shoots or ticks.
+  if (editor) {
+    editor.update();
+    return;
+  }
+
   const playerAlive = player.hp > 0;
   interactable = playerAlive ? findInteractable() : null;
 
@@ -584,7 +602,7 @@ function render(): void {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const center = screenCenter();
-  const zoom = camera.size;
+  const zoom = editor ? editor.zoom : camera.size; // editor: free wheel-zoom
   const camPos = player.pos; // camera centers on the player
 
   // The enclosure cap: inside a sealed room (a bunker under its ceiling), the
@@ -699,18 +717,23 @@ function render(): void {
     }
   }
 
+  // Editor overlay: snap grid, spawn markers, selection outline + handles.
+  editor?.drawWorld(ctx);
+
   ctx.restore();
 
-  drawHud(ctx, {
-    w,
-    h,
-    center,
-    player,
-    healthBar,
-    armorBar,
-    mouse,
-    interactableLabel: interactable ? interactable.label : null,
-  });
+  if (!editor) {
+    drawHud(ctx, {
+      w,
+      h,
+      center,
+      player,
+      healthBar,
+      armorBar,
+      mouse,
+      interactableLabel: interactable ? interactable.label : null,
+    });
+  }
 }
 
 function frame(now: number): void {
