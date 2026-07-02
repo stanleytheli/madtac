@@ -16,10 +16,12 @@ import { add, dist, norm, scale, vec, type Vec2 } from "./vec.ts";
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at
 // an integer z level. Floors are the *surfaces* of those levels: each declares
-// the set of viewer z values that can see it, and objects render clipped to the
-// union of their level's visible floors (see render() in main.ts). This is what
-// makes a character straddling a second story and its balcony show only the
-// balcony half to a viewer on the ground.
+// the set of viewer z values that can see it. Objects render everywhere EXCEPT
+// where a hidden surface at their own level backs them, with visible surfaces
+// winning where the two overlap (see render() in main.ts). So a character
+// straddling a hidden second story and its visible balcony loses only the
+// interior half, while anything over open air — a body overhanging the balcony
+// lip, a bullet flying off the deck — stays visible.
 
 /** The set of viewer z values a surface is visible from. */
 export type ZSet = readonly number[] | "all" | { atLeast: number } | { atMost: number };
@@ -58,9 +60,11 @@ export interface Obstacle {
 
 /**
  * A walkable surface at a z level. No collision of its own — it decides what the
- * viewer can see: objects at `level` only render where a visible floor (or
- * stairs) backs them. A roof is just a floor at the level above with
- * `hideWhenUnder`, so it melts away once you walk in beneath it.
+ * viewer can see: while *hidden*, it erases the objects at its level that it
+ * backs (a hidden second story swallows whoever's standing on it); while
+ * visible it protects them from other hidden surfaces it overlaps. A roof is
+ * just a floor at the level above with `hideWhenUnder`, so it melts away once
+ * you walk in beneath it.
  */
 export interface Floor {
   pos: Vec2; // center
@@ -294,6 +298,7 @@ export function createWorld(): World {
     // is z-consistent (you're just stepping onto the bottom of the flight).
     obstacles.push(
       makeFence(vec(-1010, -425), 14, 110, 0),
+      makeFence(vec(-1080, -485), 110, 14, 0),
       makeFence(vec(-1010, -425), 14, 110, 1),
     );
 

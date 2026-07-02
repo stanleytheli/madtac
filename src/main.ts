@@ -446,29 +446,115 @@ function presentLevels(): number[] {
   return [...set].sort((a, b) => a - b);
 }
 
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// Hidden rects grow by this before masking, so the clip's antialiased edge
+// falls just past content that sits flush against it (walls extend exactly to
+// the floor slab's edge) instead of on it — without this, boundary pixels
+// render half-covered and every hidden room shows as a faint 1px outline.
+const MASK_EPS = 1.5;
+
+/** Pieces of `a` not covered by `b` (0-4 rects). */
+function subtractRect(a: Rect, b: Rect): Rect[] {
+  const ax1 = a.x + a.w;
+  const ay1 = a.y + a.h;
+  const bx1 = b.x + b.w;
+  const by1 = b.y + b.h;
+  if (b.x >= ax1 || bx1 <= a.x || b.y >= ay1 || by1 <= a.y) return [a]; // no overlap
+  const out: Rect[] = [];
+  if (b.y > a.y) out.push({ x: a.x, y: a.y, w: a.w, h: b.y - a.y }); // band above b
+  if (by1 < ay1) out.push({ x: a.x, y: by1, w: a.w, h: ay1 - by1 }); // band below b
+  const midY = Math.max(a.y, b.y);
+  const midH = Math.min(ay1, by1) - midY;
+  if (b.x > a.x) out.push({ x: a.x, y: midY, w: b.x - a.x, h: midH }); // left of b
+  if (bx1 < ax1) out.push({ x: bx1, y: midY, w: ax1 - bx1, h: midH }); // right of b
+  return out;
+}
+
 /**
- * The clip region for objects at level `z`: the union of that level's surfaces
- * the player can currently see (floors + stairs touching the level). This is
- * what renders only the balcony half of a character straddling a hidden second
- * story. `exempt` = an infinite floor (the ground) backs the level, so nothing
- * needs clipping; null path without exemption = no visible surface at all.
+ * Rewrite `rects` as a disjoint set covering the same union. The subtractive
+ * mask uses an even-odd fill, where overlapping rects would cancel each other
+ * out — this makes any overlap (tiled floors, the MASK_EPS inflation) safe.
  */
-function levelClip(z: number): { exempt: boolean; path: Path2D | null } {
-  const path = new Path2D();
-  let any = false;
+function disjointRects(rects: readonly Rect[]): Rect[] {
+  const out: Rect[] = [];
+  for (const r of rects) {
+    let pieces: Rect[] = [r];
+    for (const d of out) {
+      pieces = pieces.flatMap((p) => subtractRect(p, d));
+      if (pieces.length === 0) break;
+    }
+    out.push(...pieces);
+  }
+  return out;
+}
+
+/**
+ * The mask geometry for objects at level `z`, from the player's viewpoint.
+ * Objects render everywhere EXCEPT where a *hidden* same-level surface backs
+ * them (subtractive), with visible surfaces winning where the two overlap — so
+ * a character straddling a hidden second story and a visible balcony loses only
+ * its interior half, while anything over open air (a body overhanging the
+ * balcony lip, a bullet flying off the deck) stays visible. Infinite floors
+ * (the ground) blanket their whole level instead of contributing rects.
+ */
+function levelMasks(z: number): {
+  visibleInf: boolean;
+  hiddenInf: boolean;
+  visible: Path2D | null;
+  hidden: Path2D | null;
+} {
+  let visibleInf = false;
+  let hiddenInf = false;
+  let visible: Path2D | null = null;
+  const hiddenRects: Rect[] = [];
+  const addVisible = (x: number, y: number, w: number, h: number): void => {
+    visible = visible ?? new Path2D();
+    visible.rect(x, y, w, h);
+  };
+  const addHidden = (x: number, y: number, w: number, h: number): void => {
+    // Inflated so the mask's AA edge clears flush content (see MASK_EPS).
+    hiddenRects.push({
+      x: x - MASK_EPS,
+      y: y - MASK_EPS,
+      w: w + MASK_EPS * 2,
+      h: h + MASK_EPS * 2,
+    });
+  };
+
   for (const f of world.floors) {
-    if (f.level !== z || !floorVisible(f, player.z, player.pos)) continue;
-    if (f.infinite) return { exempt: true, path: null };
-    path.rect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
-    any = true;
+    if (f.level !== z) continue;
+    const vis = floorVisible(f, player.z, player.pos);
+    if (f.infinite) {
+      if (vis) visibleInf = true;
+      else hiddenInf = true;
+    } else if (vis) {
+      addVisible(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+    } else {
+      addHidden(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+    }
   }
-  const PAD = 10; // stairs clip slightly generously: covers edge-mounted railings
+  const PAD = 10; // visible stairs mask generously: covers edge-mounted railings
   for (const s of world.stairs) {
-    if ((s.zAtMin !== z && s.zAtMax !== z) || !stairsVisible(s, player.z)) continue;
-    path.rect(s.pos.x - s.w / 2 - PAD, s.pos.y - s.h / 2 - PAD, s.w + PAD * 2, s.h + PAD * 2);
-    any = true;
+    if (s.zAtMin !== z && s.zAtMax !== z) continue;
+    if (stairsVisible(s, player.z)) {
+      addVisible(s.pos.x - s.w / 2 - PAD, s.pos.y - s.h / 2 - PAD, s.w + PAD * 2, s.h + PAD * 2);
+    } else {
+      addHidden(s.pos.x - s.w / 2, s.pos.y - s.h / 2, s.w, s.h);
+    }
   }
-  return { exempt: false, path: any ? path : null };
+
+  let hidden: Path2D | null = null;
+  if (hiddenRects.length > 0) {
+    hidden = new Path2D();
+    for (const r of disjointRects(hiddenRects)) hidden.rect(r.x, r.y, r.w, r.h);
+  }
+  return { visibleInf, hiddenInf, visible, hidden };
 }
 
 function render(): void {
@@ -499,11 +585,18 @@ function render(): void {
 
   drawGrid(camPos, center, w, h, zoom, gridColor);
 
+  // World-space rect covering the whole screen (padded): the outer boundary the
+  // subtractive masks punch their holes in.
+  const vpX = camPos.x - center.x * zoom - 64;
+  const vpY = camPos.y - center.y * zoom - 64;
+  const vpW = w * zoom + 128;
+  const vpH = h * zoom + 128;
+
   // Painter's order by level, lowest first: higher floors composite over lower
   // ones, so walking under a balcony puts it over your head for free.
   for (const z of presentLevels()) {
-    // Surfaces draw alpha-eased and unclipped: a fading roof lingers translucent
-    // while the objects it hid stay masked sharply by the clip below.
+    // Surfaces draw alpha-eased and unmasked: a fading roof lingers translucent
+    // while the objects it hid stay masked sharply below.
     for (const f of world.floors) {
       if (!f.infinite && f.level === z && f.alpha > 0.01) drawFloor(f);
     }
@@ -511,18 +604,46 @@ function render(): void {
       if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01) drawStairs(s);
     }
 
-    // Objects clip to their level's visible surfaces.
-    const clip = levelClip(z);
-    if (!clip.exempt && !clip.path) continue; // no visible surface -> unseeable
-    ctx.save();
-    if (clip.path) ctx.clip(clip.path);
-    for (const o of world.obstacles) if (o.z === z) drawObstacle(o);
-    for (const b of bodies) if (b.z === z) b.draw(ctx); // corpses under the living
-    for (const it of world.items) if (it.z === z) it.draw(ctx); // ground pickups
-    for (const c of characters) if (c.z === z) c.draw(ctx);
-    drawBullets(z);
-    drawParticles(ctx, world.particles, z);
-    ctx.restore();
+    const m = levelMasks(z);
+    const drawObjects = (): void => {
+      for (const o of world.obstacles) if (o.z === z) drawObstacle(o);
+      for (const b of bodies) if (b.z === z) b.draw(ctx); // corpses under the living
+      for (const it of world.items) if (it.z === z) it.draw(ctx); // ground pickups
+      for (const c of characters) if (c.z === z) c.draw(ctx);
+      drawBullets(z);
+      drawParticles(ctx, world.particles, z);
+    };
+
+    if (m.visibleInf) {
+      // A visible infinite floor (the ground) backs the whole level: no masking.
+      drawObjects();
+      continue;
+    }
+
+    // Pass A: draw everywhere except hidden-surface regions. An infinite hidden
+    // floor (the ground seen from underground) blankets the level: skip to B.
+    if (!m.hiddenInf) {
+      ctx.save();
+      if (m.hidden) {
+        const cut = new Path2D(m.hidden);
+        cut.rect(vpX, vpY, vpW, vpH);
+        ctx.clip(cut, "evenodd"); // viewport minus the hidden rects
+      }
+      drawObjects();
+      ctx.restore();
+    }
+
+    // Pass B: visible wins over hidden — redraw the parts pass A subtracted
+    // that a visible surface backs (the stairwell sliver seen from underground,
+    // doorway overlap strips). Consecutive clips intersect.
+    if (m.visible && (m.hiddenInf || m.hidden)) {
+      ctx.save();
+      ctx.clip(m.visible);
+      // Against an infinite hidden floor the intersection is just `visible`.
+      if (!m.hiddenInf && m.hidden) ctx.clip(m.hidden);
+      drawObjects();
+      ctx.restore();
+    }
   }
 
   ctx.restore();
