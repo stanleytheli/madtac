@@ -11,7 +11,17 @@ import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
 import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
 import { dist, fromAngle, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
-import { createWorld, updateBullets, type Floor, type Obstacle } from "./world.ts";
+import {
+  createWorld,
+  floorVisible,
+  stairsVisible,
+  stairZ,
+  updateBullets,
+  updateSurfaceAlphas,
+  type Floor,
+  type Obstacle,
+  type Stairs,
+} from "./world.ts";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
@@ -37,11 +47,17 @@ const player = new Character(vec(0, 0), DEFAULT_SKIN, {
 const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: Guns.M16, delay:10})
 const enemy_0 = new Robot(vec(320, -260));
 const enemy_2 = new Robot(vec(450, -400));
+// Verticality demo guards: one in the balcony doorway (straddling the hidden
+// second story and the always-visible balcony — from the ground you see only
+// its balcony half), one in the bunker. They only engage (and can only be hit)
+// once you share their level.
+const enemy_balcony = new Robot(vec(-640, -450), { z: 1, gun: Guns.M9 });
+const enemy_bunker = new Robot(vec(880, -140), { z: -1 });
 
 // The elite wears armor, to show it off (and prove enemies use the same pipeline).
 enemy_1.equipArmor(new Armors.Armor(Armors.ARMOR_L3));
 
-let characters: Character[] = [player, enemy_0, enemy_1, enemy_2];
+let characters: Character[] = [player, enemy_0, enemy_1, enemy_2, enemy_balcony, enemy_bunker];
 const bodies: Body[] = [];
 
 const world = createWorld();
@@ -56,6 +72,12 @@ world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L2)))
 world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L3)));
 world.items.push(new ArmorItem(vec(170, -40), new Armors.Armor(Armors.ARMOR_L4)));
 
+// Bunker loot: worth braving the dark (and its guard) for.
+world.items.push(new GunItem(vec(760, -100), new Gun(Guns.Golden_Deagle), vec(0, 0), -1));
+
+// Start surface fades at their correct values so nothing fades in on frame one.
+updateSurfaceAlphas(world, player.z, player.pos, true);
+
 // Camera: position follows the player; `size` eases toward the weapon's zoom.
 const camera = { size: player.gun.spec.zoom };
 const ZOOM_EASE = 0.12;
@@ -63,14 +85,15 @@ const ZOOM_EASE = 0.12;
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 let interactable: GroundItem | null = null; // nearest reachable item this tick (for prompt + E)
 
-/** Nearest ground item within reach and with a clear line of sight, or null. */
+/** Nearest ground item on the player's level, within reach and line of sight. */
 function findInteractable(): GroundItem | null {
   let best: GroundItem | null = null;
   let bestD = Infinity;
   for (const it of world.items) {
+    if (it.z !== player.z) continue; // can't grab across levels
     const d = dist(player.pos, it.pos);
     if (d > PICKUP_RANGE || d >= bestD) continue;
-    if (!hasLineOfSight(player.pos, it.pos, world.obstacles)) continue; // can't reach through walls
+    if (!hasLineOfSight(player.pos, it.pos, world.obstacles, player.z)) continue; // can't reach through walls
     best = it;
     bestD = d;
   }
@@ -92,10 +115,10 @@ function pickUp(item: GroundItem): void {
   if (item instanceof GunItem) {
     const dropped = player.holster(item.gun);
     // Physics slides the tossed item clear of anything it might spawn inside of.
-    if (dropped) world.items.push(new GunItem(here(), dropped, tossVel()));
+    if (dropped) world.items.push(new GunItem(here(), dropped, tossVel(), player.z));
   } else if (item instanceof ArmorItem) {
     const prev = player.equipArmor(item.armor);
-    if (prev) world.items.push(new ArmorItem(here(), prev, tossVel()));
+    if (prev) world.items.push(new ArmorItem(here(), prev, tossVel(), player.z));
   }
   interactable = null;
 }
@@ -105,7 +128,7 @@ function dropEquippedWeapon(): void {
   const dropped = player.dropEquipped();
   if (!dropped) return;
   const vel = fromAngle(Math.random() * Math.PI * 2, 9.5);
-  world.items.push(new GunItem(vec(player.pos.x, player.pos.y), dropped, vel));
+  world.items.push(new GunItem(vec(player.pos.x, player.pos.y), dropped, vel, player.z));
 }
 
 /** Drop whatever the player right-clicked in the HUD: a specific weapon slot, or
@@ -114,10 +137,10 @@ function dropFromHud(kind: SlotKind): void {
   const at = vec(player.pos.x, player.pos.y);
   if (kind === "armor") {
     const a = player.dropArmor();
-    if (a) world.items.push(new ArmorItem(at, a, tossVel()));
+    if (a) world.items.push(new ArmorItem(at, a, tossVel(), player.z));
   } else {
     const g = player.dropSlot(kind);
-    if (g) world.items.push(new GunItem(at, g, tossVel()));
+    if (g) world.items.push(new GunItem(at, g, tossVel(), player.z));
   }
 }
 
@@ -142,11 +165,15 @@ let last = performance.now();
 
 function resolvePlayerCollisions(): void {
   let pos = player.pos;
-  // Two passes so corners (crate + crate, or crate + character) settle.
+  // Two passes so corners (crate + crate, or crate + character) settle. Only
+  // things on the player's level are solid to them.
   for (let i = 0; i < 2; i++) {
-    for (const o of world.obstacles) pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+    for (const o of world.obstacles) {
+      if (o.z !== player.z) continue;
+      pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+    }
     for (const other of characters) {
-      if (other === player) continue;
+      if (other === player || other.z !== player.z) continue;
       pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
     }
   }
@@ -158,14 +185,14 @@ function reapDead(): void {
   for (let i = characters.length - 1; i >= 0; i--) {
     const c = characters[i];
     if (c.hp <= 0) {
-      // Scatter the dead character's weapons from its body.
+      // Scatter the dead character's weapons from its body, on its level.
       for (const gun of c.dropWeapons()) {
         const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
-        world.items.push(new GunItem(vec(c.pos.x, c.pos.y), gun, vel));
+        world.items.push(new GunItem(vec(c.pos.x, c.pos.y), gun, vel, c.z));
       }
       const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
       const a = c.dropArmor()
-      if (a) world.items.push(new ArmorItem(vec(c.pos.x, c.pos.y), a, vel));
+      if (a) world.items.push(new ArmorItem(vec(c.pos.x, c.pos.y), a, vel, c.z));
 
       bodies.push(Body.fromCharacter(c));
       characters.splice(i, 1);
@@ -232,6 +259,18 @@ function update(): void {
     resolvePlayerCollisions();
   }
 
+  // Stair transitions: crossing a staircase's midpoint flips your level (sharp,
+  // by design — the visual ramp comes from the step gradient, not easing).
+  for (const c of characters) {
+    for (const s of world.stairs) {
+      const z = stairZ(s, c.pos);
+      if (z !== null) c.z = z;
+    }
+  }
+
+  // Surface fades (roofs melting away, floors of other levels) chase the view.
+  updateSurfaceAlphas(world, player.z, player.pos);
+
   for (const c of characters) c.tickWeapon();
 
   // Player firing: held trigger for auto, click edge for semi.
@@ -243,9 +282,9 @@ function update(): void {
   prevDown = pointer.down;
 
   // Enemy AI: look for the player and shoot.
-  if (enemy_0.hp > 0) enemy_0.think(world, player);
-  if (enemy_1.hp > 0) enemy_1.think(world, player);
-  if (enemy_2.hp > 0) enemy_2.think(world, player);
+  for (const c of characters) {
+    if (c instanceof Robot && c.hp > 0) c.think(world, player);
+  }
 
   updateBullets(world, characters);
 
@@ -257,14 +296,21 @@ function update(): void {
 
 const GRID = 512;
 // Draw the grid covering the (zoom-enlarged) visible world region.
-function drawGrid(camPos: Vec2, center: Vec2, w: number, h: number, zoom: number): void {
+function drawGrid(
+  camPos: Vec2,
+  center: Vec2,
+  w: number,
+  h: number,
+  zoom: number,
+  color: string,
+): void {
   // Screen edges mapped back to world: world = (screenPx - center) * zoom + camPos.
   const left = camPos.x - center.x * zoom;
   const right = camPos.x + (w - center.x) * zoom;
   const top = camPos.y - center.y * zoom;
   const bottom = camPos.y + (h - center.y) * zoom;
 
-  ctx.strokeStyle = "#5ca76c";
+  ctx.strokeStyle = color;
   ctx.lineWidth = zoom; // 1/zoom context scale -> ~1px on screen
   ctx.beginPath();
   for (let x = Math.ceil(left / GRID) * GRID; x <= right; x += GRID) {
@@ -279,8 +325,43 @@ function drawGrid(camPos: Vec2, center: Vec2, w: number, h: number, zoom: number
 }
 
 function drawFloor(fl: Floor): void {
+  ctx.save();
+  ctx.globalAlpha = fl.alpha; // eased: floors fade out as they stop being visible
   ctx.fillStyle = fl.color;
   ctx.fillRect(fl.pos.x - fl.w / 2, fl.pos.y - fl.h / 2, fl.w, fl.h);
+  ctx.restore();
+}
+
+/** Mix a #rrggbb color toward white by `t` (0..1). */
+function lighten(hex: string, t: number): string {
+  const h = hex.replace("#", "");
+  const ch = (i: number) => {
+    const v = parseInt(h.slice(i, i + 2), 16);
+    return Math.round(v + (255 - v) * t);
+  };
+  return `rgb(${ch(0)}, ${ch(2)}, ${ch(4)})`;
+}
+
+// Stairs render as a run of step rectangles whose color lightens toward the
+// higher end, so the climb reads at a glance.
+function drawStairs(s: Stairs): void {
+  ctx.save();
+  ctx.globalAlpha = s.alpha;
+  const minx = s.pos.x - s.w / 2;
+  const miny = s.pos.y - s.h / 2;
+  for (let i = 0; i < s.steps; i++) {
+    // 0..1 from the min end to the max end, flipped so the higher-z end is lightest.
+    const frac = (i + 0.5) / s.steps;
+    const up = s.zAtMax > s.zAtMin ? frac : 1 - frac;
+    ctx.fillStyle = lighten(s.color, up * 0.5);
+    // +0.5 px of overlap per slice hides hairline seams between steps.
+    if (s.axis === "x") {
+      ctx.fillRect(minx + (i * s.w) / s.steps, miny, s.w / s.steps + 0.5, s.h);
+    } else {
+      ctx.fillRect(minx, miny + (i * s.h) / s.steps, s.w, s.h / s.steps + 0.5);
+    }
+  }
+  ctx.restore();
 }
 
 function drawObstacle(o: Obstacle): void {
@@ -311,9 +392,10 @@ function rgbTriple(hex: string): string {
   return `${r},${g},${b}`;
 }
 
-function drawBullets(): void {
+function drawBullets(z: number): void {
   ctx.lineCap = "round";
   for (const b of world.bullets) {
+    if (b.z !== z) continue; // each level's render pass draws its own tracers
     // Only draw the part of the tracer that has cleared the muzzle.
     const traveled = dist(b.pos, b.origin);
     if (traveled <= b.renderAfter) continue;
@@ -340,6 +422,54 @@ function drawBullets(): void {
   }
 }
 
+// The backdrop when the surface world isn't visible: dark-brown "underground"
+// dirt for below-ground levels, near-black void otherwise (shouldn't happen).
+const UNDERGROUND_BG = "#3f3226";
+const UNDERGROUND_GRID = "#4b3d2d";
+const VOID_BG = "#22262a";
+const VOID_GRID = "#2b3034";
+
+/** Every z level with anything to draw this frame, ascending (lowest first). */
+function presentLevels(): number[] {
+  const set = new Set<number>();
+  for (const f of world.floors) if (!f.infinite) set.add(f.level);
+  for (const s of world.stairs) {
+    set.add(s.zAtMin);
+    set.add(s.zAtMax);
+  }
+  for (const o of world.obstacles) set.add(o.z);
+  for (const b of bodies) set.add(b.z);
+  for (const it of world.items) set.add(it.z);
+  for (const c of characters) set.add(c.z);
+  for (const b of world.bullets) set.add(b.z);
+  for (const p of world.particles) set.add(p.z);
+  return [...set].sort((a, b) => a - b);
+}
+
+/**
+ * The clip region for objects at level `z`: the union of that level's surfaces
+ * the player can currently see (floors + stairs touching the level). This is
+ * what renders only the balcony half of a character straddling a hidden second
+ * story. `exempt` = an infinite floor (the ground) backs the level, so nothing
+ * needs clipping; null path without exemption = no visible surface at all.
+ */
+function levelClip(z: number): { exempt: boolean; path: Path2D | null } {
+  const path = new Path2D();
+  let any = false;
+  for (const f of world.floors) {
+    if (f.level !== z || !floorVisible(f, player.z, player.pos)) continue;
+    if (f.infinite) return { exempt: true, path: null };
+    path.rect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+    any = true;
+  }
+  for (const s of world.stairs) {
+    if ((s.zAtMin !== z && s.zAtMax !== z) || !stairsVisible(s, player.z)) continue;
+    path.rect(s.pos.x - s.w / 2, s.pos.y - s.h / 2, s.w, s.h);
+    any = true;
+  }
+  return { exempt: false, path: any ? path : null };
+}
+
 function render(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -349,9 +479,16 @@ function render(): void {
   const zoom = camera.size;
   const camPos = player.pos; // camera centers on the player
 
-  // Background fill (unscaled, always covers the screen).
-  ctx.fillStyle = "#70c575";
+  // Background: the visible infinite floor (the ground), or the underground
+  // backdrop once you're below the surface and can't see it.
+  const bgFloor = world.floors.find((f) => f.infinite && floorVisible(f, player.z, player.pos));
+  ctx.fillStyle = bgFloor ? bgFloor.color : player.z < 0 ? UNDERGROUND_BG : VOID_BG;
   ctx.fillRect(0, 0, w, h);
+  const gridColor = bgFloor
+    ? (bgFloor.grid ?? "#5ca76c")
+    : player.z < 0
+      ? UNDERGROUND_GRID
+      : VOID_GRID;
 
   // Camera transform: world -> screen, scaled by 1/zoom around the screen center.
   ctx.save();
@@ -359,17 +496,33 @@ function render(): void {
   ctx.scale(1 / zoom, 1 / zoom);
   ctx.translate(-camPos.x, -camPos.y);
 
-  drawGrid(camPos, center, w, h, zoom);
-  for (const fl of world.floors) drawFloor(fl); // decorative ground, under everything
-  for (const o of world.obstacles) drawObstacle(o);
-  for (const b of bodies) b.draw(ctx); // corpses lie under the living
+  drawGrid(camPos, center, w, h, zoom, gridColor);
 
-  for (const it of world.items) it.draw(ctx); // ground pickups
+  // Painter's order by level, lowest first: higher floors composite over lower
+  // ones, so walking under a balcony puts it over your head for free.
+  for (const z of presentLevels()) {
+    // Surfaces draw alpha-eased and unclipped: a fading roof lingers translucent
+    // while the objects it hid stay masked sharply by the clip below.
+    for (const f of world.floors) {
+      if (!f.infinite && f.level === z && f.alpha > 0.01) drawFloor(f);
+    }
+    for (const s of world.stairs) {
+      if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01) drawStairs(s);
+    }
 
-  for (const c of characters) c.draw(ctx);
-
-  drawBullets();
-  drawParticles(ctx, world.particles);
+    // Objects clip to their level's visible surfaces.
+    const clip = levelClip(z);
+    if (!clip.exempt && !clip.path) continue; // no visible surface -> unseeable
+    ctx.save();
+    if (clip.path) ctx.clip(clip.path);
+    for (const o of world.obstacles) if (o.z === z) drawObstacle(o);
+    for (const b of bodies) if (b.z === z) b.draw(ctx); // corpses under the living
+    for (const it of world.items) if (it.z === z) it.draw(ctx); // ground pickups
+    for (const c of characters) if (c.z === z) c.draw(ctx);
+    drawBullets(z);
+    drawParticles(ctx, world.particles, z);
+    ctx.restore();
+  }
 
   ctx.restore();
 

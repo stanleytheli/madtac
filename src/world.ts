@@ -13,14 +13,36 @@ import type { GroundItem } from "./item.ts";
 import type { ArmorPen } from "./guns.ts";
 import { add, dist, norm, scale, vec, type Vec2 } from "./vec.ts";
 
+// --- verticality ------------------------------------------------------------
+// Everything in the world (characters, obstacles, items, bullets, ...) lives at
+// an integer z level. Floors are the *surfaces* of those levels: each declares
+// the set of viewer z values that can see it, and objects render clipped to the
+// union of their level's visible floors (see render() in main.ts). This is what
+// makes a character straddling a second story and its balcony show only the
+// balcony half to a viewer on the ground.
+
+/** The set of viewer z values a surface is visible from. */
+export type ZSet = readonly number[] | "all" | { atLeast: number } | { atMost: number };
+
+export function zsetHas(s: ZSet, z: number): boolean {
+  if (s === "all") return true;
+  if (Array.isArray(s)) return (s as readonly number[]).includes(z);
+  // A range: one of atLeast/atMost is present (Array.isArray can't narrow
+  // readonly arrays out of the union, hence the cast).
+  const r = s as { atLeast?: number; atMost?: number };
+  return r.atLeast !== undefined ? z >= r.atLeast : z <= r.atMost!;
+}
+
 /**
- * A solid, axis-aligned box that blocks movement, bullets, and line of sight.
- * Crates and walls are both Obstacles, differing only in appearance + shrapnel.
+ * A solid, axis-aligned box that blocks movement, bullets, and line of sight —
+ * but only against things on its own z level. Crates and walls are both
+ * Obstacles, differing only in appearance + shrapnel.
  */
 export interface Obstacle {
   pos: Vec2; // center
   w: number;
   h: number;
+  z: number; // the level it sits on
   // appearance
   fill: string;
   stroke: string;
@@ -30,24 +52,127 @@ export interface Obstacle {
   particle: ParticleStyle;
 }
 
-/** Purely decorative ground patch. No collision with anything; drawn under objects. */
+/**
+ * A walkable surface at a z level. No collision of its own — it decides what the
+ * viewer can see: objects at `level` only render where a visible floor (or
+ * stairs) backs them. A roof is just a floor at the level above with
+ * `hideWhenUnder`, so it melts away once you walk in beneath it.
+ */
 export interface Floor {
   pos: Vec2; // center
   w: number;
   h: number;
   color: string;
+  /** The z level the surface physically sits at. */
+  level: number;
+  /** Which viewer z values can see it (e.g. a balcony: [0, 1]; the ground: z >= 0). */
+  visibleFrom: ZSet;
+  /** Also hide it while the viewer is beneath it and inside its footprint (roofs). */
+  hideWhenUnder?: boolean;
+  /** Covers the whole map (the ground): drawn as the screen background, and its
+   *  level needs no clip mask — everything at that level is backed by it. */
+  infinite?: boolean;
+  /** Grid line color when this is drawn as the background (infinite floors). */
+  grid?: string;
+  /** Eased render opacity: fades toward 1 while visible, 0 while not. */
+  alpha: number;
 }
 
-export function makeCrate(pos: Vec2, w: number, h: number): Obstacle {
-  return { pos, w, h, fill: "#92632d", stroke: "#412b04", strokeWidth: 9, cross: true, particle: CRATE_SHRAPNEL };
+/**
+ * A staircase connecting two z levels across its rect. Characters crossing the
+ * midpoint flip z sharply (by design). Rendered as `steps` slices whose color
+ * lightens toward the higher end; joins the clip mask of both levels it touches.
+ */
+export interface Stairs {
+  pos: Vec2; // center
+  w: number;
+  h: number;
+  /** The axis you climb along; z changes as you cross the rect's midpoint. */
+  axis: "x" | "y";
+  /** z at the min-coordinate end / max-coordinate end along `axis`. */
+  zAtMin: number;
+  zAtMax: number;
+  visibleFrom: ZSet;
+  steps: number;
+  /** Base step color; steps lighten toward the higher-z end. */
+  color: string;
+  /** Eased render opacity, like a floor's. */
+  alpha: number;
 }
 
-export function makeWall(pos: Vec2, w: number, h: number): Obstacle {
-  return { pos, w, h, fill: "#6b7076", stroke: "#3a3d40", strokeWidth: 6, cross: false, particle: WALL_SHRAPNEL };
+export function makeCrate(pos: Vec2, w: number, h: number, z = 0): Obstacle {
+  return { pos, w, h, z, fill: "#92632d", stroke: "#412b04", strokeWidth: 9, cross: true, particle: CRATE_SHRAPNEL };
 }
 
-export function makeFloor(pos: Vec2, w: number, h: number, color: string): Floor {
-  return { pos, w, h, color };
+export function makeWall(pos: Vec2, w: number, h: number, z = 0): Obstacle {
+  return { pos, w, h, z, fill: "#6b7076", stroke: "#3a3d40", strokeWidth: 6, cross: false, particle: WALL_SHRAPNEL };
+}
+
+export interface FloorOptions {
+  level: number;
+  visibleFrom: ZSet;
+  hideWhenUnder?: boolean;
+  infinite?: boolean;
+  grid?: string;
+}
+
+export function makeFloor(
+  pos: Vec2,
+  w: number,
+  h: number,
+  color: string,
+  opts: FloorOptions = { level: 0, visibleFrom: { atLeast: 0 } },
+): Floor {
+  return { pos, w, h, color, alpha: 1, ...opts };
+}
+
+export function makeStairs(
+  pos: Vec2,
+  w: number,
+  h: number,
+  axis: "x" | "y",
+  zAtMin: number,
+  zAtMax: number,
+  visibleFrom: ZSet,
+  color: string,
+  steps = 8,
+): Stairs {
+  return { pos, w, h, axis, zAtMin, zAtMax, visibleFrom, color, steps, alpha: 1 };
+}
+
+/**
+ * The z a point standing on these stairs belongs to, or null if it's outside the
+ * stair rect. Sharp: the near half of the rect is one level, the far half the
+ * other, so walking across the midpoint is the transition.
+ */
+export function stairZ(s: Stairs, p: Vec2): number | null {
+  const minx = s.pos.x - s.w / 2;
+  const miny = s.pos.y - s.h / 2;
+  if (p.x < minx || p.x > minx + s.w || p.y < miny || p.y > miny + s.h) return null;
+  const t = s.axis === "x" ? (p.x - minx) / s.w : (p.y - miny) / s.h;
+  return t < 0.5 ? s.zAtMin : s.zAtMax;
+}
+
+/** Sharp floor visibility for a viewer: the z-set check, plus roof-style hiding. */
+export function floorVisible(f: Floor, viewerZ: number, viewerPos: Vec2): boolean {
+  if (!zsetHas(f.visibleFrom, viewerZ)) return false;
+  if (f.hideWhenUnder && viewerZ < f.level && pointInBox(viewerPos, f)) return false;
+  return true;
+}
+
+export function stairsVisible(s: Stairs, viewerZ: number): boolean {
+  return zsetHas(s.visibleFrom, viewerZ);
+}
+
+const FADE_RATE = 0.1; // surface alpha change per tick (~10 ticks per full fade)
+
+/** Ease every surface's alpha toward its sharp visibility. `snap` jumps straight
+ *  there (used once at startup so nothing fades in on the first frame). */
+export function updateSurfaceAlphas(w: World, viewerZ: number, viewerPos: Vec2, snap = false): void {
+  const ease = (alpha: number, target: number): number =>
+    snap ? target : alpha + Math.sign(target - alpha) * Math.min(FADE_RATE, Math.abs(target - alpha));
+  for (const f of w.floors) f.alpha = ease(f.alpha, floorVisible(f, viewerZ, viewerPos) ? 1 : 0);
+  for (const s of w.stairs) s.alpha = ease(s.alpha, stairsVisible(s, viewerZ) ? 1 : 0);
 }
 
 /**
@@ -56,6 +181,7 @@ export function makeFloor(pos: Vec2, w: number, h: number, color: string): Floor
  */
 export interface Hittable {
   pos: Vec2;
+  z: number;
   registerHit(dir: Vec2, point: Vec2, damage: number, armorPen: ArmorPen): void;
 }
 
@@ -63,6 +189,7 @@ export interface Bullet {
   pos: Vec2;
   prev: Vec2; // position last tick (for tracer drawing)
   vel: Vec2;
+  z: number; // the shooter's level: only hits obstacles/characters on it
   life: number; // ticks remaining
   origin: Vec2; // spawn position (head center)
   renderAfter: number; // don't draw until this far from origin (hides it inside the gun)
@@ -77,15 +204,18 @@ export interface Bullet {
 /** Static map data plus live projectiles, particle debris, and ground items. */
 export interface World {
   obstacles: Obstacle[]; // solid: crates + walls
-  floors: Floor[]; // decorative, no collision
+  floors: Floor[]; // walkable surfaces (incl. the infinite ground) + roofs
+  stairs: Stairs[]; // z-level connectors
   items: GroundItem[]; // pickups lying on the ground
   bullets: Bullet[];
   particles: Particle[];
 }
 
+const WALL_T = 26; // shared wall thickness for the demo map
+
 export function createWorld(): World {
   const obstacles: Obstacle[] = [
-    // crates
+    // crates (outdoors, z=0)
     makeCrate(vec(160, -120), 64, 64),
     makeCrate(vec(240, -120), 64, 64),
     makeCrate(vec(-200, 80), 80, 80),
@@ -99,11 +229,84 @@ export function createWorld(): World {
   ];
 
   const floors: Floor[] = [
-    makeFloor(vec(0, 0), 260, 260, "#46603f"),
-    makeFloor(vec(220, 220), 180, 180, "#5a4a6a"),
+    // The ground itself: an infinite grass surface at z=0, seen from any z >= 0.
+    // (Drawn as the screen background; its level never needs a clip mask.)
+    makeFloor(vec(0, 0), 0, 0, "#70c575", {
+      level: 0,
+      visibleFrom: { atLeast: 0 },
+      infinite: true,
+      grid: "#5ca76c",
+    }),
+    // decorative patches on the ground
+    makeFloor(vec(0, 0), 260, 260, "#46603f", { level: 0, visibleFrom: { atLeast: 0 } }),
+    makeFloor(vec(220, 220), 180, 180, "#5a4a6a", { level: 0, visibleFrom: { atLeast: 0 } }),
   ];
 
-  return { obstacles, floors, items: [], bullets: [], particles: [] };
+  const stairs: Stairs[] = [];
+
+  // --- two-story building (west) --------------------------------------------
+  // Footprint x:[-1150,-650], y:[-650,-250]. Interior stairs on the west side
+  // climb z 0 -> 1; a balcony pokes out the east face at z=1, visible from
+  // everywhere; the roof (a floor at z=2) fades out while you're inside.
+  {
+    // ground floor (z=0): walls with a door gap on the south face x:[-830,-750]
+    obstacles.push(
+      makeWall(vec(-900, -650), 500 + WALL_T, WALL_T, 0), // north
+      makeWall(vec(-1150, -450), WALL_T, 400 + WALL_T, 0), // west
+      makeWall(vec(-650, -450), WALL_T, 400 + WALL_T, 0), // east
+      makeWall(vec(-990, -250), 320, WALL_T, 0), // south, west of the door
+      makeWall(vec(-700, -250), 100, WALL_T, 0), // south, east of the door
+    );
+    // second story (z=1): same perimeter, balcony door gap on the east y:[-490,-410]
+    obstacles.push(
+      makeWall(vec(-900, -650), 500 + WALL_T, WALL_T, 1), // north
+      makeWall(vec(-1150, -450), WALL_T, 400 + WALL_T, 1), // west
+      makeWall(vec(-900, -250), 500 + WALL_T, WALL_T, 1), // south (no door up here)
+      makeWall(vec(-650, -570), WALL_T, 160, 1), // east, north of the balcony door
+      makeWall(vec(-650, -330), WALL_T, 160, 1), // east, south of the balcony door
+      // balcony railings (thin, on the balcony's outer edges)
+      makeWall(vec(-565, -530), 170, 14, 1), // north railing
+      makeWall(vec(-565, -370), 170, 14, 1), // south railing
+      makeWall(vec(-480, -450), 14, 174, 1), // east railing
+    );
+
+    floors.push(
+      // ground-floor interior (hidden by the roof until you walk in)
+      makeFloor(vec(-900, -450), 500, 400, "#9c7444", { level: 0, visibleFrom: [0] }),
+      // second-story floor: the footprint minus the stairwell hole (three rects)
+      makeFloor(vec(-840, -450), 380, 400, "#a9834f", { level: 1, visibleFrom: [1] }),
+      makeFloor(vec(-1090, -565), 120, 170, "#a9834f", { level: 1, visibleFrom: [1] }),
+      makeFloor(vec(-1090, -265), 120, 30, "#a9834f", { level: 1, visibleFrom: [1] }),
+      // the balcony: lives at z=1 but is visible from every level (the overhang)
+      makeFloor(vec(-565, -450), 170, 160, "#b5ab97", { level: 1, visibleFrom: "all" }),
+      // the roof: covers the footprint, melts away while you're anywhere under it
+      makeFloor(vec(-900, -450), 500, 400, "#8a4f3d", {
+        level: 2,
+        visibleFrom: [0, 1],
+        hideWhenUnder: true,
+      }),
+    );
+
+    // interior staircase along the west wall: north end is upstairs (z=1)
+    stairs.push(makeStairs(vec(-1080, -380), 100, 200, "y", 1, 0, [0, 1], "#7c6034"));
+  }
+
+  // --- bunker (east) ---------------------------------------------------------
+  // Outdoor stairs descend north into an underground room at z=-1. While you're
+  // down there the ground isn't visible, so the underground backdrop takes over.
+  {
+    stairs.push(makeStairs(vec(700, 160), 100, 200, "y", -1, 0, [-1, 0], "#6e6e74"));
+    floors.push(makeFloor(vec(760, -90), 480, 300, "#5b5e66", { level: -1, visibleFrom: [-1] }));
+    obstacles.push(
+      makeWall(vec(760, -240), 480 + WALL_T, WALL_T, -1), // north
+      makeWall(vec(520, -90), WALL_T, 300 + WALL_T, -1), // west
+      makeWall(vec(1000, -90), WALL_T, 300 + WALL_T, -1), // east
+      makeWall(vec(585, 60), 130, WALL_T, -1), // south, west of the stair opening
+      makeWall(vec(875, 60), 250, WALL_T, -1), // south, east of the stair opening
+    );
+  }
+
+  return { obstacles, floors, stairs, items: [], bullets: [], particles: [] };
 }
 
 const BACKOUT_STEPS = 10; // max steps to walk a bullet out of what it hit
@@ -130,7 +333,8 @@ const SUBSTEPS = 10; // sub-tick collision samples along each bullet's path
  * at SUBSTEPS points along the path this tick (not just at the endpoint).
  *
  * `targets` are the hittable characters; a bullet never collides with its own
- * owner (you can't shoot yourself), but hits everyone else from the first sample.
+ * owner (you can't shoot yourself), and only interacts with obstacles/characters
+ * on its own z level.
  */
 export function updateBullets(w: World, targets: readonly Hittable[]): void {
   const alive: Bullet[] = [];
@@ -146,24 +350,25 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     for (let i = 1; i <= SUBSTEPS && !consumed; i++) {
       const sample = add(start, scale(step, i));
 
-      // Obstacles (walls/crates) block first.
+      // Obstacles (walls/crates) on this bullet's level block first.
       for (const o of w.obstacles) {
+        if (o.z !== b.z) continue;
         if (pointInBox(sample, o)) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, o));
-          spawnParticles(w.particles, at, backDir, o.particle);
+          spawnParticles(w.particles, at, backDir, o.particle, b.z);
           consumed = true;
           break;
         }
       }
       if (consumed) break;
 
-      // Then characters (never the shooter).
+      // Then characters on this level (never the shooter).
       for (const t of targets) {
-        if (t === b.owner) continue;
+        if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
           t.registerHit(norm(b.vel), sample, b.damage, b.armorPen);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
-          spawnParticles(w.particles, at, backDir, BLOOD);
+          spawnParticles(w.particles, at, backDir, BLOOD, b.z);
           consumed = true;
           break;
         }
@@ -183,9 +388,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
 }
 
 /**
- * Spawn a bullet travelling along `dir` at `speed` from `origin`. `renderAfter`
- * is how far it must travel before it's drawn (so it stays hidden inside the gun).
- * `owner` is the shooter, protected from its own bullet until it clears them.
+ * Spawn a bullet travelling along `dir` at `speed` from `origin`, at level `z`
+ * (the shooter's). `renderAfter` is how far it must travel before it's drawn (so
+ * it stays hidden inside the gun). `owner` is the shooter, protected from its
+ * own bullet until it clears them.
  */
 export function spawnBullet(
   w: World,
@@ -200,11 +406,13 @@ export function spawnBullet(
   tracerLength: number,
   tracerColor: string,
   armorPen: ArmorPen,
+  z: number,
 ): void {
   w.bullets.push({
     pos: origin,
     prev: origin,
     vel: scale(dir, speed),
+    z,
     life,
     origin,
     renderAfter,

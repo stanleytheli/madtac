@@ -245,6 +245,7 @@ export class Gun {
       f.tracerLength,
       f.tracerColor,
       this.spec.armorPen,
+      owner.z, // the bullet lives on the shooter's level
     );
     return true;
   }

@@ -49,12 +49,21 @@ function darkenSkin(skin: Skin, f: number): Skin {
 export class Body {
   pos: Vec2;
   vel: Vec2;
+  readonly z: number; // level the character died on (corpses don't ride stairs)
   angle: number; // facing, radians
   angularVel: number;
   readonly skin: Skin;
 
-  private constructor(pos: Vec2, angle: number, vel: Vec2, angularVel: number, skin: Skin) {
+  private constructor(
+    pos: Vec2,
+    z: number,
+    angle: number,
+    vel: Vec2,
+    angularVel: number,
+    skin: Skin,
+  ) {
     this.pos = pos;
+    this.z = z;
     this.angle = angle;
     this.vel = vel;
     this.angularVel = angularVel;
@@ -71,6 +80,7 @@ export class Body {
       (SPAWN_SPIN_MIN + Math.random() * (SPAWN_SPIN_MAX - SPAWN_SPIN_MIN));
     return new Body(
       { x: c.pos.x, y: c.pos.y },
+      c.z,
       angleOf(c.forward),
       scale(launchDir, speed),
       spin,
@@ -78,13 +88,16 @@ export class Body {
     );
   }
 
-  /** Slide + spin toward rest, pushing out of any solid obstacles. */
+  /** Slide + spin toward rest, pushing out of solid obstacles on its own level. */
   update(obstacles: readonly Obstacle[]): void {
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, LIN_FRICTION);
     this.angle += this.angularVel;
     this.angularVel *= ANG_FRICTION;
-    for (const o of obstacles) this.pos = resolveCircleVsBox(this.pos, BODY_RADIUS, o);
+    for (const o of obstacles) {
+      if (o.z !== this.z) continue;
+      this.pos = resolveCircleVsBox(this.pos, BODY_RADIUS, o);
+    }
   }
 
   draw(ctx: CanvasRenderingContext2D): void {

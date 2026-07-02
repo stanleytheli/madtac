@@ -9,6 +9,7 @@ export type ParticleShape = "square" | "circle";
 export interface Particle {
   pos: Vec2;
   vel: Vec2;
+  z: number; // z level of whatever spawned it (renders with that level)
   angle: number; // current rotation (rad)
   spin: number; // rotation change per tick
   life: number; // ticks remaining
@@ -80,6 +81,7 @@ export function spawnParticles(
   pos: Vec2,
   dir: Vec2,
   style: ParticleStyle,
+  z = 0,
 ): void {
   const base = angleOf(dir);
   for (let i = 0; i < style.count; i++) {
@@ -89,6 +91,7 @@ export function spawnParticles(
     out.push({
       pos,
       vel: fromAngle(ang, speed),
+      z,
       angle: Math.random() * Math.PI * 2,
       spin: (Math.random() * 2 - 1) * 0.4,
       life,
@@ -113,9 +116,15 @@ export function updateParticles(particles: Particle[]): Particle[] {
   return alive;
 }
 
-/** Draw every particle, fading out over its remaining life. */
-export function drawParticles(ctx: CanvasRenderingContext2D, particles: readonly Particle[]): void {
+/** Draw particles, fading out over their remaining life. Pass `z` to draw only
+ *  the ones on that level (each level's render pass draws its own debris). */
+export function drawParticles(
+  ctx: CanvasRenderingContext2D,
+  particles: readonly Particle[],
+  z?: number,
+): void {
   for (const p of particles) {
+    if (z !== undefined && p.z !== z) continue;
     ctx.save();
     ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
     ctx.translate(p.pos.x, p.pos.y);

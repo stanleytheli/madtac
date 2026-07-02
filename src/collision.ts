@@ -8,7 +8,7 @@ interface AABB {
   maxy: number;
 }
 
-export const boxAabb = (o: Obstacle): AABB => ({
+export const boxAabb = (o: { pos: Vec2; w: number; h: number }): AABB => ({
   minx: o.pos.x - o.w / 2,
   maxx: o.pos.x + o.w / 2,
   miny: o.pos.y - o.h / 2,
@@ -57,7 +57,8 @@ export function resolveCircleVsCircle(pos: Vec2, r: number, other: Vec2, otherR:
   return vec(pos.x + (dx / d) * push, pos.y + (dy / d) * push);
 }
 
-export function pointInBox(p: Vec2, o: Obstacle): boolean {
+/** Point-in-centered-rect test. Works for any {pos,w,h} shape (obstacles, floors). */
+export function pointInBox(p: Vec2, o: { pos: Vec2; w: number; h: number }): boolean {
   const b = boxAabb(o);
   return p.x >= b.minx && p.x <= b.maxx && p.y >= b.miny && p.y <= b.maxy;
 }
@@ -96,9 +97,16 @@ function segmentIntersectsAabb(a: Vec2, b: Vec2, box: AABB): boolean {
   return true;
 }
 
-/** True if no obstacle blocks the straight line from `a` to `b` (clear line of sight). */
-export function hasLineOfSight(a: Vec2, b: Vec2, obstacles: readonly Obstacle[]): boolean {
+/** True if no obstacle blocks the straight line from `a` to `b` (clear line of
+ *  sight). Pass `z` to only test obstacles on that level (sight is per-level). */
+export function hasLineOfSight(
+  a: Vec2,
+  b: Vec2,
+  obstacles: readonly Obstacle[],
+  z?: number,
+): boolean {
   for (const o of obstacles) {
+    if (z !== undefined && o.z !== z) continue;
     if (segmentIntersectsAabb(a, b, boxAabb(o))) return false;
   }
   return true;

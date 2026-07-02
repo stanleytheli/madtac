@@ -69,6 +69,8 @@ export interface RobotOptions {
   delay? :number;
   /** Which gun it visibly holds (drives cosmetics; damage/spread/firerate are overridden). */
   gun?: GunSpec;
+  /** The z level it stands on (e.g. 1 for a balcony guard, -1 in a bunker). */
+  z?: number;
 }
 
 const ROBOT_DEFAULTS: Required<RobotOptions> = {
@@ -78,6 +80,7 @@ const ROBOT_DEFAULTS: Required<RobotOptions> = {
   spreadDeg: 15,
   delay: 10,
   gun: M16,
+  z: 0,
 };
 
 /**
@@ -100,6 +103,7 @@ export class Robot extends Character {
     });
     this.maxHp = opts.health;
     this.hp = opts.health;
+    this.z = opts.z;
     this.angle = Math.random() * Math.PI * 2;
     this.wanderTarget = this.angle;
     this.forward = fromAngle(this.angle);
@@ -107,7 +111,9 @@ export class Robot extends Character {
 
   /** Per-tick AI. Call after `tickWeapon()` so the fire cooldown is up to date. */
   think(world: World, player: Character): void {
-    const visible = this.canSee(world, player);
+    // Sight is per-level: a balcony guard ignores (and can't hit) a ground-level
+    // player, and vice versa, until they share a z.
+    const visible = this.z === player.z && this.canSee(world, player);
 
     if (visible) {
       // Track and shoot.
@@ -140,6 +146,6 @@ export class Robot extends Character {
       vec(p.x - r, p.y + r),
       vec(p.x + r, p.y + r),
     ];
-    return points.some((pt) => hasLineOfSight(this.pos, pt, world.obstacles));
+    return points.some((pt) => hasLineOfSight(this.pos, pt, world.obstacles, this.z));
   }
 }

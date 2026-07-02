@@ -36,6 +36,9 @@ export class Character {
   pos: Vec2;
   vel: Vec2 = vec(0, 0);
   forward: Vec2 = vec(0, -1); // unit aim direction
+  /** Vertical level (integer). Changes sharply when crossing a staircase's
+   *  midpoint; gates rendering, collision, bullets, and line of sight. */
+  z = 0;
   skin: Skin;
 
   maxHp = 100;

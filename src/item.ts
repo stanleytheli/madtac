@@ -13,6 +13,8 @@ import type { Obstacle } from "./world.ts";
  */
 export interface GroundItem {
   pos: Vec2;
+  /** The z level it's lying on (dropped items inherit the dropper's level). */
+  z: number;
   /** Footprint radius, used for soft separation between items (see separateItems). */
   readonly radius: number;
   /** Text shown in the interaction prompt (e.g. the weapon's name). */
@@ -37,6 +39,7 @@ export function separateItems(items: readonly GroundItem[]): void {
     const a = items[i];
     for (let j = i + 1; j < items.length; j++) {
       const b = items[j];
+      if (a.z !== b.z) continue; // items on different levels never touch
       const minDist = a.radius + b.radius;
       const delta = sub(b.pos, a.pos);
       const d = len(delta);
@@ -115,13 +118,15 @@ function drawGroundIcon(
 export class GunItem implements GroundItem {
   pos: Vec2;
   vel: Vec2;
+  z: number;
   readonly radius = ITEM_RADIUS;
   readonly gun: Gun;
   private readonly iconSrc: string;
 
-  constructor(pos: Vec2, gun: Gun, vel: Vec2 = vec(0, 0)) {
+  constructor(pos: Vec2, gun: Gun, vel: Vec2 = vec(0, 0), z = 0) {
     this.pos = pos;
     this.vel = vel;
+    this.z = z;
     this.gun = gun;
     this.iconSrc = gun.spec.icon ? `/assets/${gun.spec.icon}.png` : "";
   }
@@ -130,11 +135,14 @@ export class GunItem implements GroundItem {
     return this.gun.spec.name;
   }
 
-  /** Slide toward rest, pushing out of any solid obstacles. */
+  /** Slide toward rest, pushing out of solid obstacles on its own level. */
   update(obstacles: readonly Obstacle[]): void {
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, ITEM_FRICTION);
-    for (const o of obstacles) this.pos = resolveCircleVsBox(this.pos, ITEM_RADIUS, o);
+    for (const o of obstacles) {
+      if (o.z !== this.z) continue;
+      this.pos = resolveCircleVsBox(this.pos, ITEM_RADIUS, o);
+    }
   }
 
   draw(ctx: CanvasRenderingContext2D): void {
@@ -149,13 +157,15 @@ const ARMOR_ITEM_RADIUS = 45; // larger footprint than a gun (bigger sprite)
 export class ArmorItem implements GroundItem {
   pos: Vec2;
   vel: Vec2;
+  z: number;
   readonly radius = ARMOR_ITEM_RADIUS;
   readonly armor: Armor;
   private readonly iconSrc: string;
 
-  constructor(pos: Vec2, armor: Armor, vel: Vec2 = vec(0, 0)) {
+  constructor(pos: Vec2, armor: Armor, vel: Vec2 = vec(0, 0), z = 0) {
     this.pos = pos;
     this.vel = vel;
+    this.z = z;
     this.armor = armor;
     this.iconSrc = `/assets/${armor.spec.icon}.png`;
   }
@@ -164,11 +174,14 @@ export class ArmorItem implements GroundItem {
     return this.armor.spec.name;
   }
 
-  /** Slide toward rest, pushing out of any solid obstacles. */
+  /** Slide toward rest, pushing out of solid obstacles on its own level. */
   update(obstacles: readonly Obstacle[]): void {
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, ITEM_FRICTION);
-    for (const o of obstacles) this.pos = resolveCircleVsBox(this.pos, ARMOR_ITEM_RADIUS, o);
+    for (const o of obstacles) {
+      if (o.z !== this.z) continue;
+      this.pos = resolveCircleVsBox(this.pos, ARMOR_ITEM_RADIUS, o);
+    }
   }
 
   draw(ctx: CanvasRenderingContext2D): void {
