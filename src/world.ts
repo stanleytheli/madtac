@@ -43,6 +43,10 @@ export interface Obstacle {
   w: number;
   h: number;
   z: number; // the level it sits on
+  /** Fence-like: still solid to movement, but bullets and sight pass through, so
+   *  same-level firefights work across it. (Bullets stay z-bound regardless —
+   *  a fence never enables shooting between levels.) */
+  permeable?: boolean;
   // appearance
   fill: string;
   stroke: string;
@@ -108,6 +112,11 @@ export function makeWall(pos: Vec2, w: number, h: number, z = 0): Obstacle {
   return { pos, w, h, z, fill: "#6b7076", stroke: "#3a3d40", strokeWidth: 6, cross: false, particle: WALL_SHRAPNEL };
 }
 
+/** A fence/railing: blocks movement, but bullets and sight pass through it. */
+export function makeFence(pos: Vec2, w: number, h: number, z = 0): Obstacle {
+  return { pos, w, h, z, permeable: true, fill: "#a9946e", stroke: "#615139", strokeWidth: 5, cross: false, particle: WALL_SHRAPNEL };
+}
+
 export interface FloorOptions {
   level: number;
   visibleFrom: ZSet;
@@ -164,13 +173,17 @@ export function stairsVisible(s: Stairs, viewerZ: number): boolean {
   return zsetHas(s.visibleFrom, viewerZ);
 }
 
-const FADE_RATE = 0.1; // surface alpha change per tick (~10 ticks per full fade)
+const FADE_OUT_RATE = 0.1; // surface alpha lost per tick (~10 ticks per full fade)
 
-/** Ease every surface's alpha toward its sharp visibility. `snap` jumps straight
- *  there (used once at startup so nothing fades in on the first frame). */
+/**
+ * Drive every surface's alpha from its sharp visibility. Appearing surfaces snap
+ * straight to full opacity — an eased fade-in would let the background peek
+ * through while two stacked floors crossfade (e.g. climbing to the second story).
+ * Disappearing ones get the eased fade-out, per the design.
+ */
 export function updateSurfaceAlphas(w: World, viewerZ: number, viewerPos: Vec2, snap = false): void {
   const ease = (alpha: number, target: number): number =>
-    snap ? target : alpha + Math.sign(target - alpha) * Math.min(FADE_RATE, Math.abs(target - alpha));
+    snap || target > alpha ? target : Math.max(target, alpha - FADE_OUT_RATE);
   for (const f of w.floors) f.alpha = ease(f.alpha, floorVisible(f, viewerZ, viewerPos) ? 1 : 0);
   for (const s of w.stairs) s.alpha = ease(s.alpha, stairsVisible(s, viewerZ) ? 1 : 0);
 }
@@ -244,10 +257,16 @@ export function createWorld(): World {
 
   const stairs: Stairs[] = [];
 
+  // Floor slabs extend past their walls' center lines to the walls' *outer*
+  // faces (half thickness + stroke). Obstacles render inside their level's clip
+  // mask, so a wall not fully backed by a surface gets its outer half sliced off.
+  const EXT = WALL_T / 2 + 3;
+
   // --- two-story building (west) --------------------------------------------
-  // Footprint x:[-1150,-650], y:[-650,-250]. Interior stairs on the west side
-  // climb z 0 -> 1; a balcony pokes out the east face at z=1, visible from
-  // everywhere; the roof (a floor at z=2) fades out while you're inside.
+  // Footprint x:[-1150,-650], y:[-650,-250] (wall center lines). Interior stairs
+  // on the west side climb z 0 -> 1; a balcony pokes out the east face at z=1,
+  // visible from the ground and its own level (not from the basement); the roof
+  // (a floor at z=2) fades out while you're inside.
   {
     // ground floor (z=0): walls with a door gap on the south face x:[-830,-750]
     obstacles.push(
@@ -264,23 +283,36 @@ export function createWorld(): World {
       makeWall(vec(-900, -250), 500 + WALL_T, WALL_T, 1), // south (no door up here)
       makeWall(vec(-650, -570), WALL_T, 160, 1), // east, north of the balcony door
       makeWall(vec(-650, -330), WALL_T, 160, 1), // east, south of the balcony door
-      // balcony railings (thin, on the balcony's outer edges)
-      makeWall(vec(-565, -530), 170, 14, 1), // north railing
-      makeWall(vec(-565, -370), 170, 14, 1), // south railing
-      makeWall(vec(-480, -450), 14, 174, 1), // east railing
+      // balcony railings: fences, so you can shoot over them (same level only)
+      makeFence(vec(-565, -530), 170, 14, 1), // north railing
+      makeFence(vec(-565, -370), 170, 14, 1), // south railing
+      makeFence(vec(-480, -450), 14, 174, 1), // east railing
+    );
+    // Rail the staircase's open (east) side along its *upper* half, at both its
+    // levels: stepping sideways into the z=1 half from the ground floor would
+    // teleport you up a story. The lower half needs no rail — side-entering it
+    // is z-consistent (you're just stepping onto the bottom of the flight).
+    obstacles.push(
+      makeFence(vec(-1010, -425), 14, 110, 0),
+      makeFence(vec(-1010, -425), 14, 110, 1),
     );
 
     floors.push(
       // ground-floor interior (hidden by the roof until you walk in)
-      makeFloor(vec(-900, -450), 500, 400, "#9c7444", { level: 0, visibleFrom: [0] }),
+      makeFloor(vec(-900, -450), 500 + 2 * EXT, 400 + 2 * EXT, "#9c7444", {
+        level: 0,
+        visibleFrom: [0],
+      }),
       // second-story floor: the footprint minus the stairwell hole (three rects)
-      makeFloor(vec(-840, -450), 380, 400, "#a9834f", { level: 1, visibleFrom: [1] }),
-      makeFloor(vec(-1090, -565), 120, 170, "#a9834f", { level: 1, visibleFrom: [1] }),
-      makeFloor(vec(-1090, -265), 120, 30, "#a9834f", { level: 1, visibleFrom: [1] }),
-      // the balcony: lives at z=1 but is visible from every level (the overhang)
-      makeFloor(vec(-565, -450), 170, 160, "#b5ab97", { level: 1, visibleFrom: "all" }),
-      // the roof: covers the footprint, melts away while you're anywhere under it
-      makeFloor(vec(-900, -450), 500, 400, "#8a4f3d", {
+      makeFloor(vec(-822, -450), 376, 400 + 2 * EXT, "#b99664", { level: 1, visibleFrom: [1] }),
+      makeFloor(vec(-1088, -573), 156, 186, "#b99664", { level: 1, visibleFrom: [1] }),
+      makeFloor(vec(-1088, -257), 156, 46, "#b99664", { level: 1, visibleFrom: [1] }),
+      // the balcony: z=1, seen from the ground and from up there (the overhang);
+      // extends slightly past its railings' outer faces
+      makeFloor(vec(-560, -450), 180, 180, "#b5ab97", { level: 1, visibleFrom: [0, 1] }),
+      // the roof: covers the walls too (but stops at the east wall line so it
+      // doesn't overhang the balcony doorway); melts away while you're under it
+      makeFloor(vec(-908, -450), 500 + EXT, 400 + 2 * EXT, "#8a4f3d", {
         level: 2,
         visibleFrom: [0, 1],
         hideWhenUnder: true,
@@ -288,21 +320,35 @@ export function createWorld(): World {
     );
 
     // interior staircase along the west wall: north end is upstairs (z=1)
-    stairs.push(makeStairs(vec(-1080, -380), 100, 200, "y", 1, 0, [0, 1], "#7c6034"));
+    stairs.push(makeStairs(vec(-1070, -380), 120, 200, "y", 1, 0, [0, 1], "#7c6034"));
   }
 
   // --- bunker (east) ---------------------------------------------------------
   // Outdoor stairs descend north into an underground room at z=-1. While you're
   // down there the ground isn't visible, so the underground backdrop takes over.
   {
-    stairs.push(makeStairs(vec(700, 160), 100, 200, "y", -1, 0, [-1, 0], "#6e6e74"));
-    floors.push(makeFloor(vec(760, -90), 480, 300, "#5b5e66", { level: -1, visibleFrom: [-1] }));
+    stairs.push(makeStairs(vec(700, 160), 120, 200, "y", -1, 0, [-1, 0], "#6e6e74"));
+    floors.push(
+      makeFloor(vec(760, -90), 480 + 2 * EXT, 300 + 2 * EXT, "#5b5e66", {
+        level: -1,
+        visibleFrom: [-1],
+      }),
+    );
     obstacles.push(
       makeWall(vec(760, -240), 480 + WALL_T, WALL_T, -1), // north
       makeWall(vec(520, -90), WALL_T, 300 + WALL_T, -1), // west
       makeWall(vec(1000, -90), WALL_T, 300 + WALL_T, -1), // east
-      makeWall(vec(585, 60), 130, WALL_T, -1), // south, west of the stair opening
-      makeWall(vec(875, 60), 250, WALL_T, -1), // south, east of the stair opening
+      makeWall(vec(580, 60), 120, WALL_T, -1), // south, west of the stair opening
+      makeWall(vec(880, 60), 240, WALL_T, -1), // south, east of the stair opening
+    );
+    // Rail both open sides of the descent, at both levels it touches — without
+    // these you could sidestep off the flight at z=-1 into the open ground and
+    // vanish. (This is the map-design answer to "walked sideways off the stairs".)
+    obstacles.push(
+      makeFence(vec(640, 160), 14, 200, 0),
+      makeFence(vec(640, 160), 14, 200, -1),
+      makeFence(vec(760, 160), 14, 200, 0),
+      makeFence(vec(760, 160), 14, 200, -1),
     );
   }
 
@@ -350,9 +396,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     for (let i = 1; i <= SUBSTEPS && !consumed; i++) {
       const sample = add(start, scale(step, i));
 
-      // Obstacles (walls/crates) on this bullet's level block first.
+      // Obstacles (walls/crates) on this bullet's level block first. Fences
+      // (permeable) never stop bullets.
       for (const o of w.obstacles) {
-        if (o.z !== b.z) continue;
+        if (o.z !== b.z || o.permeable) continue;
         if (pointInBox(sample, o)) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, o));
           spawnParticles(w.particles, at, backDir, o.particle, b.z);

@@ -107,6 +107,7 @@ export function hasLineOfSight(
 ): boolean {
   for (const o of obstacles) {
     if (z !== undefined && o.z !== z) continue;
+    if (o.permeable) continue; // fences don't block sight
     if (segmentIntersectsAabb(a, b, boxAabb(o))) return false;
   }
   return true;

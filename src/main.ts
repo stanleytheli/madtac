@@ -462,9 +462,10 @@ function levelClip(z: number): { exempt: boolean; path: Path2D | null } {
     path.rect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
     any = true;
   }
+  const PAD = 10; // stairs clip slightly generously: covers edge-mounted railings
   for (const s of world.stairs) {
     if ((s.zAtMin !== z && s.zAtMax !== z) || !stairsVisible(s, player.z)) continue;
-    path.rect(s.pos.x - s.w / 2, s.pos.y - s.h / 2, s.w, s.h);
+    path.rect(s.pos.x - s.w / 2 - PAD, s.pos.y - s.h / 2 - PAD, s.w + PAD * 2, s.h + PAD * 2);
     any = true;
   }
   return { exempt: false, path: any ? path : null };
