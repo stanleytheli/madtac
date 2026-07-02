@@ -78,8 +78,8 @@ function getImage(src: string): HTMLImageElement {
 const ICON_SIZE = 72; // world px for the icon's longer side
 const ICON_ROT = -Math.PI / 4; // drawn rotated 45° counter-clockwise
 const ICON_SCALE = 0.5; // sprite -> world px scale for ground icons
-const GUN_BACKDROP = ICON_SIZE * 0.45; // soft shadow radius under a gun icon
-const ARMOR_BACKDROP = ICON_SIZE * 0.6; // ~2x the gun's — armor sprites are larger
+const GUN_BACKDROP = ICON_SIZE * 0.5; // soft shadow radius under a gun icon
+const ARMOR_BACKDROP = ICON_SIZE * 0.6; // armor sprites are a bit larger
 
 /**
  * Draw a ground pickup: a soft dark backdrop (so the sprite reads on any floor)

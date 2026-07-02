@@ -125,7 +125,7 @@ export const M16: GunSpec = {
   damage: 20,
   armorPen: DEFAULT_AP_556,
   zoom: 2.2,
-  speed: 0.8,
+  speed: 0.85,
   fire: {
     delay: 7,
     bulletSpeed: 35,
@@ -161,7 +161,7 @@ export const AK47: GunSpec = {
   damage: 25,
   armorPen: DEFAULT_AP_762,
   zoom: 2.2,
-  speed: 0.8,
+  speed: 0.85,
   fire: {
     delay: 8,
     bulletSpeed: 35,
@@ -186,6 +186,42 @@ export const AK47: GunSpec = {
   movingFirstShotRecoilMax: 8.0,
 };
 
+export const M249: GunSpec = {
+  name: "M249",
+  primary: true,
+  icon: "m249_small",
+  rightGrip: { f: 45, l: 0 },
+  leftGrip: { f: 75, l: -6 },
+  barrel: { start: 30, end: 120, width: 14 },
+  color: "#1f1f1f",
+  damage: 18,
+  armorPen: DEFAULT_AP_556,
+  zoom: 2.2,
+  speed: 0.75,
+  fire: {
+    delay: 7,
+    bulletSpeed: 35,
+    bulletLife: 70,
+    auto: true,
+    spread: 0.04,
+    magSize: 100,
+    reserveMags: 1,
+    reloadTime: 360,
+    drawTime: 75,
+    tracerWidth: 3.5,
+    tracerLength: 150,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 7,
+  recoilRecovery: 1,
+  recoilCoef: 0.125,
+  recoilGain: 5.9,
+  recoilDelay: 45,
+  movePenalty: 2.0,
+  movingFirstShotRecoilMin: 5.0,
+  movingFirstShotRecoilMax: 10.0,
+};
+
 
 export const M9: GunSpec = {
   name: "M9",
@@ -201,7 +237,7 @@ export const M9: GunSpec = {
   damage: 17,
   armorPen: DEFAULT_AP_9MM,
   zoom: 1.8,
-  speed: 0.9,
+  speed: 0.925,
   fire: {
     delay: 6,
     bulletSpeed: 30,
@@ -237,7 +273,7 @@ export const Deagle: GunSpec = {
   damage: 40,
   armorPen: DEFAULT_AP_50AE,
   zoom: 1.8,
-  speed: 0.8,
+  speed: 0.85,
   fire: {
     delay: 10,
     bulletSpeed: 35,
@@ -273,7 +309,7 @@ export const Golden_Deagle: GunSpec = {
   damage: 50,
   armorPen: DEFAULT_AP_50AE,
   zoom: 2.0,
-  speed: 0.75,
+  speed: 0.8,
   fire: {
     delay: 13,
     bulletSpeed: 35,

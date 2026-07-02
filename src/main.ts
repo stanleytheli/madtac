@@ -1,10 +1,10 @@
 import { Character } from "./actor.ts";
-import { Armor, ARMOR_L1, ARMOR_L2, ARMOR_L3, ARMOR_L4 } from "./armor.ts";
+import * as Armors from "./armor.ts";
 import { Body } from "./body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
 import { hasLineOfSight, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
 import { Gun } from "./gun.ts";
-import { Golden_Deagle, M16, AK47, M9, UNARMED } from "./guns.ts";
+import * as Guns from "./guns.ts";
 import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
 import { ELITE_ROBOT_SKIN, Robot } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
@@ -30,16 +30,16 @@ resize();
 initInput(canvas);
 
 const player = new Character(vec(0, 0), DEFAULT_SKIN, {
-  primary: new Gun(M16),
-  secondary: new Gun(M9),
-  hand: new Gun(UNARMED),
+  primary: new Gun(Guns.M16),
+  secondary: new Gun(Guns.M9),
+  hand: new Gun(Guns.UNARMED),
 });
-const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: M16, delay:10})
+const enemy_1 = new Robot(vec(-500, 0), {health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: Guns.M16, delay:10})
 const enemy_0 = new Robot(vec(320, -260));
 const enemy_2 = new Robot(vec(450, -400));
 
 // The elite wears armor, to show it off (and prove enemies use the same pipeline).
-enemy_1.equipArmor(new Armor(ARMOR_L3));
+enemy_1.equipArmor(new Armors.Armor(Armors.ARMOR_L3));
 
 let characters: Character[] = [player, enemy_0, enemy_1, enemy_2];
 const bodies: Body[] = [];
@@ -47,14 +47,14 @@ const bodies: Body[] = [];
 const world = createWorld();
 
 // Some guns lying around to pick up.
-world.items.push(new GunItem(vec(-120, -80), new Gun(Golden_Deagle)));
-world.items.push(new GunItem(vec(80, 120), new Gun(AK47)));
+world.items.push(new GunItem(vec(-120, -80), new Gun(Guns.Deagle)));
+world.items.push(new GunItem(vec(80, 120), new Gun(Guns.M249)));
 
 // ...and some armor to try on.
-world.items.push(new ArmorItem(vec(-40, 90), new Armor(ARMOR_L1)));
-world.items.push(new ArmorItem(vec(-40, 90), new Armor(ARMOR_L2)));
-world.items.push(new ArmorItem(vec(-40, 90), new Armor(ARMOR_L3)));
-world.items.push(new ArmorItem(vec(170, -40), new Armor(ARMOR_L4)));
+world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L1)));
+world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L2)));
+world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L3)));
+world.items.push(new ArmorItem(vec(170, -40), new Armors.Armor(Armors.ARMOR_L4)));
 
 // Camera: position follows the player; `size` eases toward the weapon's zoom.
 const camera = { size: player.gun.spec.zoom };
