@@ -101,8 +101,14 @@ export interface Floor {
   /** Covers the whole map (the ground): drawn as the screen background, and its
    *  level needs no clip mask — everything at that level is backed by it. */
   infinite?: boolean;
-  /** Grid line color when this is drawn as the background (infinite floors). */
-  grid?: string;
+  /** Draw grid lines over it while it's the background (infinite floors). */
+  grid?: boolean;
+  /** Grid line color (default "#5ca76c"). */
+  gridColor?: string;
+  /** Grid line thickness in *screen* px (default 1). */
+  gridWidth?: number;
+  /** Grid line spacing in world px (default 512). */
+  gridGap?: number;
   /** Eased render opacity: fades toward 1 while visible, 0 while not. */
   alpha: number;
 }
@@ -149,7 +155,10 @@ export interface FloorOptions {
   hideWhenIn?: readonly Region[];
   enclosing?: boolean;
   infinite?: boolean;
-  grid?: string;
+  grid?: boolean;
+  gridColor?: string;
+  gridWidth?: number;
+  gridGap?: number;
 }
 
 export function makeFloor(
@@ -302,7 +311,8 @@ export function createWorld(): World {
       level: 0,
       visibleFrom: { atLeast: -1 },
       infinite: true,
-      grid: "#5ca76c",
+      grid: true,
+      gridColor: "#5ca76c",
     }),
     // decorative patches on the ground
     makeFloor(vec(0, 0), 260, 260, "#46603f", { level: 0, visibleFrom: { atLeast: -1 } }),

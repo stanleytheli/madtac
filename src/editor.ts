@@ -24,9 +24,8 @@ import {
   type FieldDef,
   type LevelState,
 } from "./level.ts";
-import { ENEMY_TYPES } from "./robot.ts";
 import { add, dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
-import { updateSurfaceAlphas } from "./world.ts";
+import { makeFloor, updateSurfaceAlphas } from "./world.ts";
 
 const POINT_R = 45; // selection radius around point entities (items, spawns)
 const MIN_SIZE = 8; // smallest rect a drag-draw or resize can produce
@@ -151,6 +150,7 @@ export class Editor {
       if (this.tool.shape === "point") {
         // Point kinds place immediately; the tool stays armed for the next one.
         const e = this.tool.create(this.snv(m), this.player.z);
+        if (this.tool.singleton) this.tool.list(this.state).length = 0;
         this.tool.list(this.state).push(e);
         this.select({ def: this.tool, e });
         this.refreshWorld();
@@ -224,6 +224,7 @@ export class Editor {
       } else {
         e.pos = start; // a bare click: default-sized entity at the click point
       }
+      if (this.tool.singleton) this.tool.list(this.state).length = 0;
       this.tool.list(this.state).push(e);
       this.select({ def: this.tool, e });
       this.refreshWorld();
@@ -302,7 +303,7 @@ export class Editor {
   }
 
   private handleAt(m: Vec2): { ex: -1 | 0 | 1; ey: -1 | 0 | 1 } | null {
-    if (!this.sel) return null;
+    if (!this.sel || this.sel.e.w <= 0 || this.sel.e.h <= 0) return null;
     const r = 10 * this.zoom; // ~10 screen px of grab slop
     for (const h of this.handles(this.sel.e)) {
       if (dist(m, h.p) <= r) return h;
@@ -347,22 +348,28 @@ export class Editor {
       ctx.restore();
     }
 
-    // Enemy spawn markers (never live Robots in edit mode).
+    // Labeled marker discs for entities with no in-world rendering (player and
+    // enemy spawns — anything whose def declares a marker).
     ctx.save();
     ctx.font = `${11 * z}px monospace`;
     ctx.textAlign = "center";
-    for (const s of this.state.spawns) {
-      ctx.globalAlpha = s.z === this.player.z ? 0.95 : 0.35;
-      const t = ENEMY_TYPES[s.type];
-      ctx.beginPath();
-      ctx.arc(s.pos.x, s.pos.y, BODY_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = t ? t.color : "#e05555";
-      ctx.fill();
-      ctx.lineWidth = 2 * z;
-      ctx.strokeStyle = "#16181c";
-      ctx.stroke();
-      ctx.fillStyle = "#fff";
-      ctx.fillText(`${s.type} z${s.z}`, s.pos.x, s.pos.y - BODY_RADIUS - 6 * z);
+    for (const def of ENTITY_DEFS) {
+      if (!def.marker) continue;
+      for (const e of def.list(this.state)) {
+        if (!def.match(e)) continue;
+        const m = def.marker(e);
+        const ez = def.zOf(e);
+        ctx.globalAlpha = ez === this.player.z ? 0.95 : 0.35;
+        ctx.beginPath();
+        ctx.arc(e.pos.x, e.pos.y, BODY_RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = m.color;
+        ctx.fill();
+        ctx.lineWidth = 2 * z;
+        ctx.strokeStyle = "#16181c";
+        ctx.stroke();
+        ctx.fillStyle = "#fff";
+        ctx.fillText(`${m.label} z${ez}`, e.pos.x, e.pos.y - BODY_RADIUS - 6 * z);
+      }
     }
     ctx.restore();
 
@@ -373,7 +380,9 @@ export class Editor {
       ctx.strokeStyle = SEL_COLOR;
       ctx.lineWidth = 2 * z;
       ctx.setLineDash([6 * z, 4 * z]);
-      if (this.sel.def.shape === "rect") {
+      // A zero-size rect (the infinite background floor) gets the point-style
+      // ring — there's no rectangle to outline or resize.
+      if (this.sel.def.shape === "rect" && e.w > 0 && e.h > 0) {
         ctx.strokeRect(e.pos.x - e.w / 2, e.pos.y - e.h / 2, e.w, e.h);
         ctx.setLineDash([]);
         ctx.fillStyle = SEL_COLOR;
@@ -496,6 +505,10 @@ export class Editor {
 
     // Inspector (rebuilt per selection).
     panel.append(this.header("selection"));
+    // The infinite background floor has no rect to click in the world, so it
+    // gets a dedicated way in — its fields (fill color, grid settings) are
+    // ordinary floor fields once selected.
+    panel.append(this.btn("Select background", () => this.selectBackground()));
     this.inspector = this.mk("div", "display:flex;flex-direction:column;gap:4px;");
     panel.append(this.inspector);
     this.renderInspector();
@@ -531,6 +544,27 @@ export class Editor {
   private select(sel: Selection | null): void {
     this.sel = sel;
     this.renderInspector();
+  }
+
+  /** Select the level's background (infinite) floor, creating one if the level
+   *  doesn't have any yet — new editor-built maps start with no ground at all. */
+  private selectBackground(): void {
+    const floors = this.state.world.floors;
+    let bg = floors.find((f) => f.infinite);
+    if (!bg) {
+      bg = makeFloor(vec(0, 0), 0, 0, "#70c575", {
+        level: 0,
+        visibleFrom: { atLeast: -1 },
+        infinite: true,
+        grid: true,
+        gridColor: "#5ca76c",
+      });
+      floors.push(bg);
+      this.refreshWorld();
+    }
+    const def = ENTITY_DEFS.find((d) => d.kind === "floor")!;
+    this.setTool(null);
+    this.select({ def, e: bg });
   }
 
   private doExport(): void {

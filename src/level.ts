@@ -39,10 +39,18 @@ export interface EnemySpawn {
   z: number;
 }
 
-/** Everything a level owns: the world's static arrays plus the spawn table. */
+/** Where the player starts. A singleton entity in the editor. */
+export interface PlayerSpawn {
+  pos: Vec2;
+  z: number;
+}
+
+/** Everything a level owns: the world's static arrays plus the spawn tables. */
 export interface LevelState {
   world: World;
   spawns: EnemySpawn[];
+  /** 0 or 1 entries — an array only so the entity defs stay uniform. */
+  playerSpawn: PlayerSpawn[];
 }
 
 // --- spec registries (auto-discovered) ---------------------------------------
@@ -111,9 +119,20 @@ export interface EntityDef {
   create(pos: Vec2, z: number): any;
   /** The z the entity "is at" — for the editor's same-level selection priority. */
   zOf(e: any): number;
+  /** At most one may exist: placing a new one replaces the old (player spawn). */
+  singleton?: boolean;
+  /** Drawn by the editor as a labeled disc, for entities with no in-world look. */
+  marker?(e: any): { color: string; label: string };
 }
 
 const zField = prop("z", "number");
+
+/** Obstacle appearance: fill + border color/size (factory-set, all overridable). */
+const obstacleLook: FieldDef[] = [
+  prop("fill", "color"),
+  prop("stroke", "color"),
+  prop("strokeWidth", "number"),
+];
 
 /**
  * The registry. Array order is meaningful twice over: it's the editor's
@@ -122,6 +141,18 @@ const zField = prop("z", "number");
  * painter's order intact within the floors array on reload).
  */
 export const ENTITY_DEFS: EntityDef[] = [
+  {
+    kind: "spawn",
+    label: "Player spawn",
+    shape: "point",
+    singleton: true,
+    fields: [zField],
+    list: (s) => s.playerSpawn,
+    match: () => true,
+    create: (pos, z) => ({ pos, z }),
+    zOf: (e) => e.z,
+    marker: () => ({ color: "#ffd94a", label: "player" }),
+  },
   {
     kind: "enemy",
     label: "Enemy",
@@ -142,6 +173,7 @@ export const ENTITY_DEFS: EntityDef[] = [
     match: () => true,
     create: (pos, z) => ({ type: firstKey(ENEMY_TYPES), pos, z }),
     zOf: (e) => e.z,
+    marker: (e) => ({ color: ENEMY_TYPES[e.type]?.color ?? "#e05555", label: e.type }),
   },
   {
     kind: "gun",
@@ -189,7 +221,7 @@ export const ENTITY_DEFS: EntityDef[] = [
     kind: "wall",
     label: "Wall",
     shape: "rect",
-    fields: [zField],
+    fields: [zField, ...obstacleLook],
     list: (s) => s.world.obstacles,
     match: (e: Obstacle) => !e.cross && !e.permeable,
     create: (pos, z) => makeWall(pos, 140, WALL_T, z),
@@ -199,7 +231,7 @@ export const ENTITY_DEFS: EntityDef[] = [
     kind: "crate",
     label: "Crate",
     shape: "rect",
-    fields: [zField],
+    fields: [zField, ...obstacleLook],
     list: (s) => s.world.obstacles,
     match: (e: Obstacle) => !!e.cross,
     create: (pos, z) => makeCrate(pos, 64, 64, z),
@@ -209,7 +241,7 @@ export const ENTITY_DEFS: EntityDef[] = [
     kind: "fence",
     label: "Fence",
     shape: "rect",
-    fields: [zField],
+    fields: [zField, ...obstacleLook],
     list: (s) => s.world.obstacles,
     match: (e: Obstacle) => !!e.permeable,
     create: (pos, z) => makeFence(pos, 140, 14, z),
@@ -255,14 +287,12 @@ export const ENTITY_DEFS: EntityDef[] = [
       prop("hideWhenIn", "json"),
       prop("enclosing", "checkbox"),
       prop("infinite", "checkbox"),
-      {
-        key: "grid",
-        type: "text",
-        get: (e) => e.grid ?? "",
-        set: (e, v) => {
-          e.grid = v || undefined;
-        },
-      },
+      // Background settings — only consulted while this floor IS the background
+      // (infinite + visible), but harmless to set on any floor.
+      prop("grid", "checkbox"),
+      prop("gridColor", "color"),
+      prop("gridWidth", "number"),
+      prop("gridGap", "number"),
     ],
     list: (s) => s.world.floors,
     match: () => true,
@@ -321,6 +351,7 @@ export function applyLevel(state: LevelState, text: string): void {
   w.bullets.length = 0;
   w.particles.length = 0;
   state.spawns.length = 0;
+  state.playerSpawn.length = 0;
 
   for (const raw of ents) {
     const j = raw as Record<string, any>;
@@ -346,6 +377,7 @@ export function loadLevel(text: string): LevelState {
   const state: LevelState = {
     world: { obstacles: [], floors: [], stairs: [], items: [], bullets: [], particles: [] },
     spawns: [],
+    playerSpawn: [],
   };
   applyLevel(state, text);
   return state;

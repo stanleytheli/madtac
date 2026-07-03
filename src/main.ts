@@ -7,7 +7,7 @@ import { Editor } from "./editor.ts";
 import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
 import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
-import { loadLevel, type EnemySpawn } from "./level.ts";
+import { loadLevel, type EnemySpawn, type PlayerSpawn } from "./level.ts";
 import { LEVEL } from "./levels.ts";
 import { Robot, spawnEnemy } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
@@ -43,11 +43,6 @@ resize();
 
 initInput(canvas);
 
-const player = new Character(vec(0, 0), DEFAULT_SKIN, {
-  primary: new Gun(Guns.M16),
-  secondary: new Gun(Guns.M9),
-  hand: new Gun(Guns.UNARMED),
-});
 // ?edit=true boots the level editor instead of the game: no enemies or combat,
 // the player noclips, and the editor drives the camera + all world mutation.
 const EDIT = new URLSearchParams(location.search).get("edit") === "true";
@@ -56,6 +51,18 @@ const EDIT = new URLSearchParams(location.search).get("edit") === "true";
 // the editor), otherwise the hand-coded demo map below.
 const loaded = LEVEL ? loadLevel(LEVEL) : null;
 const world = loaded ? loaded.world : createWorld();
+
+// Where the player starts — a singleton entity in the editor, so saved levels
+// carry it. Levels without one fall back to the origin at ground level.
+const playerSpawn: PlayerSpawn[] = loaded ? loaded.playerSpawn : [{ pos: vec(0, 0), z: 0 }];
+const start = playerSpawn[0] ?? { pos: vec(0, 0), z: 0 };
+
+const player = new Character(vec(start.pos.x, start.pos.y), DEFAULT_SKIN, {
+  primary: new Gun(Guns.M16),
+  secondary: new Gun(Guns.M9),
+  hand: new Gun(Guns.UNARMED),
+});
+player.z = start.z;
 
 // Enemy spawns as *data* (type keys ENEMY_TYPES in robot.ts) so the editor can
 // read/write them like any other entity. The demo cast: two grunts in the open,
@@ -102,8 +109,8 @@ if (!loaded) {
 // Start surface fades at their correct values so nothing fades in on frame one.
 updateSurfaceAlphas(world, player.z, player.pos, true);
 
-// In edit mode the Editor owns input, camera zoom, and enemy spawn markers.
-const editor = EDIT ? new Editor({ world, spawns }, player, canvas) : null;
+// In edit mode the Editor owns input, camera zoom, and the spawn markers.
+const editor = EDIT ? new Editor({ world, spawns, playerSpawn }, player, canvas) : null;
 
 // Camera: position follows the player; `size` eases toward the weapon's zoom.
 const camera = { size: player.gun.spec.zoom };
@@ -330,8 +337,9 @@ function update(): void {
   reapDead();
 }
 
-const GRID = 512;
-// Draw the grid covering the (zoom-enlarged) visible world region.
+const GRID = 512; // default background grid spacing (world px)
+// Draw the grid covering the (zoom-enlarged) visible world region. `width` is
+// in screen px, `gap` in world px — both per-floor settings on the background.
 function drawGrid(
   camPos: Vec2,
   center: Vec2,
@@ -339,6 +347,8 @@ function drawGrid(
   h: number,
   zoom: number,
   color: string,
+  width = 1,
+  gap = GRID,
 ): void {
   // Screen edges mapped back to world: world = (screenPx - center) * zoom + camPos.
   const left = camPos.x - center.x * zoom;
@@ -347,13 +357,13 @@ function drawGrid(
   const bottom = camPos.y + (h - center.y) * zoom;
 
   ctx.strokeStyle = color;
-  ctx.lineWidth = zoom; // 1/zoom context scale -> ~1px on screen
+  ctx.lineWidth = zoom * width; // 1/zoom context scale -> `width` px on screen
   ctx.beginPath();
-  for (let x = Math.ceil(left / GRID) * GRID; x <= right; x += GRID) {
+  for (let x = Math.ceil(left / gap) * gap; x <= right; x += gap) {
     ctx.moveTo(x, top);
     ctx.lineTo(x, bottom);
   }
-  for (let y = Math.ceil(top / GRID) * GRID; y <= bottom; y += GRID) {
+  for (let y = Math.ceil(top / gap) * gap; y <= bottom; y += gap) {
     ctx.moveTo(left, y);
     ctx.lineTo(right, y);
   }
@@ -616,11 +626,16 @@ function render(): void {
   );
   ctx.fillStyle = bgFloor ? bgFloor.color : player.z < 0 ? UNDERGROUND_BG : VOID_BG;
   ctx.fillRect(0, 0, w, h);
+  // Grid settings come from the background floor; the fallback backdrops
+  // (underground dirt / void) keep their fixed faint grids.
+  const showGrid = bgFloor ? bgFloor.grid === true : true;
   const gridColor = bgFloor
-    ? (bgFloor.grid ?? "#5ca76c")
+    ? (bgFloor.gridColor ?? "#5ca76c")
     : player.z < 0
       ? UNDERGROUND_GRID
       : VOID_GRID;
+  const gridWidth = bgFloor ? (bgFloor.gridWidth ?? 1) : 1;
+  const gridGap = bgFloor ? (bgFloor.gridGap ?? GRID) : GRID;
 
   // Camera transform: world -> screen, scaled by 1/zoom around the screen center.
   ctx.save();
@@ -628,7 +643,7 @@ function render(): void {
   ctx.scale(1 / zoom, 1 / zoom);
   ctx.translate(-camPos.x, -camPos.y);
 
-  drawGrid(camPos, center, w, h, zoom, gridColor);
+  if (showGrid) drawGrid(camPos, center, w, h, zoom, gridColor, gridWidth, gridGap);
 
   // World-space rect covering the whole screen (padded): the outer boundary the
   // subtractive masks punch their holes in.
