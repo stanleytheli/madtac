@@ -42,6 +42,7 @@ const DEFAULT_STANDOFF = 130; // stop closing once the chase is this near
 const ARRIVE_EPS = 8; // "at the node" slop, so it doesn't orbit a waypoint
 const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a moving goal
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
+const FACE_NEXT_RADIUS = 200; // this close to the waypoint, aim at the hop after it
 
 export interface OracleOptions extends RobotOptions {
   /** Constant movement speed, world px/tick. */
@@ -60,6 +61,9 @@ export class Oracle extends Robot {
   /** True iff the last plan found my node == the target's node — the only
    *  state in which beelining at the target itself is allowed. */
   private atGoalNode = false;
+  /** The goal node of the last plan (nearest node that sees the chase), or
+   *  -1. Kept so blind facing can look up the hop after the waypoint. */
+  private goal = -1;
   private replanIn = 0;
 
   constructor(pos: Vec2, options: OracleOptions = {}) {
@@ -111,11 +115,34 @@ export class Oracle extends Robot {
     this.vel = sub(next, this.pos);
     this.pos = next;
 
-    // Face where it's going while walking blind — but hold the last combat aim
-    // for a beat after losing sight, instead of instantly swinging away.
+    // Facing while walking blind — after holding the last combat aim for a
+    // beat, so losing sight doesn't instantly swing the gun away. Blind aim
+    // looks at the node being walked to and, once near it, at the hop after
+    // it: the muzzle clears the corner before the body does. Direct steps
+    // (beeline / no graph) just face the walk.
     if (!target && this.ticksSinceTarget > AIM_HOLD_TICKS) {
-      this.angle = turnToward(this.angle, angleOf(dir));
+      const look = direct ? dest : this.lookahead(ai.nav, dest);
+      if (dist(look, this.pos) > 1e-3) {
+        this.angle = turnToward(this.angle, angleOf(sub(look, this.pos)));
+      }
     }
+  }
+
+  /** Where blind movement points the gun: the committed waypoint — or, within
+   *  FACE_NEXT_RADIUS of it, the next hop toward the plan's goal node. */
+  private lookahead(nav: NavGraph | null, dest: Vec2): Vec2 {
+    if (
+      nav &&
+      this.waypoint >= 0 &&
+      this.goal >= 0 &&
+      this.goal < nav.nodes.length &&
+      this.waypoint !== this.goal &&
+      dist(this.pos, dest) <= FACE_NEXT_RADIUS
+    ) {
+      const step = nav.route(this.waypoint, this.goal);
+      if (step) return nav.nodes[step.next].pos;
+    }
+    return dest;
   }
 
   /** Keep the committed waypoint fresh: advance on arrival at intermediate
@@ -142,9 +169,11 @@ export class Oracle extends Robot {
   private plan(nav: NavGraph, world: World, chase: Character): void {
     this.waypoint = -1;
     this.atGoalNode = false;
+    this.goal = -1;
     const goal = nav.nearestInSight(world, chase.pos, chase.z);
     const curr = nav.nearestWalkable(world, this.pos, this.z);
     if (goal < 0 || curr < 0) return;
+    this.goal = goal;
     if (curr === goal) {
       this.waypoint = goal;
       this.atGoalNode = true;

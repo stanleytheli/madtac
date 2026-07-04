@@ -1,5 +1,5 @@
 { "version": 1, "entities": [
-  {"kind":"spawn","x":0,"y":0,"z":0},
+  {"kind":"spawn","x":0,"y":0,"z":0,"primary":"M16","secondary":"M9"},
   {"kind":"enemy","x":320,"y":-260,"z":0,"type":"robot","team":"enemy","gun":"M16"},
   {"kind":"enemy","x":450,"y":-400,"z":0,"type":"oracle","team":"enemy","gun":"M16"},
   {"kind":"enemy","x":560,"y":-260,"z":0,"type":"tacoracle","team":"enemy","gun":"M16"},

@@ -166,8 +166,10 @@ export class Robot extends Character {
       this.alerted = true;
       this.ticksSinceTarget = 0;
       this.angle = turnToward(this.angle, angleOf(sub(target.pos, this.pos)));
-    } else if (!this.alerted) {
-      // Never spotted anyone: idly turn to a new random heading now and then.
+    } else if (!this.alerted && this.speed < 1e-3) {
+      // Never spotted anyone and standing still: idly turn to a new random
+      // heading now and then. (While walking, movement owns the facing — see
+      // Oracle.navChase — and wander would fight it tug-of-war.)
       if (this.wanderTimer <= 0) {
         this.wanderTarget = Math.random() * Math.PI * 2;
         this.wanderTimer = WANDER_MIN + Math.floor(Math.random() * (WANDER_MAX - WANDER_MIN));

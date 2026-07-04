@@ -54,7 +54,7 @@ import { walkable } from "./nav.ts";
 import { Oracle, type OracleOptions } from "./oracle.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "./team.ts";
-import { add, dist, norm, perp, scale, sub, vec, type Vec2 } from "./vec.ts";
+import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "./vec.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
 export const TAC_ORACLE_SKIN: Skin = {
@@ -70,12 +70,16 @@ export const TAC_ORACLE_SKIN: Skin = {
   outline: "#000000",
 };
 
-/** Burst-discipline aim budget: keep the spray envelope inside the target's
- *  angular width scaled by 1/lambda — i.e. ~1/lambda per-shot hit odds at the
- *  cutoff (see the header). Bigger lambda = tighter discipline, shorter bursts. */
+/** Burst-discipline aim budget: keep the spray envelope inside lambda x the
+ *  target's angular width — i.e. ~1/lambda per-shot hit odds at the cutoff
+ *  (see the header). Bigger lambda = longer, braver bursts. */
 const DEFAULT_LAMBDA = 5;
 /** Guns whose movePenalty is at least this are fired standing still. */
 const STAND_TO_SHOOT_PENALTY = 2.0;
+/** Aim-settle floor: the trigger waits until the muzzle is within the aim
+ *  budget of the target (or this, whichever is looser) — no spraying while
+ *  the turn-toward swing is still carrying the gun onto them. */
+const MIN_AIM_TOLERANCE = deg2rad(3);
 /** Default reaction time, ticks (~250ms — a decent human). See
  *  RobotOptions.reactionTime; 0 restores the launch-day inhuman slickness. */
 const DEFAULT_REACTION_TIME = 15;
@@ -267,11 +271,16 @@ export class TacOracle extends Oracle {
     );
   }
 
-  /** Fire only mid-burst in SHOOT mode — never near a teammate's line, and on
-   *  semi-auto guns only as fast as a trigger finger clicks. */
+  /** Fire only mid-burst in SHOOT mode, with the muzzle settled on the target
+   *  — never near a teammate's line, and on semi-auto guns only as fast as a
+   *  trigger finger clicks. */
   protected override shouldFire(ai: AiContext, target: Character | null): boolean {
     if (this.mode !== "shoot" || !this.fireOk || !target) return false;
     if (this.clickIn > 0) return false;
+    const d = dist(this.pos, target.pos);
+    let aimErr = Math.abs(angleOf(this.forward) - angleOf(sub(target.pos, this.pos)));
+    if (aimErr > Math.PI) aimErr = 2 * Math.PI - aimErr;
+    if (aimErr > Math.max(this.aimWidth(d), MIN_AIM_TOLERANCE)) return false;
     return this.laneClear(ai, target);
   }
 

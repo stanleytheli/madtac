@@ -15,7 +15,7 @@ import { Armor } from "./armor.ts";
 import { DEFAULT_ENEMY_GUN, ENEMY_TYPES, LEGACY_ENEMY_TYPES } from "./enemies.ts";
 import { Gun } from "./gun.ts";
 import { ArmorItem, GunItem } from "./item.ts";
-import { ARMOR_SPECS, GUN_SPECS } from "./specs.ts";
+import { ARMOR_SPECS, GUN_SPECS, SKINS } from "./specs.ts";
 import { TEAMS } from "./team.ts";
 import { vec, type Vec2 } from "./vec.ts";
 import {
@@ -35,7 +35,7 @@ import {
 
 // Re-exported for existing importers; the registries themselves live in
 // specs.ts so the enemy system can share them without a module cycle.
-export { ARMOR_SPECS, GUN_SPECS };
+export { ARMOR_SPECS, GUN_SPECS, SKINS };
 
 /** Where an enemy appears when the level starts. `type` keys ENEMY_TYPES; the
  *  loadout and allegiance are per-spawn (any type can wear any equipment). */
@@ -49,12 +49,27 @@ export interface EnemySpawn {
   armor?: string;
   /** TEAMS key. Omitted = "enemy". */
   team?: string;
+  /** SKINS key. Omitted = the type's own look. */
+  skin?: string;
 }
 
-/** Where the player starts. A singleton entity in the editor. */
+/** The player's weapons when a level doesn't say otherwise — also what
+ *  pre-loadout level strings (no primary/secondary keys) mean. */
+export const DEFAULT_PLAYER_PRIMARY = "M16";
+export const DEFAULT_PLAYER_SECONDARY = "M9";
+
+/** Where — and as what — the player starts. A singleton entity in the editor. */
 export interface PlayerSpawn {
   pos: Vec2;
   z: number;
+  /** GUN_SPECS key, or "none" for an empty slot. Omitted = the default gun
+   *  above; saves write the choice explicitly either way. */
+  primary?: string;
+  secondary?: string;
+  /** ARMOR_SPECS key. Omitted = unarmored. */
+  armor?: string;
+  /** SKINS key. Omitted = the standard player look. */
+  skin?: string;
 }
 
 /** Everything a level owns: the world's static arrays plus the spawn tables. */
@@ -127,6 +142,56 @@ export interface EntityDef {
 
 const zField = prop("z", "number");
 
+/** Worn armor by ARMOR_SPECS key ("" = none, omitted from the level string).
+ *  Shared by enemy spawns and the player spawn. */
+const armorField: FieldDef = {
+  key: "armor",
+  type: "select",
+  options: () => [
+    { value: "", label: "(none)" },
+    ...Object.entries(ARMOR_SPECS).map(([value, a]) => ({ value, label: a.name })),
+  ],
+  get: (e) => e.armor ?? "",
+  set: (e, v) => {
+    e.armor = v in ARMOR_SPECS ? v : undefined;
+  },
+};
+
+/** "DEFAULT_SKIN" -> "default", "TAC_ORACLE_SKIN" -> "tac oracle". */
+const skinLabel = (key: string): string =>
+  key.replace(/_?SKIN$/, "").replace(/_/g, " ").toLowerCase() || "default";
+
+/** Cosmetic skin override by SKINS key ("" = whatever the character would
+ *  wear anyway). Shared by enemy spawns and the player spawn. */
+const skinField: FieldDef = {
+  key: "skin",
+  type: "select",
+  options: () => [
+    { value: "", label: "(default)" },
+    ...Object.keys(SKINS).map((value) => ({ value, label: skinLabel(value) })),
+  ],
+  get: (e) => e.skin ?? "",
+  set: (e, v) => {
+    e.skin = v in SKINS ? v : undefined;
+  },
+};
+
+/** A player weapon slot: a GUN_SPECS key or "none" for an empty slot. The
+ *  current choice serializes explicitly (get never returns ""), so pre-loadout
+ *  level strings keep meaning the classic default while new saves self-describe. */
+const playerSlotField = (key: "primary" | "secondary", fallback: string): FieldDef => ({
+  key,
+  type: "select",
+  options: () => [
+    { value: "none", label: "(none)" },
+    ...Object.entries(GUN_SPECS).map(([value, g]) => ({ value, label: g.name })),
+  ],
+  get: (e) => e[key] ?? fallback,
+  set: (e, v) => {
+    if (v === "none" || v in GUN_SPECS) e[key] = v;
+  },
+});
+
 /** Render depth within the entity's category + level (0 = default/unset —
  *  omitted from the JSON, and ties keep authoring order). */
 const depthField: FieldDef = {
@@ -161,10 +226,21 @@ export const ENTITY_DEFS: EntityDef[] = [
     label: "Player spawn",
     shape: "point",
     singleton: true,
-    fields: [zField],
+    fields: [
+      zField,
+      playerSlotField("primary", DEFAULT_PLAYER_PRIMARY),
+      playerSlotField("secondary", DEFAULT_PLAYER_SECONDARY),
+      armorField,
+      skinField,
+    ],
     list: (s) => s.playerSpawn,
     match: () => true,
-    create: (pos, z) => ({ pos, z }),
+    create: (pos, z) => ({
+      pos,
+      z,
+      primary: DEFAULT_PLAYER_PRIMARY,
+      secondary: DEFAULT_PLAYER_SECONDARY,
+    }),
     zOf: (e) => e.z,
     marker: () => ({ color: "#ffd94a", label: "player" }),
   },
@@ -210,18 +286,8 @@ export const ENTITY_DEFS: EntityDef[] = [
           if (v in GUN_SPECS) e.gun = v;
         },
       },
-      {
-        key: "armor",
-        type: "select",
-        options: () => [
-          { value: "", label: "(none)" },
-          ...Object.entries(ARMOR_SPECS).map(([value, a]) => ({ value, label: a.name })),
-        ],
-        get: (e) => e.armor ?? "", // "" = none, omitted from the level string
-        set: (e, v) => {
-          e.armor = v in ARMOR_SPECS ? v : undefined;
-        },
-      },
+      armorField,
+      skinField,
     ],
     list: (s) => s.spawns,
     match: () => true,

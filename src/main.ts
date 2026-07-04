@@ -8,7 +8,16 @@ import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
 import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
 import { spawnEnemy } from "./enemies.ts";
-import { loadLevel, type EnemySpawn, type PlayerSpawn } from "./level.ts";
+import {
+  ARMOR_SPECS,
+  DEFAULT_PLAYER_PRIMARY,
+  DEFAULT_PLAYER_SECONDARY,
+  GUN_SPECS,
+  SKINS,
+  loadLevel,
+  type EnemySpawn,
+  type PlayerSpawn,
+} from "./level.ts";
 import { LEVELS } from "./levels.ts";
 import { NavGraph } from "./nav.ts";
 import { Robot, type AiContext } from "./robot.ts";
@@ -62,16 +71,27 @@ const levelText = LEVELS[levelName ?? "default"] ?? null;
 const loaded = levelText ? loadLevel(levelText) : null;
 const world = loaded ? loaded.world : createWorld();
 
-// Where the player starts — a singleton entity in the editor, so saved levels
-// carry it. Levels without one fall back to the origin at ground level.
+// Where — and as what — the player starts: a singleton entity in the editor,
+// so saved levels carry the position, loadout, armor, and skin. Levels without
+// one fall back to the origin at ground level with the classic kit.
 const playerSpawn: PlayerSpawn[] = loaded ? loaded.playerSpawn : [{ pos: vec(0, 0), z: 0 }];
 const start = playerSpawn[0] ?? { pos: vec(0, 0), z: 0 };
 
-const player = new Character(vec(start.pos.x, start.pos.y), DEFAULT_SKIN, {
-  primary: new Gun(Guns.M16),
-  secondary: new Gun(Guns.M9),
+/** The gun for a player slot: "none" = empty, omitted/unknown = the default. */
+function slotGun(key: string | undefined, fallback: string): Gun | undefined {
+  if (key === "none") return undefined;
+  const spec = GUN_SPECS[key ?? fallback] ?? GUN_SPECS[fallback];
+  return spec ? new Gun(spec) : undefined;
+}
+
+const player = new Character(vec(start.pos.x, start.pos.y), SKINS[start.skin ?? ""] ?? DEFAULT_SKIN, {
+  primary: slotGun(start.primary, DEFAULT_PLAYER_PRIMARY),
+  secondary: slotGun(start.secondary, DEFAULT_PLAYER_SECONDARY),
   hand: new Gun(Guns.UNARMED),
 });
+if (start.armor && ARMOR_SPECS[start.armor]) {
+  player.equipArmor(new Armors.Armor(ARMOR_SPECS[start.armor]));
+}
 player.z = start.z;
 player.team = "player";
 

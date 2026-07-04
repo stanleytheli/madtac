@@ -15,7 +15,7 @@ import { Armor } from "./armor.ts";
 import type { EnemySpawn } from "./level.ts";
 import { Oracle } from "./oracle.ts";
 import { ELITE_ROBOT_SKIN, Robot, type RobotOptions } from "./robot.ts";
-import { ARMOR_SPECS, GUN_SPECS } from "./specs.ts";
+import { ARMOR_SPECS, GUN_SPECS, SKINS } from "./specs.ts";
 import { TacOracle } from "./tacoracle.ts";
 import { TEAMS } from "./team.ts";
 import { vec, type Vec2 } from "./vec.ts";
@@ -78,6 +78,7 @@ export function spawnEnemy(s: EnemySpawn): Robot {
   const gunKey = s.gun ?? legacy?.gun;
   if (gunKey && GUN_SPECS[gunKey]) opts.gun = GUN_SPECS[gunKey];
   if (s.team && s.team in TEAMS) opts.team = s.team;
+  if (s.skin && SKINS[s.skin]) opts.skin = SKINS[s.skin];
 
   const r = t.make(vec(s.pos.x, s.pos.y), opts); // pos copied: live NPCs move
   if (s.armor && ARMOR_SPECS[s.armor]) r.equipArmor(new Armor(ARMOR_SPECS[s.armor]));

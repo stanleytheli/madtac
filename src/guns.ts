@@ -128,7 +128,7 @@ export const M16: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 7,
-    bulletSpeed: 35,
+    bulletSpeed: 60,
     bulletLife: 70,
     auto: true,
     spread: 0.02,
@@ -137,7 +137,7 @@ export const M16: GunSpec = {
     reloadTime: 150,
     drawTime: 40,
     tracerWidth: 3.5,
-    tracerLength: 150,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 8,
@@ -164,7 +164,7 @@ export const AK47: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 8,
-    bulletSpeed: 35,
+    bulletSpeed: 60,
     bulletLife: 70,
     auto: true,
     spread: 0.025,
@@ -173,7 +173,7 @@ export const AK47: GunSpec = {
     reloadTime: 150,
     drawTime: 40,
     tracerWidth: 4.5,
-    tracerLength: 160,
+    tracerLength: 170,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 10,
@@ -200,7 +200,7 @@ export const M249: GunSpec = {
   speed: 0.75,
   fire: {
     delay: 7,
-    bulletSpeed: 35,
+    bulletSpeed: 60,
     bulletLife: 70,
     auto: true,
     spread: 0.04,
@@ -209,7 +209,7 @@ export const M249: GunSpec = {
     reloadTime: 360,
     drawTime: 75,
     tracerWidth: 3.5,
-    tracerLength: 150,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 7,
@@ -240,7 +240,7 @@ export const M9: GunSpec = {
   speed: 0.925,
   fire: {
     delay: 6,
-    bulletSpeed: 30,
+    bulletSpeed: 50,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
@@ -249,7 +249,7 @@ export const M9: GunSpec = {
     reloadTime: 70,
     drawTime: 30,
     tracerWidth: 3,
-    tracerLength: 110,
+    tracerLength: 130,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 12,
@@ -276,7 +276,7 @@ export const Deagle: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 10,
-    bulletSpeed: 35,
+    bulletSpeed: 60,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
@@ -285,7 +285,7 @@ export const Deagle: GunSpec = {
     reloadTime: 90,
     drawTime: 40,
     tracerWidth: 5,
-    tracerLength: 140,
+    tracerLength: 175,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 17,
@@ -312,7 +312,7 @@ export const Golden_Deagle: GunSpec = {
   speed: 0.8,
   fire: {
     delay: 13,
-    bulletSpeed: 35,
+    bulletSpeed: 60,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
