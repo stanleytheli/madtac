@@ -1,0 +1,4 @@
+{ "version": 1, "entities": [
+  {"kind":"spawn","x":0,"y":0,"z":0},
+  {"kind":"floor","x":0,"y":0,"w":0,"h":0,"level":0,"color":"#c5ba72","visibleFrom":{"atLeast":-1},"infinite":true,"grid":true,"gridColor":"#aa9e55"}
+] }

@@ -1,11 +1,21 @@
 import { Character } from "./actor.ts";
-import { Armor, ARMOR_L3, type ArmorSpec } from "./armor.ts";
 import { BODY_RADIUS, type Skin } from "./character.ts";
 import { hasLineOfSight } from "./collision.ts";
 import { EnemyGun, Gun } from "./gun.ts";
-import { M16, M9, UNARMED, type GunSpec } from "./guns.ts";
-import { angleOf, deg2rad, fromAngle, sub, vec, type Vec2 } from "./vec.ts";
+import { M16, UNARMED, type GunSpec } from "./guns.ts";
+import type { NavGraph } from "./nav.ts";
+import { areHostile, type TeamId } from "./team.ts";
+import { angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "./vec.ts";
 import type { World } from "./world.ts";
+
+/** Everything an AI gets to look at each tick. Built once per tick by main.ts
+ *  and shared by every thinking character. */
+export interface AiContext {
+  world: World;
+  characters: readonly Character[];
+  /** The level's baked path cache, or null if the level has no nodes. */
+  nav: NavGraph | null;
+}
 
 /** Flat gray placeholder enemy. */
 export const ROBOT_SKIN: Skin = {
@@ -46,7 +56,7 @@ const WANDER_MAX = 180; // ...up to ~3s
  * Rotate angle `a` toward angle `b` (both radians) the short way around, taking a
  * step that eases down as it closes (so it doesn't snap instantly to target).
  */
-function turnToward(a: number, b: number): number {
+export function turnToward(a: number, b: number): number {
   // Signed shortest delta in [-pi, pi]; its sign is sgn(sin(b - a)).
   const delta = Math.atan2(Math.sin(b - a), Math.cos(b - a));
   const distDeg = Math.abs(delta) * (180 / Math.PI);
@@ -72,6 +82,17 @@ export interface RobotOptions {
   gun?: GunSpec;
   /** The z level it stands on (e.g. 1 for a balcony guard, -1 in a bunker). */
   z?: number;
+  /** Team allegiance (see team.ts). Decides who it attacks. */
+  team?: TeamId;
+  /** Wield the gun for real — the spec's damage, a finite magazine with
+   *  hardcore reloads, and the skill-based recoil pattern — instead of the
+   *  flat-spread, infinite-ammo EnemyGun wrapper. `damage`/`spreadDeg`/`delay`
+   *  are ignored. For AIs that manage recoil and ammo themselves (tacoracle.ts). */
+  realGun?: boolean;
+  /** How slick this AI is, in ticks (60/s): a hostile must stay in view this
+   *  long before it's reacted to, and (TacOracle) state changes like "recoil
+   *  settled" or "reload done" are acted on this late. 0 = inhumanly instant. */
+  reactionTime?: number;
 }
 
 const ROBOT_DEFAULTS: Required<RobotOptions> = {
@@ -82,46 +103,71 @@ const ROBOT_DEFAULTS: Required<RobotOptions> = {
   delay: 10,
   gun: M16,
   z: 0,
+  team: "enemy",
+  realGun: false,
+  reactionTime: 0,
 };
 
 /**
- * A minimal hostile enemy: stands in place, sweeps its aim, and opens fire with a
- * sloppy spread the instant it can see any part of the player. It turns smoothly
- * (never instantly) toward whatever it's tracking. Parametrized so we can build
- * all kinds of robots (tanky/elite/different guns/etc.).
+ * A minimal hostile NPC: stands in place, sweeps its aim, and opens fire with a
+ * sloppy spread the instant it can see any part of a character on a team it's
+ * hostile to. It turns smoothly (never instantly) toward whatever it's tracking.
+ * Parametrized so we can build all kinds of robots (tanky/elite/different
+ * guns/etc.), and subclassed for mobile AIs (see oracle.ts) via the `act` hook.
  */
 export class Robot extends Character {
-  private angle: number;
-  private seenPlayer = false;
+  protected angle: number;
+  /** Ticks since a hostile was last in sight (Infinity = never). Subclasses use
+   *  it to decide how long to hold the last combat aim after losing sight. */
+  protected ticksSinceTarget = Infinity;
+  /** See RobotOptions.reactionTime. */
+  protected readonly reactionTime: number;
+  /** Sight-acquisition clock: counts up (to reactionTime) while a hostile is
+   *  in view, and decays — rather than resetting — while none is, so a
+   *  one-tick blink around a corner doesn't restart the clock but a
+   *  long-hidden target must be re-acquired from scratch. */
+  private seenFor = 0;
+  private alerted = false;
   private wanderTarget: number;
   private wanderTimer = 0;
 
   constructor(pos: Vec2, options: RobotOptions = {}) {
     const opts = { ...ROBOT_DEFAULTS, ...options };
     super(pos, opts.skin, {
-      primary: new EnemyGun(opts.gun, { damage: opts.damage, spreadDeg: opts.spreadDeg, delay: opts.delay }),
+      primary: opts.realGun
+        ? new Gun(opts.gun)
+        : new EnemyGun(opts.gun, { damage: opts.damage, spreadDeg: opts.spreadDeg, delay: opts.delay }),
       hand: new Gun(UNARMED),
     });
     this.maxHp = opts.health;
     this.hp = opts.health;
     this.z = opts.z;
+    this.team = opts.team;
+    this.reactionTime = opts.reactionTime;
     this.angle = Math.random() * Math.PI * 2;
     this.wanderTarget = this.angle;
     this.forward = fromAngle(this.angle);
   }
 
   /** Per-tick AI. Call after `tickWeapon()` so the fire cooldown is up to date. */
-  think(world: World, player: Character): void {
+  think(ai: AiContext): void {
     // Sight is per-level: a balcony guard ignores (and can't hit) a ground-level
-    // player, and vice versa, until they share a z.
-    const visible = this.z === player.z && this.canSee(world, player);
+    // target, and vice versa, until they share a z.
+    const spotted = this.nearestVisibleHostile(ai);
+    // ...and reaction-gated: a hostile only becomes the target after staying
+    // in view for reactionTime ticks (see seenFor).
+    this.seenFor = spotted
+      ? Math.min(this.seenFor + 1, this.reactionTime)
+      : Math.max(this.seenFor - 1, 0);
+    const target = spotted && this.seenFor >= this.reactionTime ? spotted : null;
 
-    if (visible) {
+    if (target) {
       // Track and shoot.
-      this.seenPlayer = true;
-      this.angle = turnToward(this.angle, angleOf(sub(player.pos, this.pos)));
-    } else if (!this.seenPlayer) {
-      // Never spotted the player: idly turn to a new random heading now and then.
+      this.alerted = true;
+      this.ticksSinceTarget = 0;
+      this.angle = turnToward(this.angle, angleOf(sub(target.pos, this.pos)));
+    } else if (!this.alerted) {
+      // Never spotted anyone: idly turn to a new random heading now and then.
       if (this.wanderTimer <= 0) {
         this.wanderTarget = Math.random() * Math.PI * 2;
         this.wanderTimer = WANDER_MIN + Math.floor(Math.random() * (WANDER_MAX - WANDER_MIN));
@@ -129,59 +175,96 @@ export class Robot extends Character {
       this.wanderTimer -= 1;
       this.angle = turnToward(this.angle, this.wanderTarget);
     }
-    // else: has seen the player but lost sight -> hold angle, "on alert".
+    // else: has seen a target but lost sight -> hold angle, "on alert".
+
+    if (!target) this.ticksSinceTarget += 1; // Infinity stays Infinity
+
+    this.act(ai, target);
 
     this.forward = fromAngle(this.angle);
 
-    if (visible) this.fire(world); // no-op while the gun is on cooldown
+    if (this.shouldFire(ai, target) && this.fire(ai.world)) this.onFired();
   }
 
-  /** Sees the player if any ray to the player's bounding box (center + corners) is clear. */
-  private canSee(world: World, player: Character): boolean {
-    const r = BODY_RADIUS;
-    const p = player.pos;
-    const points: Vec2[] = [
-      p,
-      vec(p.x - r, p.y - r),
-      vec(p.x + r, p.y - r),
-      vec(p.x - r, p.y + r),
-      vec(p.x + r, p.y + r),
-    ];
-    return points.some((pt) => hasLineOfSight(this.pos, pt, world.obstacles, this.z));
+  /** Subclass hook: hold the trigger this tick? The base Robot fires whenever
+   *  a target is in sight; burst-firing AIs (TacOracle) override. */
+  protected shouldFire(_ai: AiContext, target: Character | null): boolean {
+    return target !== null;
+  }
+
+  /** Subclass hook: a shot actually went out this tick (the trigger pull beat
+   *  the cooldown). Trigger-cadence AIs (TacOracle's semi-auto clicking) use it. */
+  protected onFired(): void {}
+
+  /** Subclass hook, called every think tick after aiming and before firing.
+   *  `target` is the hostile currently in sight (null = none). The base Robot
+   *  stands still; movers (Oracle) override this. */
+  protected act(_ai: AiContext, _target: Character | null): void {}
+
+  /** The living hostiles this character wants dead, per the team registry. */
+  protected hostiles(ai: AiContext): Character[] {
+    return ai.characters.filter(
+      (c) => c !== this && c.hp > 0 && areHostile(this.team, c.team),
+    );
+  }
+
+  /** The closest hostile on this character's own z that it can actually see. */
+  protected nearestVisibleHostile(ai: AiContext): Character | null {
+    let best: Character | null = null;
+    let bestD = Infinity;
+    for (const c of this.hostiles(ai)) {
+      if (c.z !== this.z) continue;
+      const d = dist(this.pos, c.pos);
+      if (d >= bestD) continue;
+      if (!this.canSee(ai.world, c)) continue;
+      best = c;
+      bestD = d;
+    }
+    return best;
+  }
+
+  /** The closest hostile anywhere — any z, seen or not (for chasing AIs). */
+  protected nearestHostile(ai: AiContext): Character | null {
+    let best: Character | null = null;
+    let bestD = Infinity;
+    for (const c of this.hostiles(ai)) {
+      const d = dist(this.pos, c.pos);
+      if (d < bestD) {
+        best = c;
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /** Sees the target if any of its sample points has a clear ray. */
+  protected canSee(world: World, target: Character): boolean {
+    return this.visibility(world, target) > 0;
+  }
+
+  /** How exposed the target is from here: the number of its sample points
+   *  (0..5, see targetPoints) with an unobstructed ray on this character's
+   *  level. 0 = fully hidden, 5 = fully in the open. */
+  protected visibility(world: World, target: Character): number {
+    let seen = 0;
+    for (const pt of targetPoints(target)) {
+      if (hasLineOfSight(this.pos, pt, world.obstacles, this.z)) seen += 1;
+    }
+    return seen;
   }
 }
 
-// --- enemy flavours -----------------------------------------------------------
-// The named enemy types levels can spawn. This is the single place a new unique
-// enemy is registered: add an entry and it shows up in the level editor's
-// palette and in level strings (keyed by the record key) automatically.
-
-export interface EnemyTypeDef {
-  /** Human-readable name (editor palette / inspector dropdown). */
-  label: string;
-  /** Robot construction options; the spawn's z overrides options.z. */
-  options: RobotOptions;
-  /** Armor worn from the start, if any. */
-  armor?: ArmorSpec;
-  /** Marker color in the level editor. */
-  color: string;
-}
-
-export const ENEMY_TYPES: Record<string, EnemyTypeDef> = {
-  grunt: { label: "Grunt (M16)", options: {}, color: "#c94f4f" },
-  pistol: { label: "Grunt (M9)", options: { gun: M9 }, color: "#d9913d" },
-  elite: {
-    label: "Elite",
-    options: { health: 200, damage: 10, spreadDeg: 10, skin: ELITE_ROBOT_SKIN, gun: M16, delay: 10 },
-    armor: ARMOR_L3,
-    color: "#8a4ad0",
-  },
-};
-
-/** Instantiate a live Robot from a named enemy type at a position and level. */
-export function spawnEnemy(type: string, pos: Vec2, z: number): Robot {
-  const t = ENEMY_TYPES[type] ?? ENEMY_TYPES.grunt;
-  const r = new Robot(pos, { ...t.options, z });
-  if (t.armor) r.equipArmor(new Armor(t.armor));
-  return r;
+/** The sample points sight and exposure checks ray against: the target's
+ *  center plus the four corners of its bounding box. Seeing any one of them
+ *  means seeing the target; how many are seen measures partial cover. */
+export function targetPoints(target: Character): Vec2[] {
+  const r = BODY_RADIUS;
+  const p = target.pos;
+  return [
+    p,
+    vec(p.x - r, p.y - r),
+    vec(p.x + r, p.y - r),
+    vec(p.x - r, p.y + r),
+    vec(p.x + r, p.y + r),
+  ];
 }

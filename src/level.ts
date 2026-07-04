@@ -8,35 +8,47 @@
  * inspector) are both generic over the defs, so new game content costs little
  * to no editor work:
  *   - new gun / armor:   export the spec from guns.ts / armor.ts (auto-discovered)
- *   - new enemy flavour: add one entry to ENEMY_TYPES in robot.ts
+ *   - new enemy flavour: add one entry to ENEMY_TYPES in enemies.ts
  *   - new entity kind:   add one EntityDef to ENTITY_DEFS below
  */
-import { Armor, type ArmorSpec } from "./armor.ts";
-import * as Armors from "./armor.ts";
+import { Armor } from "./armor.ts";
+import { DEFAULT_ENEMY_GUN, ENEMY_TYPES, LEGACY_ENEMY_TYPES } from "./enemies.ts";
 import { Gun } from "./gun.ts";
-import type { GunSpec } from "./guns.ts";
-import * as Guns from "./guns.ts";
 import { ArmorItem, GunItem } from "./item.ts";
-import { ENEMY_TYPES } from "./robot.ts";
+import { ARMOR_SPECS, GUN_SPECS } from "./specs.ts";
+import { TEAMS } from "./team.ts";
 import { vec, type Vec2 } from "./vec.ts";
 import {
   WALL_T,
   makeCrate,
   makeFence,
   makeFloor,
+  makeNode,
   makeStairs,
   makeWall,
+  sortRenderDepth,
   type Floor,
   type Obstacle,
   type Stairs,
   type World,
 } from "./world.ts";
 
-/** Where an enemy appears when the level starts. `type` keys ENEMY_TYPES. */
+// Re-exported for existing importers; the registries themselves live in
+// specs.ts so the enemy system can share them without a module cycle.
+export { ARMOR_SPECS, GUN_SPECS };
+
+/** Where an enemy appears when the level starts. `type` keys ENEMY_TYPES; the
+ *  loadout and allegiance are per-spawn (any type can wear any equipment). */
 export interface EnemySpawn {
   type: string;
   pos: Vec2;
   z: number;
+  /** GUN_SPECS key. Omitted = the type's default weapon. */
+  gun?: string;
+  /** ARMOR_SPECS key. Omitted = unarmored. */
+  armor?: string;
+  /** TEAMS key. Omitted = "enemy". */
+  team?: string;
 }
 
 /** Where the player starts. A singleton entity in the editor. */
@@ -53,34 +65,22 @@ export interface LevelState {
   playerSpawn: PlayerSpawn[];
 }
 
-// --- spec registries (auto-discovered) ---------------------------------------
-// Keyed by the spec's export name, which is what gets serialized — so renaming
-// an export breaks old level strings, but adding one is free.
-
-/** Every exported GunSpec with a ground icon (icon-less specs like fists can't
- *  lie on the ground anyway). */
-export const GUN_SPECS: Record<string, GunSpec> = {};
-for (const [k, v] of Object.entries(Guns)) {
-  if (v && typeof v === "object" && "armorPen" in v && (v as GunSpec).icon) {
-    GUN_SPECS[k] = v as GunSpec;
-  }
-}
-
-/** Every exported ArmorSpec. */
-export const ARMOR_SPECS: Record<string, ArmorSpec> = {};
-for (const [k, v] of Object.entries(Armors)) {
-  if (v && typeof v === "object" && "border" in v && "level" in v) {
-    ARMOR_SPECS[k] = v as ArmorSpec;
-  }
-}
-
 const firstKey = (rec: Record<string, unknown>): string => Object.keys(rec)[0];
 const keyOf = <T>(rec: Record<string, T>, val: T): string =>
   Object.keys(rec).find((k) => rec[k] === val) ?? firstKey(rec);
 
 // --- field + entity definitions ----------------------------------------------
 
-export type FieldType = "number" | "checkbox" | "text" | "color" | "select" | "json";
+export type FieldType =
+  | "number"
+  | "checkbox"
+  | "text"
+  | "color"
+  | "select"
+  | "json"
+  /** A Region[] (hideWhenIn): the editor renders these as draggable/resizable
+   *  rect borders with an add/remove list instead of a raw JSON input. */
+  | "regions";
 
 /** One editable/serializable property of an entity. The inspector renders it
  *  from `type`; the serializer stores whatever `get` returns (must be JSON-able
@@ -127,8 +127,23 @@ export interface EntityDef {
 
 const zField = prop("z", "number");
 
-/** Obstacle appearance: fill + border color/size (factory-set, all overridable). */
+/** Render depth within the entity's category + level (0 = default/unset —
+ *  omitted from the JSON, and ties keep authoring order). */
+const depthField: FieldDef = {
+  key: "depth",
+  type: "number",
+  get: (e) => e.depth ?? 0,
+  set: (e, v) => {
+    e.depth = v === 0 ? undefined : v;
+  },
+};
+
+/** Obstacle appearance: fill + border color/size (factory-set, all overridable),
+ *  plus the optional cosmetic visibleFrom z-set (empty = always visible). */
 const obstacleLook: FieldDef[] = [
+  depthField,
+  prop("invisible", "checkbox"),
+  prop("visibleFrom", "json"),
   prop("fill", "color"),
   prop("stroke", "color"),
   prop("strokeWidth", "number"),
@@ -165,15 +180,74 @@ export const ENTITY_DEFS: EntityDef[] = [
         options: () => Object.entries(ENEMY_TYPES).map(([value, t]) => ({ value, label: t.label })),
         get: (e) => e.type,
         set: (e, v) => {
-          if (v in ENEMY_TYPES) e.type = v;
+          // Old level strings baked the loadout into the type name ("pistol");
+          // translate those into the type + per-spawn gun scheme on load. (A
+          // later "gun" key in the record still overrides, fields apply in order.)
+          const legacy = LEGACY_ENEMY_TYPES[v];
+          if (legacy) {
+            e.type = legacy.type;
+            if (legacy.gun) e.gun = legacy.gun;
+          } else if (v in ENEMY_TYPES) {
+            e.type = v;
+          }
+        },
+      },
+      {
+        key: "team",
+        type: "select",
+        options: () => Object.values(TEAMS).map((t) => ({ value: t.id, label: t.label })),
+        get: (e) => e.team ?? "enemy",
+        set: (e, v) => {
+          if (v in TEAMS) e.team = v;
+        },
+      },
+      {
+        key: "gun",
+        type: "select",
+        options: () => Object.entries(GUN_SPECS).map(([value, g]) => ({ value, label: g.name })),
+        get: (e) => e.gun ?? DEFAULT_ENEMY_GUN,
+        set: (e, v) => {
+          if (v in GUN_SPECS) e.gun = v;
+        },
+      },
+      {
+        key: "armor",
+        type: "select",
+        options: () => [
+          { value: "", label: "(none)" },
+          ...Object.entries(ARMOR_SPECS).map(([value, a]) => ({ value, label: a.name })),
+        ],
+        get: (e) => e.armor ?? "", // "" = none, omitted from the level string
+        set: (e, v) => {
+          e.armor = v in ARMOR_SPECS ? v : undefined;
         },
       },
     ],
     list: (s) => s.spawns,
     match: () => true,
-    create: (pos, z) => ({ type: firstKey(ENEMY_TYPES), pos, z }),
+    create: (pos, z) => ({
+      type: firstKey(ENEMY_TYPES),
+      gun: DEFAULT_ENEMY_GUN,
+      team: "enemy",
+      pos,
+      z,
+    }),
     zOf: (e) => e.z,
-    marker: (e) => ({ color: ENEMY_TYPES[e.type]?.color ?? "#e05555", label: e.type }),
+    marker: (e) => ({
+      color: TEAMS[e.team ?? "enemy"]?.color ?? ENEMY_TYPES[e.type]?.color ?? "#e05555",
+      label: e.type,
+    }),
+  },
+  {
+    kind: "node",
+    label: "Nav node",
+    shape: "point",
+    fields: [zField],
+    list: (s) => s.world.nodes,
+    match: () => true,
+    create: (pos, z) => makeNode(pos, z),
+    zOf: (e) => e.z,
+    marker: () => ({ color: "#35d0c5", label: "node" }),
   },
   {
     kind: "gun",
@@ -268,11 +342,13 @@ export const ENTITY_DEFS: EntityDef[] = [
       prop("zAtMax", "number"),
       prop("visibleFrom", "json"),
       prop("color", "color"),
+      prop("color2", "color"),
       prop("steps", "number"),
+      depthField,
     ],
     list: (s) => s.world.stairs,
     match: () => true,
-    create: (pos, z) => makeStairs(pos, 120, 200, "y", z + 1, z, [z, z + 1], "#7c6034"),
+    create: (pos, z) => makeStairs(pos, 120, 200, "y", z + 1, z, [z, z + 1], "#7c6034", "#beb09a"),
     zOf: (e: Stairs) => Math.min(e.zAtMin, e.zAtMax),
   },
   {
@@ -281,18 +357,39 @@ export const ENTITY_DEFS: EntityDef[] = [
     shape: "rect",
     fields: [
       prop("level", "number"),
+      depthField,
       prop("color", "color"),
       prop("visibleFrom", "json"),
       prop("hideWhenUnder", "checkbox"),
-      prop("hideWhenIn", "json"),
+      prop("hideWhenIn", "regions"),
       prop("enclosing", "checkbox"),
       prop("infinite", "checkbox"),
+      prop("invisible", "checkbox"),
       // Background settings — only consulted while this floor IS the background
       // (infinite + visible), but harmless to set on any floor.
       prop("grid", "checkbox"),
       prop("gridColor", "color"),
       prop("gridWidth", "number"),
       prop("gridGap", "number"),
+      // Stand-on camera zoom: absolute override / additive delta. 0 = unset
+      // (a 0 zoom is meaningless and a 0 delta is a no-op, so 0 doubles as
+      // "clear" — number inputs have no other way to say undefined).
+      {
+        key: "zoom",
+        type: "number",
+        get: (e) => e.zoom ?? 0,
+        set: (e, v) => {
+          e.zoom = v === 0 ? undefined : v;
+        },
+      },
+      {
+        key: "deltaZoom",
+        type: "number",
+        get: (e) => e.deltaZoom ?? 0,
+        set: (e, v) => {
+          e.deltaZoom = v === 0 ? undefined : v;
+        },
+      },
     ],
     list: (s) => s.world.floors,
     match: () => true,
@@ -347,6 +444,7 @@ export function applyLevel(state: LevelState, text: string): void {
   w.obstacles.length = 0;
   w.floors.length = 0;
   w.stairs.length = 0;
+  w.nodes.length = 0;
   w.items.length = 0;
   w.bullets.length = 0;
   w.particles.length = 0;
@@ -357,25 +455,35 @@ export function applyLevel(state: LevelState, text: string): void {
     const j = raw as Record<string, any>;
     const def = defByKind.get(j.kind);
     if (!def || typeof j.x !== "number" || typeof j.y !== "number") continue;
-    const z =
-      typeof j.z === "number" ? j.z
-      : typeof j.level === "number" ? j.level
-      : typeof j.zAtMax === "number" ? j.zAtMax
-      : 0;
-    const e = def.create(vec(j.x, j.y), z);
-    if (def.shape === "rect") {
-      if (typeof j.w === "number") e.w = j.w;
-      if (typeof j.h === "number") e.h = j.h;
-    }
-    for (const f of def.fields) if (f.key in j) f.set(e, j[f.key]);
-    def.list(state).push(e);
+    def.list(state).push(entityFromJSON(def, j));
   }
+
+  // Bake the static render order — the one sort the game ever runs per load.
+  sortRenderDepth(w);
+}
+
+/** Build one entity from its JSON record (not added to any list). The inverse
+ *  of entityToJSON — also the editor's paste path, so copies deep-clone through
+ *  the same code as level loading. */
+export function entityFromJSON(def: EntityDef, j: Record<string, any>): any {
+  const z =
+    typeof j.z === "number" ? j.z
+    : typeof j.level === "number" ? j.level
+    : typeof j.zAtMax === "number" ? j.zAtMax
+    : 0;
+  const e = def.create(vec(j.x, j.y), z);
+  if (def.shape === "rect") {
+    if (typeof j.w === "number") e.w = j.w;
+    if (typeof j.h === "number") e.h = j.h;
+  }
+  for (const f of def.fields) if (f.key in j) f.set(e, j[f.key]);
+  return e;
 }
 
 /** Parse a level string into a fresh, self-contained LevelState. */
 export function loadLevel(text: string): LevelState {
   const state: LevelState = {
-    world: { obstacles: [], floors: [], stairs: [], items: [], bullets: [], particles: [] },
+    world: { obstacles: [], floors: [], stairs: [], nodes: [], items: [], bullets: [], particles: [] },
     spawns: [],
     playerSpawn: [],
   };

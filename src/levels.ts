@@ -1,8 +1,20 @@
 /**
- * Saved levels, as produced by the level editor (open the game with ?edit=true,
- * build, hit Export, and paste the string here between backticks).
+ * The level folder registry. Every `src/levels/*.json` (as saved by the editor:
+ * open ?edit=true, build, hit Save) is bundled automatically and available here
+ * by filename — drop a file in the folder, no code changes needed.
  *
- * While LEVEL is null the game boots the hand-coded demo map in world.ts;
- * set it to a level string and main.ts loads that instead — spawns included.
+ * Booting a level: `?level=<name>` loads levels/<name>.json. With no param, a
+ * file named `default.json` (if the folder has one) replaces the hand-coded
+ * demo map in world.ts.
  */
-export const LEVEL: string | null = null;
+const files = import.meta.glob("./levels/*.json", {
+  eager: true,
+  query: "?raw",
+  import: "default",
+}) as Record<string, string>;
+
+export const LEVELS: Record<string, string> = {};
+for (const [path, text] of Object.entries(files)) {
+  const m = /([^/\\]+)\.json$/.exec(path);
+  if (m) LEVELS[m[1]] = text;
+}

@@ -2,14 +2,16 @@ import { Character } from "./actor.ts";
 import * as Armors from "./armor.ts";
 import { Body } from "./body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
-import { hasLineOfSight, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
+import { hasLineOfSight, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
 import { Editor } from "./editor.ts";
 import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
 import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
+import { spawnEnemy } from "./enemies.ts";
 import { loadLevel, type EnemySpawn, type PlayerSpawn } from "./level.ts";
-import { LEVEL } from "./levels.ts";
-import { Robot, spawnEnemy } from "./robot.ts";
+import { LEVELS } from "./levels.ts";
+import { NavGraph } from "./nav.ts";
+import { Robot, type AiContext } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
 import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
@@ -22,6 +24,7 @@ import {
   stairZ,
   updateBullets,
   updateSurfaceAlphas,
+  zsetHas,
   type Floor,
   type Obstacle,
   type Stairs,
@@ -45,11 +48,18 @@ initInput(canvas);
 
 // ?edit=true boots the level editor instead of the game: no enemies or combat,
 // the player noclips, and the editor drives the camera + all world mutation.
-const EDIT = new URLSearchParams(location.search).get("edit") === "true";
+const params = new URLSearchParams(location.search);
+const EDIT = params.get("edit") === "true";
 
-// The map: a saved level string from levels.ts if one is set (as exported by
-// the editor), otherwise the hand-coded demo map below.
-const loaded = LEVEL ? loadLevel(LEVEL) : null;
+// The map: ?level=<name> picks a JSON from src/levels/; with no param a file
+// named default.json is used if the folder has one; otherwise the hand-coded
+// demo map below. (?edit composes: ?edit=true&level=foo edits that level.)
+const levelName = params.get("level");
+if (levelName && !(levelName in LEVELS)) {
+  console.warn(`unknown level "${levelName}" — falling back to the default map`);
+}
+const levelText = LEVELS[levelName ?? "default"] ?? null;
+const loaded = levelText ? loadLevel(levelText) : null;
 const world = loaded ? loaded.world : createWorld();
 
 // Where the player starts — a singleton entity in the editor, so saved levels
@@ -63,8 +73,9 @@ const player = new Character(vec(start.pos.x, start.pos.y), DEFAULT_SKIN, {
   hand: new Gun(Guns.UNARMED),
 });
 player.z = start.z;
+player.team = "player";
 
-// Enemy spawns as *data* (type keys ENEMY_TYPES in robot.ts) so the editor can
+// Enemy spawns as *data* (type keys ENEMY_TYPES in enemies.ts) so the editor can
 // read/write them like any other entity. The demo cast: two grunts in the open,
 // one in the balcony doorway (straddling the hidden second story and the
 // always-visible balcony — from the ground you see only its balcony half), one
@@ -75,20 +86,26 @@ player.z = start.z;
 const spawns: EnemySpawn[] = loaded
   ? loaded.spawns
   : [
-      { type: "grunt", pos: vec(320, -260), z: 0 },
-      { type: "grunt", pos: vec(450, -400), z: 0 },
-      // { type: "elite", pos: vec(-500, 0), z: 0 },
-      { type: "pistol", pos: vec(-640, -450), z: 1 },
-      { type: "grunt", pos: vec(880, -140), z: -1 },
-      { type: "pistol", pos: vec(260, 480), z: -1 },
-      { type: "pistol", pos: vec(60, -720), z: 0 },
+      { type: "robot", gun: "M16", pos: vec(320, -260), z: 0 },
+      { type: "oracle", gun: "M16", pos: vec(450, -400), z: 0 },
+      { type: "tacoracle", gun: "M16", pos: vec(560, -260), z: 0 },
+      // { type: "elite", gun: "M16", armor: "ARMOR_L3", pos: vec(-500, 0), z: 0 },
+      { type: "robot", gun: "M9", pos: vec(-640, -450), z: 1 },
+      { type: "robot", gun: "M16", pos: vec(880, -140), z: -1 },
+      { type: "robot", gun: "M9", pos: vec(260, 480), z: -1 },
+      { type: "robot", gun: "M9", pos: vec(60, -720), z: 0 },
     ];
 
 let characters: Character[] = [player];
 if (!EDIT) {
-  for (const s of spawns) characters.push(spawnEnemy(s.type, vec(s.pos.x, s.pos.y), s.z));
+  for (const s of spawns) characters.push(spawnEnemy(s));
 }
 const bodies: Body[] = [];
+
+// The level's baked path cache (Dijkstra over the node graph), for mobile AIs.
+// The editor doesn't simulate, so it skips the build (and previews link sets
+// live instead — see Editor.drawWorld).
+const nav = EDIT ? null : new NavGraph(world);
 
 // Demo pickups for the hand-coded map (a saved level carries its own items).
 if (!loaded) {
@@ -115,6 +132,24 @@ const editor = EDIT ? new Editor({ world, spawns, playerSpawn }, player, canvas)
 // Camera: position follows the player; `size` eases toward the weapon's zoom.
 const camera = { size: player.gun.spec.zoom };
 const ZOOM_EASE = 0.12;
+
+/**
+ * The camera's zoom target: the equipped gun's zoom, modified by whatever floor
+ * the player is standing on (inside its rect, at its level) — an absolute floor
+ * `zoom` replaces it outright (interiors that limit vision), `deltaZoom`s add
+ * to it (balcony lookout points). Absolute wins if a spot somehow has both.
+ */
+function zoomTarget(): number {
+  let abs: number | null = null;
+  let delta = 0;
+  for (const f of world.floors) {
+    if (f.level !== player.z || (f.zoom === undefined && f.deltaZoom === undefined)) continue;
+    if (!f.infinite && !pointInBox(player.pos, f)) continue;
+    if (f.zoom !== undefined) abs = f.zoom;
+    if (f.deltaZoom !== undefined) delta += f.deltaZoom;
+  }
+  return Math.max(0.3, abs ?? player.gun.spec.zoom + delta);
+}
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 let interactable: GroundItem | null = null; // nearest reachable item this tick (for prompt + E)
@@ -200,21 +235,21 @@ const STEP = 1000 / 60;
 let accumulator = 0;
 let last = performance.now();
 
-function resolvePlayerCollisions(): void {
-  let pos = player.pos;
+function resolveCollisions(c: Character): void {
+  let pos = c.pos;
   // Two passes so corners (crate + crate, or crate + character) settle. Only
-  // things on the player's level are solid to them.
+  // things on the character's level are solid to them.
   for (let i = 0; i < 2; i++) {
     for (const o of world.obstacles) {
-      if (o.z !== player.z) continue;
+      if (o.z !== c.z) continue;
       pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
     }
     for (const other of characters) {
-      if (other === player || other.z !== player.z) continue;
+      if (other === c || other.z !== c.z) continue;
       pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
     }
   }
-  player.pos = pos;
+  c.pos = pos;
 }
 
 /** Convert any character that hit 0 HP into a Body, dropping its weapons, and remove it. */
@@ -288,8 +323,8 @@ function update(): void {
     } else kDown = false;
   }
 
-  // Ease the camera zoom toward the equipped weapon's target.
-  camera.size += (player.gun.spec.zoom - camera.size) * ZOOM_EASE;
+  // Ease the camera zoom toward its target (gun zoom, bent by the floor underfoot).
+  camera.size += (zoomTarget() - camera.size) * ZOOM_EASE;
 
   if (playerAlive) {
     player.forward = aimForward();
@@ -299,7 +334,7 @@ function update(): void {
       speedMult *= player.armor.spec.speed;
     }
     player.move(moveAxis(), speedMult);
-    resolvePlayerCollisions();
+    resolveCollisions(player);
   }
 
   // Stair transitions: crossing a staircase's midpoint flips your level (sharp,
@@ -324,9 +359,15 @@ function update(): void {
   }
   prevDown = pointer.down;
 
-  // Enemy AI: look for the player and shoot.
+  // NPC AI: pick targets by team hostility, shoot, and (movers) chase.
+  const ai: AiContext = { world, characters, nav };
   for (const c of characters) {
-    if (c instanceof Robot && c.hp > 0) c.think(world, player);
+    if (c instanceof Robot && c.hp > 0) c.think(ai);
+  }
+  // Movers walk with direct position steps; settle them out of walls and
+  // each other (the player already resolved right after their own move).
+  for (const c of characters) {
+    if (c !== player) resolveCollisions(c);
   }
 
   updateBullets(world, characters);
@@ -388,8 +429,21 @@ function lighten(hex: string, t: number): string {
   return `rgb(${ch(0)}, ${ch(2)}, ${ch(4)})`;
 }
 
-// Stairs render as a run of step rectangles whose color lightens toward the
-// higher end, so the climb reads at a glance.
+/** Lerp between two #rrggbb colors by `t` (0..1). */
+function mixColor(a: string, b: string, t: number): string {
+  const ha = a.replace("#", "");
+  const hb = b.replace("#", "");
+  const ch = (i: number) => {
+    const va = parseInt(ha.slice(i, i + 2), 16);
+    const vb = parseInt(hb.slice(i, i + 2), 16);
+    return Math.round(va + (vb - va) * t);
+  };
+  return `rgb(${ch(0)}, ${ch(2)}, ${ch(4)})`;
+}
+
+// Stairs render as a run of step rectangles blending from `color` at the low-z
+// end to `color2` at the high-z end (legacy single-color stairs lighten toward
+// white instead), so the climb reads at a glance.
 function drawStairs(s: Stairs): void {
   ctx.save();
   ctx.globalAlpha = s.alpha;
@@ -399,7 +453,7 @@ function drawStairs(s: Stairs): void {
     // 0..1 from the min end to the max end, flipped so the higher-z end is lightest.
     const frac = (i + 0.5) / s.steps;
     const up = s.zAtMax > s.zAtMin ? frac : 1 - frac;
-    ctx.fillStyle = lighten(s.color, up * 0.5);
+    ctx.fillStyle = s.color2 ? mixColor(s.color, s.color2, up) : lighten(s.color, up * 0.5);
     // +0.5 px of overlap per slice hides hairline seams between steps.
     if (s.axis === "x") {
       ctx.fillRect(minx + (i * s.w) / s.steps, miny, s.w / s.steps + 0.5, s.h);
@@ -620,9 +674,11 @@ function render(): void {
   const cap = enclosureCap(world.floors, player.z, player.pos);
 
   // Background: the visible infinite floor (the ground), or the underground
-  // backdrop once you're below the surface and can't see it.
+  // backdrop once you're below the surface and can't see it. An *invisible*
+  // infinite floor still backs its level in the masks (levelMasks doesn't
+  // consult this) — it just doesn't paint the screen.
   const bgFloor = world.floors.find(
-    (f) => f.infinite && floorVisible(f, player.z, player.pos, cap),
+    (f) => f.infinite && !f.invisible && floorVisible(f, player.z, player.pos, cap),
   );
   ctx.fillStyle = bgFloor ? bgFloor.color : player.z < 0 ? UNDERGROUND_BG : VOID_BG;
   ctx.fillRect(0, 0, w, h);
@@ -658,14 +714,20 @@ function render(): void {
     // Surfaces draw alpha-eased and unmasked: a fading roof lingers translucent
     // while the objects it hid stay masked sharply below.
     for (const f of world.floors) {
-      if (!f.infinite && f.level === z && f.alpha > 0.01) drawFloor(f);
+      if (!f.infinite && f.level === z && f.alpha > 0.01 && !f.invisible) drawFloor(f);
     }
     for (const s of world.stairs) {
       if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01) drawStairs(s);
     }
 
     const drawObjects = (): void => {
-      for (const o of world.obstacles) if (o.z === z) drawObstacle(o);
+      // An obstacle's optional visibleFrom/invisible are purely cosmetic
+      // (second-story walls hidden from the ground, invisible barriers) — it
+      // still collides either way.
+      for (const o of world.obstacles) {
+        if (o.z !== z || o.invisible) continue;
+        if (!o.visibleFrom || zsetHas(o.visibleFrom, player.z)) drawObstacle(o);
+      }
       for (const b of bodies) if (b.z === z) b.draw(ctx); // corpses under the living
       for (const it of world.items) if (it.z === z) it.draw(ctx); // ground pickups
       for (const c of characters) if (c.z === z) c.draw(ctx);

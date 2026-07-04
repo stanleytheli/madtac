@@ -1,0 +1,85 @@
+/**
+ * The named enemy types levels can spawn, and the spawner that builds a live
+ * NPC from a spawn record. This is the single place a new enemy *behaviour* is
+ * registered: add an entry and it shows up in the level editor's palette and in
+ * level strings (keyed by the record key) automatically.
+ *
+ * A type is a behaviour + stat archetype only — its gun, armor, and team are
+ * per-spawn fields chosen in the editor (see the enemy EntityDef in level.ts),
+ * so any type can wear any loadout.
+ *
+ * Lives apart from robot.ts so it can name every AI class (Robot, Oracle, ...)
+ * without creating a module cycle with the subclasses.
+ */
+import { Armor } from "./armor.ts";
+import type { EnemySpawn } from "./level.ts";
+import { Oracle } from "./oracle.ts";
+import { ELITE_ROBOT_SKIN, Robot, type RobotOptions } from "./robot.ts";
+import { ARMOR_SPECS, GUN_SPECS } from "./specs.ts";
+import { TacOracle } from "./tacoracle.ts";
+import { TEAMS } from "./team.ts";
+import { vec, type Vec2 } from "./vec.ts";
+
+export interface EnemyTypeDef {
+  /** Human-readable name (editor palette / inspector dropdown). */
+  label: string;
+  /** Construction options baked into the type; the spawn's z/gun/team override. */
+  options: RobotOptions;
+  /** Build the live NPC (which AI class this type is). */
+  make(pos: Vec2, options: RobotOptions): Robot;
+  /** Fallback marker color in the level editor (team color usually wins). */
+  color: string;
+}
+
+/** GUN_SPECS key of the weapon a spawn gets when none is chosen. Matches
+ *  ROBOT_DEFAULTS.gun in robot.ts. */
+export const DEFAULT_ENEMY_GUN = "M16";
+
+export const ENEMY_TYPES: Record<string, EnemyTypeDef> = {
+  robot: {
+    label: "Robot",
+    options: {},
+    make: (pos, opts) => new Robot(pos, opts),
+    color: "#c94f4f",
+  },
+  elite: {
+    label: "Elite Robot",
+    options: { health: 200, spreadDeg: 10, skin: ELITE_ROBOT_SKIN },
+    make: (pos, opts) => new Robot(pos, opts),
+    color: "#8a4ad0",
+  },
+  oracle: {
+    label: "Oracle",
+    options: {},
+    make: (pos, opts) => new Oracle(pos, opts),
+    color: "#35d0c5",
+  },
+  tacoracle: {
+    label: "TacOracle",
+    options: {},
+    make: (pos, opts) => new TacOracle(pos, opts),
+    color: "#d9a441",
+  },
+};
+
+/** Pre-loadout type names from old level strings, mapped onto the new
+ *  type + per-spawn gun scheme so those levels keep loading. */
+export const LEGACY_ENEMY_TYPES: Record<string, { type: string; gun?: string }> = {
+  grunt: { type: "robot", gun: "M16" },
+  pistol: { type: "robot", gun: "M9" },
+};
+
+/** Instantiate a live NPC from a spawn record (type, position, loadout, team). */
+export function spawnEnemy(s: EnemySpawn): Robot {
+  const legacy = LEGACY_ENEMY_TYPES[s.type];
+  const t = ENEMY_TYPES[legacy?.type ?? s.type] ?? ENEMY_TYPES.robot;
+
+  const opts: RobotOptions = { ...t.options, z: s.z };
+  const gunKey = s.gun ?? legacy?.gun;
+  if (gunKey && GUN_SPECS[gunKey]) opts.gun = GUN_SPECS[gunKey];
+  if (s.team && s.team in TEAMS) opts.team = s.team;
+
+  const r = t.make(vec(s.pos.x, s.pos.y), opts); // pos copied: live NPCs move
+  if (s.armor && ARMOR_SPECS[s.armor]) r.equipArmor(new Armor(ARMOR_SPECS[s.armor]));
+  return r;
+}

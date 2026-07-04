@@ -57,6 +57,35 @@ export function resolveCircleVsCircle(pos: Vec2, r: number, other: Vec2, otherR:
   return vec(pos.x + (dx / d) * push, pos.y + (dy / d) * push);
 }
 
+/** Does a circle at `pos` with radius `r` overlap the box? Strict: touching at
+ *  exactly `r` doesn't count, matching resolveCircleVsBox (which pushes only on
+ *  real overlap) — a body can slide along a wall at exactly its radius. Unlike
+ *  a point-in-inflated-box test, corners stay round: a diagonal that clears a
+ *  corner by `r` is free. */
+export function circleIntersectsBox(
+  pos: Vec2,
+  r: number,
+  o: { pos: Vec2; w: number; h: number },
+): boolean {
+  const b = boxAabb(o);
+  const dx = pos.x - Math.max(b.minx, Math.min(pos.x, b.maxx));
+  const dy = pos.y - Math.max(b.miny, Math.min(pos.y, b.maxy));
+  return dx * dx + dy * dy < r * r;
+}
+
+/** Does the segment a->b pass within `r` of the point `c`? Closest-point-on-
+ *  segment distance test; strict like circleIntersectsBox, so a ray grazing a
+ *  body at exactly its radius doesn't count as hitting it. */
+export function segmentIntersectsCircle(a: Vec2, b: Vec2, c: Vec2, r: number): boolean {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const l2 = abx * abx + aby * aby;
+  const t = l2 > 0 ? Math.max(0, Math.min(1, ((c.x - a.x) * abx + (c.y - a.y) * aby) / l2)) : 0;
+  const dx = c.x - (a.x + abx * t);
+  const dy = c.y - (a.y + aby * t);
+  return dx * dx + dy * dy < r * r;
+}
+
 /** Point-in-centered-rect test. Works for any {pos,w,h} shape (obstacles, floors). */
 export function pointInBox(p: Vec2, o: { pos: Vec2; w: number; h: number }): boolean {
   const b = boxAabb(o);

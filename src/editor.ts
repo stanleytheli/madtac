@@ -19,13 +19,25 @@ import { isDown, mouse, moveAxis } from "./input.ts";
 import {
   ENTITY_DEFS,
   applyLevel,
+  entityFromJSON,
+  entityToJSON,
   serializeLevel,
   type EntityDef,
   type FieldDef,
   type LevelState,
 } from "./level.ts";
+import { LEVELS } from "./levels.ts";
+import { MOVE_RADIUS, nodeEdge } from "./nav.ts";
 import { add, dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
-import { makeFloor, updateSurfaceAlphas } from "./world.ts";
+import {
+  makeFloor,
+  sortRenderDepth,
+  updateSurfaceAlphas,
+  zsetHas,
+  type Floor,
+  type PathNode,
+  type Region,
+} from "./world.ts";
 
 const POINT_R = 45; // selection radius around point entities (items, spawns)
 const MIN_SIZE = 8; // smallest rect a drag-draw or resize can produce
@@ -50,9 +62,17 @@ export class Editor {
 
   private snapOn = true;
   private gridSize = 20;
+  /** Draw/select nav nodes. Off declutters map editing; the node tool being
+   *  armed always counts as on (placing invisible nodes helps no one). */
+  private showNodes = true;
   private tool: EntityDef | null = null; // null = select/move mode
   private sel: Selection | null = null;
   private drag: Drag | null = null;
+  /** The floor whose hideWhenIn region is currently selected (regions are
+   *  sub-entities: they live inside a floor, not in any world array). */
+  private regionFloor: Floor | null = null;
+  /** Ctrl+C stores the selection as its JSON record; Ctrl+V rebuilds from it. */
+  private clipboard: { def: EntityDef; json: Record<string, unknown> } | null = null;
   private prevZUp = false;
   private prevZDown = false;
 
@@ -61,6 +81,8 @@ export class Editor {
   private inspector!: HTMLElement;
   private ta!: HTMLTextAreaElement;
   private snapBox!: HTMLInputElement;
+  private nodesBox!: HTMLInputElement;
+  private nameIn!: HTMLInputElement;
   private readonly toolButtons = new Map<string | null, HTMLButtonElement>();
   /** Inspector geometry inputs, refreshed live while dragging. */
   private geomRefs: { input: HTMLInputElement; get: () => number }[] = [];
@@ -119,8 +141,11 @@ export class Editor {
     updateSurfaceAlphas(this.state.world, this.player.z, this.player.pos, true);
   }
 
-  /** Re-resolve surface visibility after any edit that could change it. */
+  /** Re-resolve surface visibility + render order after any edit. (The game
+   *  sorts once per level load; only the editor re-sorts on the fly, so depth
+   *  edits preview live.) */
   private refreshWorld(): void {
+    sortRenderDepth(this.state.world);
     updateSurfaceAlphas(this.state.world, this.player.z, this.player.pos, true);
   }
 
@@ -166,6 +191,17 @@ export class Editor {
       const h = this.handleAt(m);
       if (h) {
         this.drag = { mode: "resize", ex: h.ex, ey: h.ey };
+        return;
+      }
+    }
+    // While a hide region is selected it stays grabbable (hitTest only knows
+    // world entities): clicking inside it — or a sibling region — drags it,
+    // instead of reselecting whatever entity lies underneath.
+    if (this.sel?.def.kind === "hideRegion" && this.regionFloor) {
+      const r = (this.regionFloor.hideWhenIn ?? []).find((rg) => pointInBox(m, rg));
+      if (r) {
+        if (r !== this.sel.e) this.selectRegion(this.regionFloor, r);
+        this.drag = { mode: "move", grab: sub(r.pos, m) };
         return;
       }
     }
@@ -243,13 +279,64 @@ export class Editor {
     } else if (e.key === "g") {
       this.snapOn = !this.snapOn;
       this.snapBox.checked = this.snapOn;
+    } else if (e.key === "n") {
+      this.setShowNodes(!this.showNodes);
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+      // Copy: snapshot the selection as JSON (hide regions are sub-entities
+      // with no standalone identity — copy their parent floor instead).
+      if (this.sel && this.sel.def.kind !== "hideRegion") {
+        this.clipboard = {
+          def: this.sel.def,
+          json: JSON.parse(JSON.stringify(entityToJSON(this.sel.def, this.sel.e))),
+        };
+      }
+    } else if ((e.ctrlKey || e.metaKey) && e.key === "v") {
+      this.paste();
     }
+  }
+
+  /** Rebuild the copied entity at the (snapped) mouse position, settings and
+   *  all, and select the new copy. */
+  private paste(): void {
+    const clip = this.clipboard;
+    if (!clip) return;
+    const j = JSON.parse(JSON.stringify(clip.json)) as Record<string, any>;
+    const p = this.snv(this.worldMouse());
+    // Nested hideWhenIn regions travel with the part.
+    if (Array.isArray(j.hideWhenIn)) {
+      for (const r of j.hideWhenIn) {
+        if (r?.pos) {
+          r.pos.x += p.x - j.x;
+          r.pos.y += p.y - j.y;
+        }
+      }
+    }
+    j.x = p.x;
+    j.y = p.y;
+    const e = entityFromJSON(clip.def, j);
+    if (clip.def.singleton) clip.def.list(this.state).length = 0;
+    clip.def.list(this.state).push(e);
+    this.select({ def: clip.def, e });
+    this.refreshWorld();
   }
 
   private cancel(): void {
     this.drag = null;
     this.setTool(null);
     this.select(null);
+  }
+
+  /** Are nav nodes currently drawn/selectable? */
+  private nodesVisible(): boolean {
+    return this.showNodes || this.tool?.kind === "node";
+  }
+
+  private setShowNodes(on: boolean): void {
+    this.showNodes = on;
+    this.nodesBox.checked = on;
+    // Hiding them shouldn't leave an invisible selection (with its link
+    // overlay) on screen.
+    if (!this.nodesVisible() && this.sel?.def.kind === "node") this.select(null);
   }
 
   private deleteSel(): void {
@@ -269,6 +356,7 @@ export class Editor {
   private hitTest(m: Vec2): Selection | null {
     for (const sameZOnly of [true, false]) {
       for (const def of ENTITY_DEFS) {
+        if (def.kind === "node" && !this.nodesVisible()) continue; // hidden = unclickable
         let best: any = null;
         let bestArea = Infinity;
         for (const e of def.list(this.state)) {
@@ -348,6 +436,86 @@ export class Editor {
       ctx.restore();
     }
 
+    // Ghosts of same-z obstacles the normal render skips — hidden by their
+    // visibleFrom, or flagged invisible — so they stay findable and selectable.
+    for (const o of this.state.world.obstacles) {
+      if (o.z !== this.player.z) continue;
+      const hidden = o.invisible || (o.visibleFrom && !zsetHas(o.visibleFrom, this.player.z));
+      if (!hidden) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.25;
+      ctx.fillStyle = o.fill;
+      ctx.fillRect(o.pos.x - o.w / 2, o.pos.y - o.h / 2, o.w, o.h);
+      ctx.strokeStyle = o.stroke;
+      ctx.lineWidth = o.strokeWidth;
+      ctx.strokeRect(o.pos.x - o.w / 2, o.pos.y - o.h / 2, o.w, o.h);
+      ctx.restore();
+    }
+
+    // Same for invisible floors on the current level: faint fill + dashed edge.
+    for (const f of this.state.world.floors) {
+      if (!f.invisible || f.infinite || f.level !== this.player.z) continue;
+      ctx.save();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = f.color;
+      ctx.fillRect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+      ctx.globalAlpha = 0.5;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 2 * z;
+      ctx.setLineDash([8 * z, 6 * z]);
+      ctx.strokeRect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+      ctx.restore();
+    }
+
+    // hideWhenIn regions of the selected floor (or of a selected region's
+    // parent): plain rectangle borders with their trigger z labeled.
+    const rf =
+      this.sel?.def.kind === "hideRegion"
+        ? this.regionFloor
+        : this.sel?.def.kind === "floor"
+          ? (this.sel.e as Floor)
+          : null;
+    if (rf?.hideWhenIn) {
+      ctx.save();
+      ctx.strokeStyle = "#ff9d3d";
+      ctx.lineWidth = 2 * z;
+      ctx.font = `${11 * z}px monospace`;
+      ctx.fillStyle = "#ff9d3d";
+      ctx.textAlign = "left";
+      for (const r of rf.hideWhenIn) {
+        ctx.strokeRect(r.pos.x - r.w / 2, r.pos.y - r.h / 2, r.w, r.h);
+        ctx.fillText(`hide @ z${r.z}`, r.pos.x - r.w / 2 + 4 * z, r.pos.y - r.h / 2 - 5 * z);
+      }
+      ctx.restore();
+    }
+
+    // Nav-node links: with a node selected, preview the graph the game will
+    // bake — movable links solid, sight-only links dashed & faint, plus the
+    // movable radius. Recomputed live, so dragging the node or a wall updates it.
+    if (this.sel?.def.kind === "node") {
+      const a = this.sel.e as PathNode;
+      ctx.save();
+      ctx.strokeStyle = "rgba(53,208,197,0.45)";
+      ctx.lineWidth = 1.5 * z;
+      ctx.setLineDash([5 * z, 5 * z]);
+      ctx.beginPath();
+      ctx.arc(a.pos.x, a.pos.y, MOVE_RADIUS, 0, Math.PI * 2);
+      ctx.stroke();
+      for (const b of this.state.world.nodes) {
+        if (b === a) continue;
+        const e = nodeEdge(this.state.world, a, b);
+        if (!e.visible && !e.movable) continue;
+        ctx.setLineDash(e.movable ? [] : [6 * z, 6 * z]);
+        ctx.strokeStyle = e.movable ? "#35d0c5" : "rgba(255,255,255,0.35)";
+        ctx.lineWidth = (e.movable ? 2.5 : 1.5) * z;
+        ctx.beginPath();
+        ctx.moveTo(a.pos.x, a.pos.y);
+        ctx.lineTo(b.pos.x, b.pos.y);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // Labeled marker discs for entities with no in-world rendering (player and
     // enemy spawns — anything whose def declares a marker).
     ctx.save();
@@ -355,6 +523,7 @@ export class Editor {
     ctx.textAlign = "center";
     for (const def of ENTITY_DEFS) {
       if (!def.marker) continue;
+      if (def.kind === "node" && !this.nodesVisible()) continue;
       for (const e of def.list(this.state)) {
         if (!def.match(e)) continue;
         const m = def.marker(e);
@@ -466,7 +635,8 @@ export class Editor {
         "div",
         "opacity:0.5;font-size:11px;line-height:1.5;",
         "wasd fly · shift fast · wheel zoom · [ ] z-level · click select · " +
-          "drag move · handles resize · del delete · esc/right-click cancel · g snap",
+          "drag move · handles resize · ctrl+c/v copy/paste · del delete · " +
+          "esc/right-click cancel · g snap · n nodes",
       ),
     );
 
@@ -503,6 +673,16 @@ export class Editor {
     gridRow.append(this.snapBox, this.mk("span", "", "snap"), gridIn, this.mk("span", "opacity:0.6", "px"));
     panel.append(gridRow);
 
+    // View toggles.
+    panel.append(this.header("view"));
+    const viewRow = this.mk("div", "display:flex;align-items:center;gap:6px;");
+    this.nodesBox = this.mk("input", "");
+    this.nodesBox.type = "checkbox";
+    this.nodesBox.checked = this.showNodes;
+    this.nodesBox.onchange = () => this.setShowNodes(this.nodesBox.checked);
+    viewRow.append(this.nodesBox, this.mk("span", "", "nav nodes (n)"));
+    panel.append(viewRow);
+
     // Inspector (rebuilt per selection).
     panel.append(this.header("selection"));
     // The infinite background floor has no rect to click in the world, so it
@@ -513,7 +693,49 @@ export class Editor {
     panel.append(this.inspector);
     this.renderInspector();
 
-    // Level string I/O.
+    // Level file I/O. Save downloads <name>.json — drop it into src/levels/ and
+    // it's bundled + bootable as ?level=<name> (default.json = the startup map).
+    panel.append(this.header("level file"));
+    const nameRow = this.mk("div", "display:flex;align-items:center;gap:4px;");
+    this.nameIn = this.mk("input", Editor.INPUT_CSS + "flex:1;min-width:0;");
+    this.nameIn.type = "text";
+    this.nameIn.value = new URLSearchParams(location.search).get("level") ?? "level";
+    this.nameIn.spellcheck = false;
+    nameRow.append(this.nameIn, this.mk("span", "opacity:0.6;", ".json"));
+    panel.append(nameRow);
+
+    const fileIn = this.mk("input", "display:none;");
+    fileIn.type = "file";
+    fileIn.accept = ".json,application/json";
+    fileIn.onchange = () => {
+      const f = fileIn.files?.[0];
+      if (f) this.doLoadFile(f);
+      fileIn.value = ""; // so re-picking the same file fires onchange again
+    };
+    const fileRow = this.mk("div", "display:flex;gap:4px;");
+    fileRow.append(
+      this.btn("Save", () => this.doSave()),
+      this.btn("Load file…", () => fileIn.click()),
+      fileIn,
+    );
+    panel.append(fileRow);
+
+    // Bundled levels (everything already in src/levels/), openable in place.
+    const bundled = Object.keys(LEVELS);
+    if (bundled.length > 0) {
+      const openRow = this.mk("div", "display:flex;gap:4px;");
+      const sel = this.mk("select", Editor.INPUT_CSS + "flex:1;min-width:0;");
+      for (const name of bundled) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.append(opt);
+      }
+      openRow.append(sel, this.btn("Open", () => this.doOpenBundled(sel.value)));
+      panel.append(openRow);
+    }
+
+    // The raw string, as an escape hatch (clipboard sharing, quick tweaks).
     panel.append(this.header("level string"));
     const io = this.mk("div", "display:flex;gap:4px;");
     io.append(
@@ -529,6 +751,11 @@ export class Editor {
     this.ta.placeholder = "Export fills this (and your clipboard); paste here and Import to load.";
     panel.append(this.ta);
 
+    // Flex children default to shrink-to-fit, which squashes the bottom
+    // sections into nothing (the textarea especially) instead of letting the
+    // panel overflow and scroll — pin every section to its natural height.
+    for (const c of Array.from(panel.children)) (c as HTMLElement).style.flexShrink = "0";
+
     document.body.append(panel);
   }
 
@@ -539,10 +766,44 @@ export class Editor {
       b.style.background = active ? SEL_COLOR : "#23262c";
       b.style.color = active ? "#10140f" : "#dfe2e8";
     }
+    // Disarming the node tool while nodes are hidden: drop any node selection
+    // too, or an invisible entity keeps its selection ring + link overlay.
+    if (!this.nodesVisible() && this.sel?.def.kind === "node") this.select(null);
   }
 
   private select(sel: Selection | null): void {
+    if (!sel || sel.def.kind !== "hideRegion") this.regionFloor = null;
     this.sel = sel;
+    this.renderInspector();
+  }
+
+  /** A pseudo-def binding a floor's hideWhenIn array into the normal selection
+   *  machinery — move/resize/delete/inspector all work on regions unchanged. */
+  private regionDef(floor: Floor): EntityDef {
+    return {
+      kind: "hideRegion",
+      label: "Hide region",
+      shape: "rect",
+      fields: [
+        {
+          key: "z",
+          type: "number",
+          get: (r) => r.z,
+          set: (r, v) => {
+            r.z = v;
+          },
+        },
+      ],
+      list: () => floor.hideWhenIn ?? [],
+      match: () => true,
+      create: (pos, z) => ({ pos, w: 200, h: 200, z }),
+      zOf: (r) => r.z,
+    };
+  }
+
+  private selectRegion(floor: Floor, r: Region): void {
+    this.regionFloor = floor;
+    this.sel = { def: this.regionDef(floor), e: r };
     this.renderInspector();
   }
 
@@ -565,6 +826,44 @@ export class Editor {
     const def = ENTITY_DEFS.find((d) => d.kind === "floor")!;
     this.setTool(null);
     this.select({ def, e: bg });
+  }
+
+  /** Download the level as <name>.json (the browser can't write into the repo,
+   *  so the workflow is: save, then move the file into src/levels/). */
+  private doSave(): void {
+    const text = serializeLevel(this.state);
+    const blob = new Blob([text + "\n"], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${this.nameIn.value.trim() || "level"}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+
+  private doLoadFile(file: File): void {
+    void file.text().then((text) => {
+      try {
+        applyLevel(this.state, text);
+        this.select(null);
+        this.refreshWorld();
+        this.nameIn.value = file.name.replace(/\.json$/i, "");
+      } catch (err) {
+        alert(`Load failed: ${err}`);
+      }
+    });
+  }
+
+  private doOpenBundled(name: string): void {
+    const text = LEVELS[name];
+    if (!text) return;
+    try {
+      applyLevel(this.state, text);
+      this.select(null);
+      this.refreshWorld();
+      this.nameIn.value = name;
+    } catch (err) {
+      alert(`Open failed: ${err}`);
+    }
   }
 
   private doExport(): void {
@@ -626,6 +925,13 @@ export class Editor {
     }
     const { def, e } = this.sel;
     this.inspector.append(this.mk("div", "font-weight:bold;", def.label));
+
+    // A hide region is a sub-entity: offer the way back up to its floor.
+    if (def.kind === "hideRegion" && this.regionFloor) {
+      const fl = this.regionFloor;
+      const fdef = ENTITY_DEFS.find((d) => d.kind === "floor")!;
+      this.inspector.append(this.btn("◀ back to floor", () => this.select({ def: fdef, e: fl })));
+    }
 
     this.inspector.append(
       this.numRow("x", () => e.pos.x, (v) => (e.pos = vec(v, e.pos.y))),
@@ -694,6 +1000,46 @@ export class Editor {
         s.value = String(f.get(e));
         s.onchange = () => commit(s.value);
         return this.row(f.key, s);
+      }
+      case "regions": {
+        // Region list: each row selects its region (drag/resize/Del like any
+        // entity, plus a z field); "+ add" starts one covering the floor.
+        const col = this.mk("div", "flex:1;min-width:0;display:flex;flex-direction:column;gap:3px;");
+        const regions = (f.get(e) as Region[] | undefined) ?? [];
+        regions.forEach((r, i) => {
+          const row = this.mk("div", "display:flex;gap:3px;");
+          const pick = this.btn(
+            `#${i + 1} @ z${r.z} · ${Math.round(r.w)}×${Math.round(r.h)}`,
+            () => this.selectRegion(e, r),
+          );
+          pick.style.flex = "1";
+          const rm = this.btn("×", () => {
+            const arr = f.get(e) as Region[];
+            arr.splice(arr.indexOf(r), 1);
+            this.refreshWorld();
+            this.renderInspector();
+          });
+          row.append(pick, rm);
+          col.append(row);
+        });
+        const addBtn = this.btn("+ add region", () => {
+          let arr = f.get(e) as Region[] | undefined;
+          if (!arr) {
+            arr = [];
+            f.set(e, arr);
+          }
+          const r: Region = {
+            pos: vec(e.pos.x, e.pos.y),
+            w: e.w > 0 ? e.w : 200,
+            h: e.h > 0 ? e.h : 200,
+            z: this.player.z,
+          };
+          arr.push(r);
+          this.refreshWorld();
+          this.selectRegion(e, r);
+        });
+        col.append(addBtn);
+        return this.row(f.key, col);
       }
       case "json": {
         // The escape hatch for structured values (ZSets, hideWhenIn regions):

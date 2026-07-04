@@ -36,11 +36,14 @@ export function zsetHas(s: ZSet, z: number): boolean {
 }
 
 /** An axis-aligned region of the map (the same centered {pos,w,h} shape as
- *  obstacles and floors). Used as a viewer-position trigger — see hideWhenIn. */
+ *  obstacles and floors), pinned to one z level. Used as a viewer-position
+ *  trigger — see hideWhenIn. */
 export interface Region {
   pos: Vec2;
   w: number;
   h: number;
+  /** The viewer z this region applies to (inside the box at another z ≠ inside). */
+  z: number;
 }
 
 /**
@@ -57,6 +60,16 @@ export interface Obstacle {
    *  same-level firefights work across it. (Bullets stay z-bound regardless —
    *  a fence never enables shooting between levels.) */
   permeable?: boolean;
+  /** Which viewer z values it *renders* for (e.g. [1] for second-story walls
+   *  that shouldn't show from the ground). Purely cosmetic — collision, bullets
+   *  and sight only ever care about `z`. Omitted = visible from everywhere. */
+  visibleFrom?: ZSet;
+  /** Never drawn at all, but still fully solid (or fence-permeable): invisible
+   *  barriers, out-of-bounds walls. Cosmetic only, like visibleFrom. */
+  invisible?: boolean;
+  /** Render depth among same-level obstacles (default 0, higher = on top; ties
+   *  keep authoring order). Sorted once at load — see sortRenderDepth. */
+  depth?: number;
   // appearance
   fill: string;
   stroke: string;
@@ -85,13 +98,13 @@ export interface Floor {
   visibleFrom: ZSet;
   /** Also hide it while the viewer is beneath it and inside its footprint (roofs). */
   hideWhenUnder?: boolean;
-  /** Also hide it while the viewer is beneath its *level* and inside any of
-   *  these regions — hideWhenUnder with the trigger decoupled from the
-   *  surface's own rect. This is how a wedding-cake building's lower roof
-   *  works: it lists the whole ground-story interior, so it clears out when
+  /** Also hide it while the viewer is inside any of these regions *at the
+   *  region's z* — hideWhenUnder with the trigger decoupled from the surface's
+   *  own rect. This is how a wedding-cake building's lower roof works: it
+   *  lists the whole ground-story interior at z 0, so it clears out when
    *  you're anywhere inside that room (not just directly under the overhang),
    *  yet stays put while you look down on it from the story above. */
-  hideWhenIn?: readonly Region[];
+  hideWhenIn?: Region[];
   /** A solid ceiling: while the viewer is beneath it and inside its footprint,
    *  the *whole world* at this level and above is hidden — background included
    *  (see enclosureCap). This is the "sealed underground" rule: a bunker is
@@ -109,6 +122,22 @@ export interface Floor {
   gridWidth?: number;
   /** Grid line spacing in world px (default 512). */
   gridGap?: number;
+  /** While the player stands on it (inside the rect at its level), the camera
+   *  zoom becomes this instead of the gun's — building interiors that limit
+   *  vision. Overrides deltaZoom wherever both would apply. */
+  zoom?: number;
+  /** While the player stands on it, added to the gun's zoom — a balcony
+   *  lookout point that boosts vision. */
+  deltaZoom?: number;
+  /** Never drawn, but still a full citizen of every other system: it backs
+   *  objects in the render masks, drives zoom/enclosing/hideWhenIn triggers,
+   *  and counts for visibility. The clean way to build trigger zones and
+   *  walkable areas that shouldn't paint anything over the background. */
+  invisible?: boolean;
+  /** Render depth among same-level floors (default 0, higher = on top; ties
+   *  keep authoring order) — decorative patches over base slabs, overlapping
+   *  roofs. Sorted once at load — see sortRenderDepth. */
+  depth?: number;
   /** Eased render opacity: fades toward 1 while visible, 0 while not. */
   alpha: number;
 }
@@ -129,10 +158,39 @@ export interface Stairs {
   zAtMax: number;
   visibleFrom: ZSet;
   steps: number;
-  /** Base step color; steps lighten toward the higher-z end. */
+  /** Step color at the low-z end. */
   color: string;
+  /** Step color at the high-z end: steps blend color -> color2 across the
+   *  flight. Omitted = the legacy look (color lightened 50% toward white). */
+  color2?: string;
+  /** Render depth among same-level stairs, like a floor's. */
+  depth?: number;
   /** Eased render opacity, like a floor's. */
   alpha: number;
+}
+
+/**
+ * A hand-placed pathfinding node (see nav.ts for the graph built over them).
+ * The pos/z pair is authored in the level editor; `id` and the two link sets
+ * are derived at load time by buildNodeSets and never serialized:
+ *   - `visible`: node id -> straight-line distance, for every same-z node with
+ *     clear line of sight.
+ *   - `movable`: node id -> distance, for every node a body can actually walk
+ *     straight to (swept as a body-radius circle against obstacles, z tracked
+ *     across stairs) within nav.ts's MOVE_RADIUS. On flat ground this is a subset of
+ *     `visible`; a stair link is the one case that's movable without being
+ *     visible (the far end is on another z).
+ */
+export interface PathNode {
+  pos: Vec2;
+  z: number;
+  id: number;
+  visible: Map<number, number>;
+  movable: Map<number, number>;
+}
+
+export function makeNode(pos: Vec2, z = 0): PathNode {
+  return { pos, z, id: -1, visible: new Map(), movable: new Map() };
 }
 
 export function makeCrate(pos: Vec2, w: number, h: number, z = 0): Obstacle {
@@ -148,17 +206,35 @@ export function makeFence(pos: Vec2, w: number, h: number, z = 0): Obstacle {
   return { pos, w, h, z, permeable: true, fill: "#a9946e", stroke: "#615139", strokeWidth: 5, cross: false, particle: WALL_SHRAPNEL };
 }
 
+/**
+ * Bake the static render order: stable-sort each static array by depth
+ * (default 0), so ties keep authoring order. The render loop just walks the
+ * arrays — call this ONCE after the world is built or a level is loaded (the
+ * editor re-calls it after edits; the game never needs to re-sort). Depth
+ * orders within a category on the same z level; z levels still partition
+ * everything first, and floors always draw under stairs under objects.
+ */
+export function sortRenderDepth(w: World): void {
+  const d = (e: { depth?: number }): number => e.depth ?? 0;
+  w.floors.sort((a, b) => d(a) - d(b));
+  w.stairs.sort((a, b) => d(a) - d(b));
+  w.obstacles.sort((a, b) => d(a) - d(b));
+}
+
 export interface FloorOptions {
   level: number;
   visibleFrom: ZSet;
   hideWhenUnder?: boolean;
-  hideWhenIn?: readonly Region[];
+  hideWhenIn?: Region[];
   enclosing?: boolean;
   infinite?: boolean;
   grid?: boolean;
   gridColor?: string;
   gridWidth?: number;
   gridGap?: number;
+  zoom?: number;
+  deltaZoom?: number;
+  invisible?: boolean;
 }
 
 export function makeFloor(
@@ -180,9 +256,10 @@ export function makeStairs(
   zAtMax: number,
   visibleFrom: ZSet,
   color: string,
+  color2?: string,
   steps = 8,
 ): Stairs {
-  return { pos, w, h, axis, zAtMin, zAtMax, visibleFrom, color, steps, alpha: 1 };
+  return { pos, w, h, axis, zAtMin, zAtMax, visibleFrom, color, color2, steps, alpha: 1 };
 }
 
 /**
@@ -215,13 +292,14 @@ export function enclosureCap(floors: readonly Floor[], viewerZ: number, viewerPo
 }
 
 /** Sharp floor visibility for a viewer: the enclosure cap, the z-set check, and
- *  roof-style hiding (by the surface's own footprint, or by explicit regions). */
+ *  roof-style hiding (by the surface's own footprint, or by explicit regions —
+ *  each region is pinned to a viewer z, so the author has full control). */
 export function floorVisible(f: Floor, viewerZ: number, viewerPos: Vec2, cap = Infinity): boolean {
   if (f.level >= cap) return false;
   if (!zsetHas(f.visibleFrom, viewerZ)) return false;
-  if (viewerZ < f.level) {
-    if (f.hideWhenUnder && pointInBox(viewerPos, f)) return false;
-    if (f.hideWhenIn && f.hideWhenIn.some((r) => pointInBox(viewerPos, r))) return false;
+  if (f.hideWhenUnder && viewerZ < f.level && pointInBox(viewerPos, f)) return false;
+  if (f.hideWhenIn && f.hideWhenIn.some((r) => r.z === viewerZ && pointInBox(viewerPos, r))) {
+    return false;
   }
   return true;
 }
@@ -280,6 +358,7 @@ export interface World {
   obstacles: Obstacle[]; // solid: crates + walls
   floors: Floor[]; // walkable surfaces (incl. the infinite ground) + roofs
   stairs: Stairs[]; // z-level connectors
+  nodes: PathNode[]; // hand-placed pathfinding nodes (see nav.ts)
   items: GroundItem[]; // pickups lying on the ground
   bullets: Bullet[];
   particles: Particle[];
@@ -326,6 +405,14 @@ export function createWorld(): World {
   // mask, so a wall not fully backed by a surface gets its outer half sliced off.
   const EXT = WALL_T / 2 + 3;
 
+  // Second-story walls are drawn only for z=1 viewers: roofs/masking hide them
+  // from other levels anyway, so this just kills the unbacked AA slivers (e.g.
+  // alongside stairwells). Purely cosmetic — collision is unaffected.
+  const wall2 = (pos: Vec2, w: number, h: number): Obstacle => ({
+    ...makeWall(pos, w, h, 1),
+    visibleFrom: [1],
+  });
+
   // --- two-story building (west) --------------------------------------------
   // Footprint x:[-1150,-650], y:[-650,-250] (wall center lines). Interior stairs
   // on the west side climb z 0 -> 1; a balcony pokes out the east face at z=1,
@@ -342,11 +429,11 @@ export function createWorld(): World {
     );
     // second story (z=1): same perimeter, balcony door gap on the east y:[-490,-410]
     obstacles.push(
-      makeWall(vec(-900, -650), 500 + WALL_T, WALL_T, 1), // north
-      makeWall(vec(-1150, -450), WALL_T, 400 + WALL_T, 1), // west
-      makeWall(vec(-900, -250), 500 + WALL_T, WALL_T, 1), // south (no door up here)
-      makeWall(vec(-650, -570), WALL_T, 160, 1), // east, north of the balcony door
-      makeWall(vec(-650, -330), WALL_T, 160, 1), // east, south of the balcony door
+      wall2(vec(-900, -650), 500 + WALL_T, WALL_T), // north
+      wall2(vec(-1150, -450), WALL_T, 400 + WALL_T), // west
+      wall2(vec(-900, -250), 500 + WALL_T, WALL_T), // south (no door up here)
+      wall2(vec(-650, -570), WALL_T, 160), // east, north of the balcony door
+      wall2(vec(-650, -330), WALL_T, 160), // east, south of the balcony door
       // balcony railings: fences, so you can shoot over them (same level only)
       makeFence(vec(-565, -530), 170, 14, 1), // north railing
       makeFence(vec(-565, -370), 170, 14, 1), // south railing
@@ -363,18 +450,26 @@ export function createWorld(): World {
     );
 
     floors.push(
-      // ground-floor interior (hidden by the roof until you walk in)
+      // ground-floor interior (hidden by the roof until you walk in); indoors
+      // the camera pulls in — cramped rooms shouldn't grant open-field vision
       makeFloor(vec(-900, -450), 500 + 2 * EXT, 400 + 2 * EXT, "#9c7444", {
         level: 0,
         visibleFrom: [0],
+        zoom: 1.6,
       }),
       // second-story floor: the footprint minus the stairwell hole (three rects)
       makeFloor(vec(-822, -450), 376, 400 + 2 * EXT, "#b99664", { level: 1, visibleFrom: [1] }),
       makeFloor(vec(-1088, -573), 156, 186, "#b99664", { level: 1, visibleFrom: [1] }),
       makeFloor(vec(-1088, -257), 156, 46, "#b99664", { level: 1, visibleFrom: [1] }),
       // the balcony: z=1, seen from the ground and from up there (the overhang);
-      // extends slightly past its railings' outer faces
-      makeFloor(vec(-550, -450), 170, 180, "#b5ab97", { level: 1, visibleFrom: [0, 1], hideWhenUnder: false }),
+      // extends slightly past its railings' outer faces. A lookout point: the
+      // camera zooms out a bit further while you stand on it.
+      makeFloor(vec(-550, -450), 170, 180, "#b5ab97", {
+        level: 1,
+        visibleFrom: [0, 1],
+        hideWhenUnder: false,
+        deltaZoom: 0.6,
+      }),
       // the roof: covers the walls too (but stops at the east wall line so it
       // doesn't overhang the balcony doorway); melts away while you're under it
       makeFloor(vec(-908, -450), 500 + EXT, 400 + 2 * EXT, "#8a4f3d", {
@@ -391,16 +486,21 @@ export function createWorld(): World {
   // --- cake building (north) -------------------------------------------------
   // Wedding-cake shape: the ground story spans the whole footprint, but the
   // second story is only the west "tower" — the east half sticks out below it
-  // and wears its own roof one level down. Both roofs hide via hideWhenIn keyed
-  // on the shared building region: the stickout roof (level 1) clears whenever
-  // the viewer is anywhere inside at z=0, while the same region hides the tower
-  // roof (level 2) from z=0 *and* z=1 — the viewerZ < level test does the
-  // per-story split for free. From the tower you look down onto the lower roof,
-  // cake-style; from outside, both roofs seal the building normally.
+  // and wears its own roof one level down. Both roofs hide via hideWhenIn
+  // regions over the building's footprint: the stickout roof (level 1) clears
+  // for a viewer inside at z 0 only, the tower roof (level 2) for z 0 and z 1.
+  // From the tower you look down onto the lower roof, cake-style; from outside,
+  // both roofs seal the building normally.
   {
-    // The shared trigger region: the ground story's slab (walls included), so
-    // the roofs start melting a step before you fully clear the doorway.
-    const footprint: Region = { pos: vec(-100, -805), w: 500 + 2 * EXT, h: 350 + 2 * EXT };
+    // The shared trigger footprint: the ground story's slab (walls included), so
+    // the roofs start melting a step before you fully clear the doorway. Each
+    // region gets its own pos (the editor moves regions by mutating pos).
+    const fpr = (z: number): Region => ({
+      pos: vec(-100, -805),
+      w: 500 + 2 * EXT,
+      h: 350 + 2 * EXT,
+      z,
+    });
 
     // ground story (z=0): footprint x:[-350,150], y:[-980,-630], door on the
     // south face x:[-60,20]
@@ -413,10 +513,10 @@ export function createWorld(): World {
     );
     // second story (z=1): just the tower, x:[-350,-120]
     obstacles.push(
-      makeWall(vec(-235, -980), 230 + WALL_T, WALL_T, 1), // north
-      makeWall(vec(-350, -805), WALL_T, 350 + WALL_T, 1), // west
-      makeWall(vec(-235, -630), 230 + WALL_T, WALL_T, 1), // south
-      makeWall(vec(-120, -805), WALL_T, 350 + WALL_T, 1), // east, along the cake edge
+      wall2(vec(-235, -980), 230 + WALL_T, WALL_T), // north
+      wall2(vec(-350, -805), WALL_T, 350 + WALL_T), // west
+      wall2(vec(-235, -630), 230 + WALL_T, WALL_T), // south
+      wall2(vec(-120, -805), WALL_T, 350 + WALL_T), // east, along the cake edge
     );
     // stair rails, same reasoning as the west building's: cap the top end and
     // the open east side's upper half at z=0, the whole east side at z=1
@@ -427,10 +527,12 @@ export function createWorld(): World {
     );
 
     floors.push(
-      // ground-story interior: tower + stickout as one room
-      makeFloor(footprint.pos, footprint.w, footprint.h, "#a08050", {
+      // ground-story interior: tower + stickout as one room (same slab rect the
+      // trigger regions cover); indoor zoom limit, like the west building's
+      makeFloor(vec(-100, -805), 500 + 2 * EXT, 350 + 2 * EXT, "#a08050", {
         level: 0,
         visibleFrom: [0],
+        zoom: 1.6,
       }),
       // tower's second-story floor: its footprint minus the stairwell hole
       makeFloor(vec(-157, -805), 106, 350 + 2 * EXT, "#c2a06e", { level: 1, visibleFrom: [1] }),
@@ -442,13 +544,13 @@ export function createWorld(): World {
       makeFloor(vec(23, -805), 286, 350 + 2 * EXT, "#96593f", {
         level: 1,
         visibleFrom: [0, 1],
-        hideWhenIn: [footprint],
+        hideWhenIn: [fpr(0)],
       }),
-      // the tower roof: same trigger — hidden from anywhere inside, z=0 or z=1
+      // the tower roof: same footprint — hidden from anywhere inside, z 0 or 1
       makeFloor(vec(-235, -805), 262, 350 + 2 * EXT, "#8a4f3d", {
         level: 2,
         visibleFrom: [0, 1],
-        hideWhenIn: [footprint],
+        hideWhenIn: [fpr(0), fpr(1)],
       }),
     );
 
@@ -527,7 +629,33 @@ export function createWorld(): World {
     );
   }
 
-  return { obstacles, floors, stairs, items: [], bullets: [], particles: [] };
+  // --- pathfinding nodes -------------------------------------------------------
+  // A coarse hand-placed mesh: the open field, each building interior, the
+  // stair mouths (a node on a stair's half belongs to that half's z), the
+  // bunker, and the trench. Neighbors are kept within nav.ts's MOVE_RADIUS and
+  // clear of obstacle corners by more than a body radius, so the movable graph
+  // connects the whole map. Select a node in the editor to see its links.
+  const N = (x: number, y: number, z = 0): PathNode => makeNode(vec(x, y), z);
+  const nodes: PathNode[] = [
+    // open field (z=0), routed around the three freestanding walls + crates
+    N(0, 60), N(250, 320), N(-200, 340), N(-450, 200), N(-480, -100), N(-480, -350),
+    N(-600, -200), N(-150, -100), N(140, -250), N(450, -150), N(450, -450),
+    N(110, -470), N(-230, -420),
+    // cake building (north): door approach, stickout interior, stair base, tower top
+    N(-20, -560), N(-30, -750), N(-270, -690), N(-270, -900, 1),
+    // west building: door approach, interior (x2 — the second threads past the
+    // stair railing), stair base, upstairs landing, second story, balcony
+    N(-790, -180), N(-790, -400), N(-900, -330), N(-1070, -310), N(-1070, -560, 1),
+    N(-822, -450, 1), N(-550, -450, 1),
+    // bunker (east): field approaches, stair mouth, interior
+    N(500, 150), N(550, 350), N(700, 280), N(700, -60, -1), N(760, -150, -1),
+    // trench (south): west approach, inside
+    N(-220, 480), N(120, 480, -1), N(280, 480, -1),
+  ];
+
+  const world: World = { obstacles, floors, stairs, nodes, items: [], bullets: [], particles: [] };
+  sortRenderDepth(world); // bake the render order once (all default depths here)
+  return world;
 }
 
 const BACKOUT_STEPS = 10; // max steps to walk a bullet out of what it hit

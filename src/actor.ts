@@ -1,4 +1,5 @@
 import type { Armor } from "./armor.ts";
+import type { TeamId } from "./team.ts";
 import { drawCharacter, type Skin } from "./character.ts";
 import { Gun } from "./gun.ts";
 import type { ArmorPen, GunSpec } from "./guns.ts";
@@ -14,7 +15,7 @@ const SLUNG_ANGLE_DEG = 100; // rotation off the aim direction (diagonal across 
 const SLUNG_BACK_OFFSET = 40; // world px shifted opposite the aim, so it peeks out behind
 
 // Movement tuning (per 60 Hz tick).
-const ACCEL = 1.4; // velocity gained per tick at full input
+const ACCEL = 1.5; // velocity gained per tick at full input
 const FRICTION = 0.80; // velocity retained per tick
 
 /** Terminal speed of the accel/friction model, per the recoil spec's definition. */
@@ -40,6 +41,9 @@ export class Character {
    *  midpoint; gates rendering, collision, bullets, and line of sight. */
   z = 0;
   skin: Skin;
+  /** Team allegiance (see team.ts). AI picks targets by team hostility; the
+   *  player's character is on "player", spawned NPCs get theirs from the spawn. */
+  team: TeamId = "player";
 
   maxHp = 100;
   hp = 100;
