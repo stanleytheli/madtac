@@ -6,8 +6,16 @@
  * whole behaviour is about managing that gun:
  *
  *  - Bursts: the trigger stays down only while the spray envelope
- *    `recoilCoef * sqrt(currentRecoil)` is under `burstLimit`. Past that the
- *    shots would be wild anyway, so it stops and lets the pattern reset.
+ *    `recoilCoef^2 * sqrt(currentRecoil)` — the radian upper bound of the
+ *    pattern offset — stays inside the target's angular width at its range,
+ *    `lambda * BODY_RADIUS / (pi * distance)`. Approximating the pattern's
+ *    sin() as uniform on [-1, 1], 1/lambda is the per-shot hit probability at
+ *    the cutoff, so bursts are naturally range-dependent: long dumps up
+ *    close, disciplined taps at distance.
+ *  - Guns that punish moving (movePenalty >= 2, e.g. rifles) are fired from a
+ *    stand: while actively mid-burst it holds position, and repositioning
+ *    (strafes, approaches) happens between bursts — accuracy outranks motion.
+ *    Low-penalty guns keep shooting on the move.
  *  - SHOOT mode: approach over the nav graph exactly like an Oracle until the
  *    target is in sight and inside `engageRange`, then hold ground and fire —
  *    but strafe to a better lane whenever a teammate is in the line of fire
@@ -19,6 +27,11 @@
  *    any reload is done. A good cover spot breaks its own sight line, so
  *    walking back out to re-engage falls out of the Oracle graph-chase
  *    naturally: an emergent peek cycle.
+ *  - Targeting is cost-based, not distance-based: among visible hostiles it
+ *    locks the one it could shoot *soonest* — the walk to the nearest strafe
+ *    point with a clear friendly-free lane (selectTarget/shootCost) — and when
+ *    nobody is in sight it chases whoever is cheapest to reach over the nav
+ *    graph, not whoever is nearest through a wall (bestChase).
  *  - Reaction time keeps all of it human: a hostile must stay in view
  *    reactionTime ticks before it's engaged (Robot.seenFor), and readiness
  *    changes — burst spent, recoil settled, reload started/finished — steer
@@ -57,9 +70,12 @@ export const TAC_ORACLE_SKIN: Skin = {
   outline: "#000000",
 };
 
-/** Stop bursting once recoilCoef * sqrt(currentRecoil) exceeds this. ~6 shots
- *  on an M-16 standing still; fewer on harder-kicking guns or while moving. */
-const DEFAULT_BURST_LIMIT = 0.6;
+/** Burst-discipline aim budget: keep the spray envelope inside the target's
+ *  angular width scaled by 1/lambda — i.e. ~1/lambda per-shot hit odds at the
+ *  cutoff (see the header). Bigger lambda = tighter discipline, shorter bursts. */
+const DEFAULT_LAMBDA = 5;
+/** Guns whose movePenalty is at least this are fired standing still. */
+const STAND_TO_SHOOT_PENALTY = 2.0;
 /** Default reaction time, ticks (~250ms — a decent human). See
  *  RobotOptions.reactionTime; 0 restores the launch-day inhuman slickness. */
 const DEFAULT_REACTION_TIME = 15;
@@ -80,14 +96,30 @@ const EVAL_TICKS = 10;
 const DODGE_TICKS = 30;
 /** "Reached the strafe spot" slop, world px. */
 const ARRIVE = 2;
+/** Re-run target selection this often while the current pick stays valid. */
+const TARGET_EVAL_TICKS = 10;
+/** shootCost surcharge for a lane that's shootable but poor (1-2 points):
+ *  as bad as walking half the strafe fan to a clean one. */
+const LOW_VIS_PENALTY = 60;
+/** shootCost for a hostile with no lane from any local point: worse than any
+ *  amount of strafing (max 120 + 60), so anyone shootable in place wins. */
+const NO_LANE_COST = 400;
+/** Cost edge a challenger needs over the current focus — don't flip-flop
+ *  between two near-equal targets every re-evaluation. */
+const FOCUS_STICKINESS = 30;
+/** Ticks without sight of anyone before the remembered focus is dropped and
+ *  navigation goes back to "whoever is quickest to reach". */
+const FOCUS_MEMORY = 120;
+/** Re-run the blind-chase pick this often (matches the Oracle's replan beat). */
+const CHASE_EVAL_TICKS = 30;
 /** How wide a berth a firing lane gives teammates. Twice the body: bursts
  *  spray several degrees off the aim line, so grazing a friend's silhouette
  *  with the center line isn't good enough. */
 const FRIENDLY_MARGIN = BODY_RADIUS * 2;
 
 export interface TacOracleOptions extends OracleOptions {
-  /** Spray-envelope value that ends a burst (see DEFAULT_BURST_LIMIT). */
-  burstLimit?: number;
+  /** Burst-discipline aim budget (see DEFAULT_LAMBDA). */
+  lambda?: number;
   /** Stop closing on a visible target once within this distance. */
   engageRange?: number;
   /** Extra ticks between shots on semi-auto guns, on top of the gun's fire
@@ -108,7 +140,7 @@ interface Candidate {
 }
 
 export class TacOracle extends Oracle {
-  private readonly burstLimit: number;
+  private readonly lambda: number;
   private readonly engageRange: number;
   private readonly semiAutoDelay: number;
   private mode: "shoot" | "cover" = "shoot";
@@ -123,6 +155,13 @@ export class TacOracle extends Oracle {
   private fireOk = true;
   /** Semi-auto trigger cadence: ticks until the next allowed click. */
   private clickIn = 0;
+  /** The hostile it's currently locked onto (kept across short sight losses —
+   *  see FOCUS_MEMORY), and the reselection timer. */
+  private focus: Character | null = null;
+  private targetEvalIn = 0;
+  /** Cached route-nearest hostile for blind navigation (see bestChase). */
+  private chaseCache: Character | null = null;
+  private chaseEvalIn = 0;
   /** The lateral spot it's committed to (strafe lane or cover), or null. */
   private strafeTarget: Vec2 | null = null;
   private evalIn = 0;
@@ -138,16 +177,35 @@ export class TacOracle extends Oracle {
       reactionTime: DEFAULT_REACTION_TIME,
       ...options,
     });
-    this.burstLimit = options.burstLimit ?? DEFAULT_BURST_LIMIT;
+    this.lambda = options.lambda ?? DEFAULT_LAMBDA;
     this.engageRange = options.engageRange ?? DEFAULT_ENGAGE_RANGE;
     this.semiAutoDelay = options.semiAutoDelay ?? DEFAULT_SEMI_AUTO_DELAY;
   }
 
   protected override act(ai: AiContext, target: Character | null): void {
     this.vel = vec(0, 0);
-    this.updateMode();
-    const chase = target ?? this.nearestHostile(ai);
+    if (this.focus && (this.focus.hp <= 0 || this.ticksSinceTarget > FOCUS_MEMORY)) {
+      this.focus = null;
+    }
+    this.updateMode(target ?? this.focus);
+    // Out of sight, the last engaged enemy stays the concern (cover is scored
+    // against them, the chase heads back at them) until memory lapses.
+    const chase = target ?? this.focus ?? this.bestChase(ai);
     if (!chase) return;
+
+    // Heavy-penalty guns are fired from a stand: while actively mid-burst
+    // (would fire now or is between semi-auto clicks), hold position and let
+    // strafes/approaches happen between bursts. vel is already zeroed.
+    if (
+      target &&
+      this.mode === "shoot" &&
+      this.fireOk &&
+      !this.burstDone &&
+      this.gun.spec.movePenalty >= STAND_TO_SHOOT_PENALTY &&
+      this.laneClear(ai, target)
+    ) {
+      return;
+    }
 
     if (this.mode === "cover") {
       this.coverMove(ai, chase);
@@ -161,12 +219,17 @@ export class TacOracle extends Oracle {
   }
 
   /** Burst / reload bookkeeping -> which mode this tick is fought in, with
-   *  readiness changes acknowledged reactionTime late (see fireOk). */
-  private updateMode(): void {
+   *  readiness changes acknowledged reactionTime late (see fireOk). `ref` is
+   *  whoever the spray is being judged against (target, or remembered focus). */
+  private updateMode(ref: Character | null): void {
     const gun = this.gun;
     if (gun.currentRecoil === 0) this.burstDone = false;
-    else if (gun.spec.recoilCoef * Math.sqrt(gun.currentRecoil) > this.burstLimit)
-      this.burstDone = true;
+    else if (ref) {
+      // Spray envelope (radians) vs the body's angular width at this range:
+      // past that, the expected per-shot hit odds drop under 1/lambda.
+      const envelope = gun.spec.recoilCoef ** 2 * Math.sqrt(gun.currentRecoil);
+      if (envelope > this.aimWidth(dist(this.pos, ref.pos))) this.burstDone = true;
+    }
     // Hardcore reloads bin whatever is left in the mag, so only swap when dry.
     if (gun.mag === 0) gun.startReload(); // no-op mid-reload or out of spares
     if (this.clickIn > 0) this.clickIn -= 1;
@@ -191,14 +254,25 @@ export class TacOracle extends Oracle {
     }
   }
 
+  /** The angular width a body at range `d` subtends for burst discipline,
+   *  scaled by lambda (see DEFAULT_LAMBDA). */
+  private aimWidth(d: number): number {
+    return (this.lambda * BODY_RADIUS) / (Math.PI * Math.max(d, 1));
+  }
+
+  /** No teammate within FRIENDLY_MARGIN of the line of fire at `target`. */
+  private laneClear(ai: AiContext, target: Character): boolean {
+    return !this.teammates(ai, target).some((m) =>
+      segmentIntersectsCircle(this.pos, target.pos, m.pos, FRIENDLY_MARGIN),
+    );
+  }
+
   /** Fire only mid-burst in SHOOT mode — never near a teammate's line, and on
    *  semi-auto guns only as fast as a trigger finger clicks. */
   protected override shouldFire(ai: AiContext, target: Character | null): boolean {
     if (this.mode !== "shoot" || !this.fireOk || !target) return false;
     if (this.clickIn > 0) return false;
-    return !this.teammates(ai, target).some((m) =>
-      segmentIntersectsCircle(this.pos, target.pos, m.pos, FRIENDLY_MARGIN),
-    );
+    return this.laneClear(ai, target);
   }
 
   /** Semi-auto guns are clicked, not held: each shot re-arms the trigger only
@@ -206,6 +280,85 @@ export class TacOracle extends Oracle {
   protected override onFired(): void {
     const f = this.gun.spec.fire;
     if (f && !f.auto) this.clickIn = f.delay + this.semiAutoDelay;
+  }
+
+  /** Not the physically closest hostile — the one that can be shot soonest:
+   *  each visible hostile is costed by the walk to the nearest of its strafe
+   *  points with a shootable lane (see shootCost), with hysteresis so two
+   *  near-equal targets don't trade the lock every re-evaluation. */
+  protected override selectTarget(ai: AiContext): Character | null {
+    this.targetEvalIn -= 1;
+    const valid =
+      this.focus !== null &&
+      this.focus.hp > 0 &&
+      this.focus.z === this.z &&
+      this.canSee(ai.world, this.focus);
+    if (valid && this.targetEvalIn > 0) return this.focus;
+    this.targetEvalIn = TARGET_EVAL_TICKS;
+
+    let best: Character | null = null;
+    let bestCost = Infinity;
+    for (const h of this.hostiles(ai)) {
+      if (h.z !== this.z || !this.canSee(ai.world, h)) continue;
+      let cost = this.shootCost(ai, h);
+      if (h === this.focus) cost -= FOCUS_STICKINESS;
+      if (cost < bestCost) {
+        best = h;
+        bestCost = cost;
+      }
+    }
+    if (best) this.focus = best; // keep remembering the old focus while blind
+    return best;
+  }
+
+  /** How quickly `h` could be shot from here, as a distance: the nearest local
+   *  movement point (current spot or a strafe candidate) whose lane onto `h`
+   *  is clear of friends, plus a surcharge if that lane is poor. No lane from
+   *  anywhere local -> a big constant + range, so it sorts behind every
+   *  shootable-in-place hostile but still orders the hopeless ones by range. */
+  private shootCost(ai: AiContext, h: Character): number {
+    let cost = Infinity;
+    for (const c of this.candidates(ai, h)) {
+      if (c.clear === 0 || c.score < c.clear) continue; // hidden, or a friend in the lane
+      const poorLane = c.clear <= LOW_VISIBILITY ? LOW_VIS_PENALTY : 0;
+      cost = Math.min(cost, Math.abs(c.offset) + poorLane);
+    }
+    return cost === Infinity ? NO_LANE_COST + dist(this.pos, h.pos) : cost;
+  }
+
+  /** Blind navigation target: the hostile reachable-and-shootable soonest by
+   *  the graph — route distance to the node that sees them — instead of raw
+   *  straight-line distance (which happily picks someone behind a wall on
+   *  another floor). Cached: routes are table lookups but nearestInSight isn't. */
+  private bestChase(ai: AiContext): Character | null {
+    this.chaseEvalIn -= 1;
+    if (this.chaseCache && this.chaseCache.hp > 0 && this.chaseEvalIn > 0) return this.chaseCache;
+    this.chaseEvalIn = CHASE_EVAL_TICKS;
+
+    const nav = ai.nav;
+    const curr = nav && nav.nodes.length > 0 ? nav.nearestWalkable(ai.world, this.pos, this.z) : -1;
+    let best: Character | null = null;
+    let bestCost = Infinity;
+    for (const h of this.hostiles(ai)) {
+      let cost: number;
+      if (h.z === this.z && this.canSee(ai.world, h)) {
+        cost = dist(this.pos, h.pos); // already in sight: cost is just range
+      } else if (nav && curr >= 0) {
+        const goal = nav.nearestInSight(ai.world, h.pos, h.z);
+        const step = goal >= 0 ? nav.route(curr, goal) : null;
+        cost = step
+          ? dist(this.pos, nav.nodes[curr].pos) + step.dist + dist(nav.nodes[goal].pos, h.pos)
+          : Infinity;
+      } else {
+        cost = dist(this.pos, h.pos); // no graph: straight line is all there is
+      }
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = h;
+      }
+    }
+    this.chaseCache = best ?? this.nearestHostile(ai); // everyone unreachable: walk at the closest
+    return this.chaseCache;
   }
 
   /** SHOOT, engaged and in sight: hold ground unless the lane is bad — a

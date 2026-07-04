@@ -153,7 +153,7 @@ export class Robot extends Character {
   think(ai: AiContext): void {
     // Sight is per-level: a balcony guard ignores (and can't hit) a ground-level
     // target, and vice versa, until they share a z.
-    const spotted = this.nearestVisibleHostile(ai);
+    const spotted = this.selectTarget(ai);
     // ...and reaction-gated: a hostile only becomes the target after staying
     // in view for reactionTime ticks (see seenFor).
     this.seenFor = spotted
@@ -184,6 +184,13 @@ export class Robot extends Character {
     this.forward = fromAngle(this.angle);
 
     if (this.shouldFire(ai, target) && this.fire(ai.world)) this.onFired();
+  }
+
+  /** Subclass hook: which visible hostile to engage. The base Robot takes the
+   *  physically closest; smarter AIs (TacOracle) weigh how quickly each could
+   *  actually be shot. */
+  protected selectTarget(ai: AiContext): Character | null {
+    return this.nearestVisibleHostile(ai);
   }
 
   /** Subclass hook: hold the trigger this tick? The base Robot fires whenever
