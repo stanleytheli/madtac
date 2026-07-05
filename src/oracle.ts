@@ -42,7 +42,7 @@ const DEFAULT_STANDOFF = 130; // stop closing once the chase is this near
 const ARRIVE_EPS = 8; // "at the node" slop, so it doesn't orbit a waypoint
 const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a moving goal
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
-const FACE_NEXT_DISTANCE = 1000; // this close to the waypoint, aim at the hop after it
+const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
 
 export interface OracleOptions extends RobotOptions {
   /** Constant movement speed, world px/tick. */
@@ -128,37 +128,33 @@ export class Oracle extends Robot {
     }
   }
 
-  /** Look FACE_NEXT_DISTANCE ahead. */
+  /** Where blind movement points the gun: the farthest node within
+   *  FACE_NEXT_DISTANCE of walking along the planned route — the leg to the
+   *  committed waypoint spends budget first, then edge by edge toward the
+   *  goal. NOTE route().dist is the TOTAL remaining path length, not a hop
+   *  cost, so each edge is measured between its own two nodes. */
   private lookahead(nav: NavGraph | null, dest: Vec2): Vec2 {
-    const max_hops = 5
-
+    const MAX_HOPS = 5; // route() is O(1); this just bounds the walk per tick
     if (
-      nav &&
-      this.waypoint >= 0 &&
-      this.goal >= 0 &&
-      this.goal < nav.nodes.length &&
-      this.waypoint !== this.goal &&
-      dist(this.pos, dest) <= FACE_NEXT_DISTANCE
+      !nav ||
+      this.waypoint < 0 ||
+      this.goal < 0 ||
+      this.goal >= nav.nodes.length ||
+      this.waypoint === this.goal
     ) {
-      let remaining_dist = FACE_NEXT_DISTANCE
-      let curr = this.waypoint
-      let hops = 0
-      while (remaining_dist > 0) {
-        const step = nav.route(curr, this.goal)
-        if (hops < max_hops && step && step.dist <= remaining_dist) {
-          remaining_dist -= step.dist
-          curr = step.next
-          hops += 1
-        } else {
-          break;
-        }
-      }
-      return nav.nodes[curr].pos;
-
-      //  const step = nav.route(this.waypoint, this.goal);
-      //  if (step) return nav.nodes[step.next].pos;
+      return dest;
     }
-    return dest;
+    let remaining = FACE_NEXT_DISTANCE - dist(this.pos, dest);
+    let curr = this.waypoint;
+    for (let hops = 0; hops < MAX_HOPS && curr !== this.goal; hops++) {
+      const step = nav.route(curr, this.goal);
+      if (!step) break;
+      const edge = dist(nav.nodes[curr].pos, nav.nodes[step.next].pos);
+      if (edge > remaining) break; // the next node is past the look distance
+      remaining -= edge;
+      curr = step.next;
+    }
+    return nav.nodes[curr].pos;
   }
 
   /** Keep the committed waypoint fresh: advance on arrival at intermediate
