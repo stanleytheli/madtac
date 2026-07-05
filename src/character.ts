@@ -53,6 +53,33 @@ export const ENEMY_SKIN: Skin = {
   outline: "#000000",
 };
 
+export const BLUE_SKIN: Skin = {
+  head: "#4188d9",
+  rightShoulder: "#2c2d76",
+  leftShoulder: "#2c2d76",
+  rightUpperarm: "#4188d9",
+  leftUpperarm: "#4188d9",
+  rightForearm: "#4188d9",
+  leftForearm: "#4188d9",
+  rightHand: "#2c2d76",
+  leftHand: "#2c2d76",
+  outline: "#000000",
+};
+
+export const RED_SKIN: Skin = {
+  head: "#cc5555",
+  rightShoulder: "#642222",
+  leftShoulder: "#642222",
+  rightUpperarm: "#cc5555",
+  leftUpperarm: "#cc5555",
+  rightForearm: "#cc5555",
+  leftForearm: "#cc5555",
+  rightHand: "#642222",
+  leftHand: "#642222",
+  outline: "#000000",
+};
+
+
 /** Collision radius used for character-vs-world and bullet-vs-character checks. */
 export const BODY_RADIUS = 30;
 
