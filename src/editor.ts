@@ -28,7 +28,7 @@ import {
 } from "./level.ts";
 import { LEVELS } from "./levels.ts";
 import { MOVE_RADIUS, nodeEdge } from "./nav.ts";
-import { add, dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
+import { add, angleOf, deg2rad, dist, norm, rad2deg, rotate, scale, sub, vec, type Vec2 } from "./vec.ts";
 import {
   makeFloor,
   sortRenderDepth,
@@ -42,11 +42,18 @@ import {
 const POINT_R = 45; // selection radius around point entities (items, spawns)
 const MIN_SIZE = 8; // smallest rect a drag-draw or resize can produce
 const SEL_COLOR = "#3ddcff";
+const ROT_HANDLE_OFF = 26; // rotate-knob distance past the top edge, screen px
+const ROT_SNAP = Math.PI / 12; // rotate-drag snap step (15°) while snap is on
 
 type Drag =
   | { mode: "draw"; start: Vec2; cur: Vec2 }
   | { mode: "move"; grab: Vec2 } // entity pos minus mouse, at grab time
-  | { mode: "resize"; ex: -1 | 0 | 1; ey: -1 | 0 | 1 }; // which edges follow
+  | { mode: "resize"; ex: -1 | 0 | 1; ey: -1 | 0 | 1 } // which edges follow
+  | { mode: "rotate" }; // dragging the lollipop knob
+
+/** World point -> a rect entity's local (unrotated) frame about its center. */
+const toLocal = (p: Vec2, e: { pos: Vec2; angle?: number }): Vec2 =>
+  e.angle ? add(e.pos, rotate(sub(p, e.pos), -e.angle)) : p;
 
 interface Selection {
   def: EntityDef;
@@ -190,7 +197,7 @@ export class Editor {
     if (this.sel && this.sel.def.shape === "rect") {
       const h = this.handleAt(m);
       if (h) {
-        this.drag = { mode: "resize", ex: h.ex, ey: h.ey };
+        this.drag = h === "rotate" ? { mode: "rotate" } : { mode: "resize", ex: h.ex, ey: h.ey };
         return;
       }
     }
@@ -220,8 +227,9 @@ export class Editor {
     } else if (d.mode === "move" && this.sel) {
       const e = this.sel.e;
       const target = add(m, d.grab);
-      if (this.sel.def.shape === "rect") {
-        // Snap the rect's min corner, not its center, so edges land on grid lines.
+      if (this.sel.def.shape === "rect" && !e.angle) {
+        // Snap the rect's min corner, not its center, so edges land on grid
+        // lines. Rotated rects have no grid-aligned edges — snap the center.
         const minx = this.sn(target.x - e.w / 2);
         const miny = this.sn(target.y - e.h / 2);
         e.pos = vec(minx + e.w / 2, miny + e.h / 2);
@@ -231,19 +239,38 @@ export class Editor {
       this.refreshGeom();
     } else if (d.mode === "resize" && this.sel) {
       const e = this.sel.e;
-      let minx = e.pos.x - e.w / 2;
-      let maxx = e.pos.x + e.w / 2;
-      let miny = e.pos.y - e.h / 2;
-      let maxy = e.pos.y + e.h / 2;
-      const mx = this.sn(m.x);
-      const my = this.sn(m.y);
+      // Resize in the entity's local frame: min/max edge math is only
+      // meaningful where the rect is axis-aligned. The mouse maps in through
+      // the rotation about the (old) center, and the resized center maps back
+      // out through the same rotation. Snapping the local mouse keeps w/h on
+      // grid multiples even when the edges themselves aren't on grid lines.
+      const c0 = e.pos;
+      const lm = toLocal(m, e);
+      let minx = c0.x - e.w / 2;
+      let maxx = c0.x + e.w / 2;
+      let miny = c0.y - e.h / 2;
+      let maxy = c0.y + e.h / 2;
+      const mx = this.sn(lm.x);
+      const my = this.sn(lm.y);
       if (d.ex === -1) minx = Math.min(mx, maxx - MIN_SIZE);
       if (d.ex === 1) maxx = Math.max(mx, minx + MIN_SIZE);
       if (d.ey === -1) miny = Math.min(my, maxy - MIN_SIZE);
       if (d.ey === 1) maxy = Math.max(my, miny + MIN_SIZE);
-      e.pos = vec((minx + maxx) / 2, (miny + maxy) / 2);
+      const c = vec((minx + maxx) / 2, (miny + maxy) / 2);
+      e.pos = e.angle ? add(c0, rotate(sub(c, c0), e.angle)) : c;
       e.w = maxx - minx;
       e.h = maxy - miny;
+      this.refreshGeom();
+    } else if (d.mode === "rotate" && this.sel) {
+      const e = this.sel.e;
+      // The knob sits at local -y, 90° short of the +x bearing the mouse
+      // reports — so the rect's angle is the mouse bearing plus 90°. The snap
+      // toggle snaps in 15° steps; exact 0 stores as "unrotated" so an
+      // axis-aligned rect serializes exactly as before.
+      let a = angleOf(sub(m, e.pos)) + Math.PI / 2;
+      if (this.snapOn) a = Math.round(a / ROT_SNAP) * ROT_SNAP;
+      if (a > Math.PI) a -= Math.PI * 2;
+      e.angle = Math.abs(a) < 1e-9 ? undefined : a;
       this.refreshGeom();
     }
   }
@@ -384,15 +411,23 @@ export class Editor {
     for (const ex of [-1, 0, 1] as const) {
       for (const ey of [-1, 0, 1] as const) {
         if (ex === 0 && ey === 0) continue;
-        out.push({ ex, ey, p: vec(e.pos.x + (ex * e.w) / 2, e.pos.y + (ey * e.h) / 2) });
+        const local = vec((ex * e.w) / 2, (ey * e.h) / 2);
+        out.push({ ex, ey, p: add(e.pos, e.angle ? rotate(local, e.angle) : local) });
       }
     }
     return out;
   }
 
-  private handleAt(m: Vec2): { ex: -1 | 0 | 1; ey: -1 | 0 | 1 } | null {
+  /** The rotate knob: a lollipop off the rect's top edge, rotating with it. */
+  private rotHandle(e: any): Vec2 {
+    const local = vec(0, -e.h / 2 - ROT_HANDLE_OFF * this.zoom);
+    return add(e.pos, e.angle ? rotate(local, e.angle) : local);
+  }
+
+  private handleAt(m: Vec2): { ex: -1 | 0 | 1; ey: -1 | 0 | 1 } | "rotate" | null {
     if (!this.sel || this.sel.e.w <= 0 || this.sel.e.h <= 0) return null;
     const r = 10 * this.zoom; // ~10 screen px of grab slop
+    if (dist(m, this.rotHandle(this.sel.e)) <= r) return "rotate";
     for (const h of this.handles(this.sel.e)) {
       if (dist(m, h.p) <= r) return h;
     }
@@ -444,11 +479,13 @@ export class Editor {
       if (!hidden) continue;
       ctx.save();
       ctx.globalAlpha = 0.25;
+      ctx.translate(o.pos.x, o.pos.y);
+      ctx.rotate(o.angle ?? 0);
       ctx.fillStyle = o.fill;
-      ctx.fillRect(o.pos.x - o.w / 2, o.pos.y - o.h / 2, o.w, o.h);
+      ctx.fillRect(-o.w / 2, -o.h / 2, o.w, o.h);
       ctx.strokeStyle = o.stroke;
       ctx.lineWidth = o.strokeWidth;
-      ctx.strokeRect(o.pos.x - o.w / 2, o.pos.y - o.h / 2, o.w, o.h);
+      ctx.strokeRect(-o.w / 2, -o.h / 2, o.w, o.h);
       ctx.restore();
     }
 
@@ -457,13 +494,15 @@ export class Editor {
       if (!f.invisible || f.infinite || f.level !== this.player.z) continue;
       ctx.save();
       ctx.globalAlpha = 0.18;
+      ctx.translate(f.pos.x, f.pos.y);
+      ctx.rotate(f.angle ?? 0);
       ctx.fillStyle = f.color;
-      ctx.fillRect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+      ctx.fillRect(-f.w / 2, -f.h / 2, f.w, f.h);
       ctx.globalAlpha = 0.5;
       ctx.strokeStyle = f.color;
       ctx.lineWidth = 2 * z;
       ctx.setLineDash([8 * z, 6 * z]);
-      ctx.strokeRect(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+      ctx.strokeRect(-f.w / 2, -f.h / 2, f.w, f.h);
       ctx.restore();
     }
 
@@ -552,11 +591,27 @@ export class Editor {
       // A zero-size rect (the infinite background floor) gets the point-style
       // ring — there's no rectangle to outline or resize.
       if (this.sel.def.shape === "rect" && e.w > 0 && e.h > 0) {
-        ctx.strokeRect(e.pos.x - e.w / 2, e.pos.y - e.h / 2, e.w, e.h);
+        // Everything draws in the entity's rotated frame, so outline, resize
+        // handles, and the rotate lollipop all follow the rect around.
+        ctx.translate(e.pos.x, e.pos.y);
+        ctx.rotate(e.angle ?? 0);
+        ctx.strokeRect(-e.w / 2, -e.h / 2, e.w, e.h);
         ctx.setLineDash([]);
+        // Rotate lollipop: a stem off the top edge ending in a grab knob
+        // (rotHandle computes the same spot for hit-testing).
+        const knobY = -e.h / 2 - ROT_HANDLE_OFF * z;
+        ctx.beginPath();
+        ctx.moveTo(0, -e.h / 2);
+        ctx.lineTo(0, knobY);
+        ctx.stroke();
         ctx.fillStyle = SEL_COLOR;
+        ctx.beginPath();
+        ctx.arc(0, knobY, 5 * z, 0, Math.PI * 2);
+        ctx.fill();
         const hs = 4.5 * z;
-        for (const h of this.handles(e)) ctx.fillRect(h.p.x - hs, h.p.y - hs, hs * 2, hs * 2);
+        for (const h of this.handles(e)) {
+          ctx.fillRect((h.ex * e.w) / 2 - hs, (h.ey * e.h) / 2 - hs, hs * 2, hs * 2);
+        }
       } else {
         ctx.beginPath();
         ctx.arc(e.pos.x, e.pos.y, POINT_R, 0, Math.PI * 2);
@@ -941,6 +996,8 @@ export class Editor {
       this.inspector.append(
         this.numRow("w", () => e.w, (v) => (e.w = Math.max(MIN_SIZE, v))),
         this.numRow("h", () => e.h, (v) => (e.h = Math.max(MIN_SIZE, v))),
+        // Degrees for the humans, radians in memory, 0 stored as "unrotated".
+        this.numRow("angle°", () => rad2deg(e.angle ?? 0), (v) => (e.angle = v ? deg2rad(v) : undefined)),
       );
     }
     for (const f of def.fields) this.inspector.append(this.fieldRow(f, e));

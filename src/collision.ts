@@ -1,5 +1,16 @@
-import { vec, type Vec2 } from "./vec.ts";
+import { add, rotate, sub, vec, type Vec2 } from "./vec.ts";
 import type { Obstacle } from "./world.ts";
+
+/** The centered-rect shape every box test takes: obstacles, floors, stairs,
+ *  regions. `angle` (radians, absent/0 = axis-aligned) rotates it about `pos` —
+ *  each test transforms the query into the box's local frame and runs the
+ *  original axis-aligned math there, so rotation costs nothing when unset. */
+export interface Box {
+  pos: Vec2;
+  w: number;
+  h: number;
+  angle?: number;
+}
 
 interface AABB {
   minx: number;
@@ -8,20 +19,34 @@ interface AABB {
   maxy: number;
 }
 
-export const boxAabb = (o: { pos: Vec2; w: number; h: number }): AABB => ({
+/** The box's own-frame AABB — only meaningful against points fed through
+ *  toLocal (for a rotated box it is NOT its world-space bounding box). */
+export const boxAabb = (o: Box): AABB => ({
   minx: o.pos.x - o.w / 2,
   maxx: o.pos.x + o.w / 2,
   miny: o.pos.y - o.h / 2,
   maxy: o.pos.y + o.h / 2,
 });
 
-/** Push a circle out of a box (axis-aligned obstacle) if overlapping. Returns the corrected center. */
+/** World point -> the box's local frame (where it's axis-aligned, still
+ *  centered on o.pos). Identity for unrotated boxes. */
+const toLocal = (p: Vec2, o: Box): Vec2 =>
+  o.angle ? add(o.pos, rotate(sub(p, o.pos), -o.angle)) : p;
+
+/** Local-frame point -> world (the inverse of toLocal). */
+const fromLocal = (p: Vec2, o: Box): Vec2 =>
+  o.angle ? add(o.pos, rotate(sub(p, o.pos), o.angle)) : p;
+
+/** Push a circle out of a box if overlapping. Returns the corrected center. */
 export function resolveCircleVsBox(pos: Vec2, r: number, o: Obstacle): Vec2 {
+  // Resolve in the box's local frame (a circle is rotation-invariant), then
+  // map the corrected center back to world space.
+  const lp = toLocal(pos, o);
   const b = boxAabb(o);
-  const cx = Math.max(b.minx, Math.min(pos.x, b.maxx));
-  const cy = Math.max(b.miny, Math.min(pos.y, b.maxy));
-  const dx = pos.x - cx;
-  const dy = pos.y - cy;
+  const cx = Math.max(b.minx, Math.min(lp.x, b.maxx));
+  const cy = Math.max(b.miny, Math.min(lp.y, b.maxy));
+  const dx = lp.x - cx;
+  const dy = lp.y - cy;
   const d2 = dx * dx + dy * dy;
 
   if (d2 >= r * r) return pos; // no overlap
@@ -30,19 +55,19 @@ export function resolveCircleVsBox(pos: Vec2, r: number, o: Obstacle): Vec2 {
     // Closest point is on an edge/corner: push straight out along the normal.
     const d = Math.sqrt(d2);
     const push = r - d;
-    return vec(pos.x + (dx / d) * push, pos.y + (dy / d) * push);
+    return fromLocal(vec(lp.x + (dx / d) * push, lp.y + (dy / d) * push), o);
   }
 
   // Center is inside the box: eject along the shallowest axis.
-  const left = pos.x - b.minx;
-  const right = b.maxx - pos.x;
-  const top = pos.y - b.miny;
-  const bottom = b.maxy - pos.y;
+  const left = lp.x - b.minx;
+  const right = b.maxx - lp.x;
+  const top = lp.y - b.miny;
+  const bottom = b.maxy - lp.y;
   const m = Math.min(left, right, top, bottom);
-  if (m === left) return vec(b.minx - r, pos.y);
-  if (m === right) return vec(b.maxx + r, pos.y);
-  if (m === top) return vec(pos.x, b.miny - r);
-  return vec(pos.x, b.maxy + r);
+  if (m === left) return fromLocal(vec(b.minx - r, lp.y), o);
+  if (m === right) return fromLocal(vec(b.maxx + r, lp.y), o);
+  if (m === top) return fromLocal(vec(lp.x, b.miny - r), o);
+  return fromLocal(vec(lp.x, b.maxy + r), o);
 }
 
 /** Push a circle out of another circle if overlapping. Returns the corrected center. */
@@ -62,14 +87,11 @@ export function resolveCircleVsCircle(pos: Vec2, r: number, other: Vec2, otherR:
  *  real overlap) — a body can slide along a wall at exactly its radius. Unlike
  *  a point-in-inflated-box test, corners stay round: a diagonal that clears a
  *  corner by `r` is free. */
-export function circleIntersectsBox(
-  pos: Vec2,
-  r: number,
-  o: { pos: Vec2; w: number; h: number },
-): boolean {
+export function circleIntersectsBox(pos: Vec2, r: number, o: Box): boolean {
+  const lp = toLocal(pos, o);
   const b = boxAabb(o);
-  const dx = pos.x - Math.max(b.minx, Math.min(pos.x, b.maxx));
-  const dy = pos.y - Math.max(b.miny, Math.min(pos.y, b.maxy));
+  const dx = lp.x - Math.max(b.minx, Math.min(lp.x, b.maxx));
+  const dy = lp.y - Math.max(b.miny, Math.min(lp.y, b.maxy));
   return dx * dx + dy * dy < r * r;
 }
 
@@ -86,10 +108,11 @@ export function segmentIntersectsCircle(a: Vec2, b: Vec2, c: Vec2, r: number): b
   return dx * dx + dy * dy < r * r;
 }
 
-/** Point-in-centered-rect test. Works for any {pos,w,h} shape (obstacles, floors). */
-export function pointInBox(p: Vec2, o: { pos: Vec2; w: number; h: number }): boolean {
+/** Point-in-centered-rect test. Works for any Box shape (obstacles, floors). */
+export function pointInBox(p: Vec2, o: Box): boolean {
+  const lp = toLocal(p, o);
   const b = boxAabb(o);
-  return p.x >= b.minx && p.x <= b.maxx && p.y >= b.miny && p.y <= b.maxy;
+  return lp.x >= b.minx && lp.x <= b.maxx && lp.y >= b.miny && lp.y <= b.maxy;
 }
 
 /** Slab test: does the segment a->b intersect the axis-aligned box? */
@@ -137,7 +160,9 @@ export function hasLineOfSight(
   for (const o of obstacles) {
     if (z !== undefined && o.z !== z) continue;
     if (o.permeable) continue; // fences don't block sight
-    if (segmentIntersectsAabb(a, b, boxAabb(o))) return false;
+    // Rotated walls: run the slab test in the wall's own frame (both segment
+    // endpoints rotate with it — a straight line stays straight).
+    if (segmentIntersectsAabb(toLocal(a, o), toLocal(b, o), boxAabb(o))) return false;
   }
   return true;
 }

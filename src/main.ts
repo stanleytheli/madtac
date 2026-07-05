@@ -23,6 +23,7 @@ import { NavGraph } from "./nav.ts";
 import { Robot, type AiContext } from "./robot.ts";
 import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
 import { drawParticles } from "./particle.ts";
+import { disjointPolys, rectCorners, type Poly } from "./poly.ts";
 import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
 import { dist, fromAngle, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import {
@@ -437,7 +438,9 @@ function drawFloor(fl: Floor): void {
   ctx.save();
   ctx.globalAlpha = fl.alpha; // eased: floors fade out as they stop being visible
   ctx.fillStyle = fl.color;
-  ctx.fillRect(fl.pos.x - fl.w / 2, fl.pos.y - fl.h / 2, fl.w, fl.h);
+  ctx.translate(fl.pos.x, fl.pos.y);
+  ctx.rotate(fl.angle ?? 0);
+  ctx.fillRect(-fl.w / 2, -fl.h / 2, fl.w, fl.h);
   ctx.restore();
 }
 
@@ -469,8 +472,12 @@ function mixColor(a: string, b: string, t: number): string {
 function drawStairs(s: Stairs): void {
   ctx.save();
   ctx.globalAlpha = s.alpha;
-  const minx = s.pos.x - s.w / 2;
-  const miny = s.pos.y - s.h / 2;
+  // Step slices are laid out in the stairs' local frame, so a rotated flight
+  // just rotates the whole run of steps with it.
+  ctx.translate(s.pos.x, s.pos.y);
+  ctx.rotate(s.angle ?? 0);
+  const minx = -s.w / 2;
+  const miny = -s.h / 2;
   for (let i = 0; i < s.steps; i++) {
     // 0..1 from the min end to the max end, flipped so the higher-z end is lightest.
     const frac = (i + 0.5) / s.steps;
@@ -487,8 +494,11 @@ function drawStairs(s: Stairs): void {
 }
 
 function drawObstacle(o: Obstacle): void {
-  const x = o.pos.x - o.w / 2;
-  const y = o.pos.y - o.h / 2;
+  ctx.save();
+  ctx.translate(o.pos.x, o.pos.y);
+  ctx.rotate(o.angle ?? 0);
+  const x = -o.w / 2;
+  const y = -o.h / 2;
   ctx.fillStyle = o.fill;
   ctx.fillRect(x, y, o.w, o.h);
   ctx.strokeStyle = o.stroke;
@@ -503,6 +513,7 @@ function drawObstacle(o: Obstacle): void {
     ctx.lineTo(x, y + o.h);
     ctx.stroke();
   }
+  ctx.restore();
 }
 
 /** "#rrggbb" -> "r,g,b" for building rgba() strings with a chosen alpha. */
@@ -568,14 +579,7 @@ function presentLevels(): number[] {
   return [...set].sort((a, b) => a - b);
 }
 
-interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
-
-// Hidden rects grow by this before masking, so the clip's antialiased edge
+// Hidden shapes grow by this before masking, so the clip's antialiased edge
 // falls just past content that sits flush against it (walls extend exactly to
 // the floor slab's edge) instead of on it — without this, boundary pixels
 // render half-covered and every hidden room shows as a faint 1px outline.
@@ -584,39 +588,11 @@ const MASK_EPS = 1.5;
 // Visible stairs mask generously, covering their edge-mounted railings.
 const STAIR_MASK_PAD = 10;
 
-/** Pieces of `a` not covered by `b` (0-4 rects). */
-function subtractRect(a: Rect, b: Rect): Rect[] {
-  const ax1 = a.x + a.w;
-  const ay1 = a.y + a.h;
-  const bx1 = b.x + b.w;
-  const by1 = b.y + b.h;
-  if (b.x >= ax1 || bx1 <= a.x || b.y >= ay1 || by1 <= a.y) return [a]; // no overlap
-  const out: Rect[] = [];
-  if (b.y > a.y) out.push({ x: a.x, y: a.y, w: a.w, h: b.y - a.y }); // band above b
-  if (by1 < ay1) out.push({ x: a.x, y: by1, w: a.w, h: ay1 - by1 }); // band below b
-  const midY = Math.max(a.y, b.y);
-  const midH = Math.min(ay1, by1) - midY;
-  if (b.x > a.x) out.push({ x: a.x, y: midY, w: b.x - a.x, h: midH }); // left of b
-  if (bx1 < ax1) out.push({ x: bx1, y: midY, w: ax1 - bx1, h: midH }); // right of b
-  return out;
-}
-
-/**
- * Rewrite `rects` as a disjoint set covering the same union. The subtractive
- * mask uses an even-odd fill, where overlapping rects would cancel each other
- * out — this makes any overlap (tiled floors, the MASK_EPS inflation) safe.
- */
-function disjointRects(rects: readonly Rect[]): Rect[] {
-  const out: Rect[] = [];
-  for (const r of rects) {
-    let pieces: Rect[] = [r];
-    for (const d of out) {
-      pieces = pieces.flatMap((p) => subtractRect(p, d));
-      if (pieces.length === 0) break;
-    }
-    out.push(...pieces);
-  }
-  return out;
+/** Append a convex poly (a surface's — possibly rotated — rect) to a path. */
+function addPoly(path: Path2D, poly: Poly): void {
+  path.moveTo(poly[0].x, poly[0].y);
+  for (let i = 1; i < poly.length; i++) path.lineTo(poly[i].x, poly[i].y);
+  path.closePath();
 }
 
 /**
@@ -637,19 +613,10 @@ function levelMasks(z: number): {
   let visibleInf = false;
   let hiddenInf = false;
   let visible: Path2D | null = null;
-  const hiddenRects: Rect[] = [];
-  const addVisible = (x: number, y: number, w: number, h: number): void => {
+  const hiddenPolys: Poly[] = [];
+  const addVisible = (poly: Poly): void => {
     visible = visible ?? new Path2D();
-    visible.rect(x, y, w, h);
-  };
-  const addHidden = (x: number, y: number, w: number, h: number): void => {
-    // Inflated so the mask's AA edge clears flush content (see MASK_EPS).
-    hiddenRects.push({
-      x: x - MASK_EPS,
-      y: y - MASK_EPS,
-      w: w + MASK_EPS * 2,
-      h: h + MASK_EPS * 2,
-    });
+    addPoly(visible, poly);
   };
 
   for (const f of world.floors) {
@@ -659,25 +626,25 @@ function levelMasks(z: number): {
       if (vis) visibleInf = true;
       else hiddenInf = true;
     } else if (vis) {
-      addVisible(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+      addVisible(rectCorners(f.pos, f.w, f.h, f.angle));
     } else {
-      addHidden(f.pos.x - f.w / 2, f.pos.y - f.h / 2, f.w, f.h);
+      // Inflated so the mask's AA edge clears flush content (see MASK_EPS).
+      hiddenPolys.push(rectCorners(f.pos, f.w, f.h, f.angle, MASK_EPS));
     }
   }
-  const PAD = STAIR_MASK_PAD;
   for (const s of world.stairs) {
     if (s.zAtMin !== z && s.zAtMax !== z) continue;
     if (stairsVisible(s, player.z)) {
-      addVisible(s.pos.x - s.w / 2 - PAD, s.pos.y - s.h / 2 - PAD, s.w + PAD * 2, s.h + PAD * 2);
+      addVisible(rectCorners(s.pos, s.w, s.h, s.angle, STAIR_MASK_PAD));
     } else {
-      addHidden(s.pos.x - s.w / 2, s.pos.y - s.h / 2, s.w, s.h);
+      hiddenPolys.push(rectCorners(s.pos, s.w, s.h, s.angle, MASK_EPS));
     }
   }
 
   let hidden: Path2D | null = null;
-  if (hiddenRects.length > 0) {
+  if (hiddenPolys.length > 0) {
     hidden = new Path2D();
-    for (const r of disjointRects(hiddenRects)) hidden.rect(r.x, r.y, r.w, r.h);
+    for (const p of disjointPolys(hiddenPolys)) addPoly(hidden, p);
   }
   return { visibleInf, hiddenInf, visible, hidden };
 }
@@ -766,12 +733,7 @@ function render(): void {
         if (s.zAtMin !== z && s.zAtMax !== z) continue;
         if (!stairsVisible(s, player.z, cap)) continue; // its low end must be below the cap
         shaft = shaft ?? new Path2D();
-        shaft.rect(
-          s.pos.x - s.w / 2 - STAIR_MASK_PAD,
-          s.pos.y - s.h / 2 - STAIR_MASK_PAD,
-          s.w + STAIR_MASK_PAD * 2,
-          s.h + STAIR_MASK_PAD * 2,
-        );
+        addPoly(shaft, rectCorners(s.pos, s.w, s.h, s.angle, STAIR_MASK_PAD));
       }
       if (shaft) {
         ctx.save();

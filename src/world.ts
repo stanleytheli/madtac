@@ -11,7 +11,7 @@ import {
 } from "./particle.ts";
 import type { GroundItem } from "./item.ts";
 import type { ArmorPen } from "./guns.ts";
-import { add, dist, norm, scale, vec, type Vec2 } from "./vec.ts";
+import { add, dist, norm, rotate, scale, sub, vec, type Vec2 } from "./vec.ts";
 
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at
@@ -47,14 +47,17 @@ export interface Region {
 }
 
 /**
- * A solid, axis-aligned box that blocks movement, bullets, and line of sight —
- * but only against things on its own z level. Crates and walls are both
- * Obstacles, differing only in appearance + shrapnel.
+ * A solid box that blocks movement, bullets, and line of sight — but only
+ * against things on its own z level. Crates and walls are both Obstacles,
+ * differing only in appearance + shrapnel.
  */
 export interface Obstacle {
   pos: Vec2; // center
   w: number;
   h: number;
+  /** Rotation about `pos` in radians (absent/0 = axis-aligned). Collision,
+   *  sight, and rendering all honor it — see collision.ts's local-frame Box. */
+  angle?: number;
   z: number; // the level it sits on
   /** Fence-like: still solid to movement, but bullets and sight pass through, so
    *  same-level firefights work across it. (Bullets stay z-bound regardless —
@@ -91,6 +94,9 @@ export interface Floor {
   pos: Vec2; // center
   w: number;
   h: number;
+  /** Rotation about `pos` in radians, like an Obstacle's. Render masks
+   *  decompose rotated surfaces into disjoint convex quads (see poly.ts). */
+  angle?: number;
   color: string;
   /** The z level the surface physically sits at. */
   level: number;
@@ -151,6 +157,9 @@ export interface Stairs {
   pos: Vec2; // center
   w: number;
   h: number;
+  /** Rotation about `pos` in radians, like an Obstacle's. The climb axis and
+   *  midpoint rule live in the stairs' local frame, so they rotate along. */
+  angle?: number;
   /** The axis you climb along; z changes as you cross the rect's midpoint. */
   axis: "x" | "y";
   /** z at the min-coordinate end / max-coordinate end along `axis`. */
@@ -268,6 +277,9 @@ export function makeStairs(
  * other, so walking across the midpoint is the transition.
  */
 export function stairZ(s: Stairs, p: Vec2): number | null {
+  // Rotated flights: the rect test and the climb axis live in the stairs'
+  // local frame, so transform the walker's position into it first.
+  if (s.angle) p = add(s.pos, rotate(sub(p, s.pos), -s.angle));
   const minx = s.pos.x - s.w / 2;
   const miny = s.pos.y - s.h / 2;
   if (p.x < minx || p.x > minx + s.w || p.y < miny || p.y > miny + s.h) return null;

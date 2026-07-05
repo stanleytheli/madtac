@@ -33,6 +33,7 @@ export const fromAngle = (ang: number, r = 1): Vec2 => ({ x: Math.cos(ang) * r, 
 export const angleOf = (a: Vec2): number => Math.atan2(a.y, a.x);
 
 export const deg2rad = (d: number): number => (d * Math.PI) / 180;
+export const rad2deg = (r: number): number => (r * 180) / Math.PI;
 
 /**
  * Intersection points of two circles. Returns the two points, or null when the

@@ -41,6 +41,7 @@ const DEFAULT_MOVE_SPEED = 2.4; // world px per tick, constant (no accel model)
 const DEFAULT_STANDOFF = 130; // stop closing once the chase is this near
 const ARRIVE_EPS = 8; // "at the node" slop, so it doesn't orbit a waypoint
 const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a moving goal
+const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this much cheaper (px)
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
 
@@ -179,6 +180,7 @@ export class Oracle extends Robot {
   /** One path query, committing `waypoint` + `atGoalNode`. My node is the
    *  nearest *walkable* node; the target's is the nearest that *sees* it. */
   private plan(nav: NavGraph, world: World, chase: Character): void {
+    const prev = this.waypoint; // the hop committed before this replan, or -1
     this.waypoint = -1;
     this.atGoalNode = false;
     this.goal = -1;
@@ -199,13 +201,39 @@ export class Oracle extends Robot {
     // walkable by construction — grinding into the wall between us and the
     // next hop was the wall-by-the-stairs bug. Standing on curr already, trust
     // the graph edge.
-    if (
+    const fresh =
       dist(this.pos, nav.nodes[curr].pos) <= ARRIVE_EPS ||
       walkable(world, this.pos, this.z, next.pos, next.z)
-    ) {
-      this.waypoint = step.next;
-    } else {
-      this.waypoint = curr;
+        ? step.next
+        : curr;
+    // Sticky hop: standing near the boundary between two nodes' cells, each
+    // timed replan can re-derive a different "my node" — and when the two
+    // nodes' next hops toward the goal point in opposite directions (a hairpin
+    // route around a wall-cut link), alternate replans reverse the walk every
+    // REPLAN_TICKS forever. So a replan only overrides the committed hop when
+    // the fresh plan is decisively cheaper (walk leg + remaining route, using
+    // route().dist = total remaining path length) or the committed hop went
+    // stale/unwalkable. Chasing a moving goal still redirects: as the goal
+    // drifts, the fresh cost eventually undercuts the margin and we switch.
+    if (prev >= 0 && prev < nav.nodes.length && prev !== fresh) {
+      const cost = (w: number): number | null => {
+        const leg = dist(this.pos, nav.nodes[w].pos);
+        if (w === goal) return leg;
+        const r = nav.route(w, goal);
+        return r ? leg + r.dist : null;
+      };
+      const prevCost = cost(prev);
+      const freshCost = cost(fresh);
+      if (
+        prevCost !== null &&
+        freshCost !== null &&
+        prevCost <= freshCost + SWITCH_MARGIN &&
+        walkable(world, this.pos, this.z, nav.nodes[prev].pos, nav.nodes[prev].z)
+      ) {
+        this.waypoint = prev;
+        return;
+      }
     }
+    this.waypoint = fresh;
   }
 }

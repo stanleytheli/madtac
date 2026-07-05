@@ -17,7 +17,7 @@ import { Gun } from "./gun.ts";
 import { ArmorItem, GunItem } from "./item.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "./specs.ts";
 import { TEAMS } from "./team.ts";
-import { vec, type Vec2 } from "./vec.ts";
+import { deg2rad, rad2deg, vec, type Vec2 } from "./vec.ts";
 import {
   WALL_T,
   makeCrate,
@@ -476,6 +476,10 @@ export function entityToJSON(def: EntityDef, e: any): Record<string, unknown> {
   if (def.shape === "rect") {
     j.w = round2(e.w);
     j.h = round2(e.h);
+    // Rotation is geometry like w/h, stored in degrees for readable levels
+    // (radians in memory) and omitted while axis-aligned — so pre-rotation
+    // level strings and unrotated entities serialize exactly as before.
+    if (e.angle) j.angle = round2(rad2deg(e.angle));
   }
   for (const f of def.fields) {
     const v = f.get(e);
@@ -541,6 +545,7 @@ export function entityFromJSON(def: EntityDef, j: Record<string, any>): any {
   if (def.shape === "rect") {
     if (typeof j.w === "number") e.w = j.w;
     if (typeof j.h === "number") e.h = j.h;
+    if (typeof j.angle === "number" && j.angle !== 0) e.angle = deg2rad(j.angle);
   }
   for (const f of def.fields) if (f.key in j) f.set(e, j[f.key]);
   return e;
