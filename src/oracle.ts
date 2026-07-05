@@ -42,7 +42,7 @@ const DEFAULT_STANDOFF = 130; // stop closing once the chase is this near
 const ARRIVE_EPS = 8; // "at the node" slop, so it doesn't orbit a waypoint
 const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a moving goal
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
-const FACE_NEXT_RADIUS = 200; // this close to the waypoint, aim at the hop after it
+const FACE_NEXT_DISTANCE = 1000; // this close to the waypoint, aim at the hop after it
 
 export interface OracleOptions extends RobotOptions {
   /** Constant movement speed, world px/tick. */
@@ -128,19 +128,35 @@ export class Oracle extends Robot {
     }
   }
 
-  /** Where blind movement points the gun: the committed waypoint — or, within
-   *  FACE_NEXT_RADIUS of it, the next hop toward the plan's goal node. */
+  /** Look FACE_NEXT_DISTANCE ahead. */
   private lookahead(nav: NavGraph | null, dest: Vec2): Vec2 {
+    const max_hops = 5
+
     if (
       nav &&
       this.waypoint >= 0 &&
       this.goal >= 0 &&
       this.goal < nav.nodes.length &&
       this.waypoint !== this.goal &&
-      dist(this.pos, dest) <= FACE_NEXT_RADIUS
+      dist(this.pos, dest) <= FACE_NEXT_DISTANCE
     ) {
-      const step = nav.route(this.waypoint, this.goal);
-      if (step) return nav.nodes[step.next].pos;
+      let remaining_dist = FACE_NEXT_DISTANCE
+      let curr = this.waypoint
+      let hops = 0
+      while (remaining_dist > 0) {
+        const step = nav.route(curr, this.goal)
+        if (hops < max_hops && step && step.dist <= remaining_dist) {
+          remaining_dist -= step.dist
+          curr = step.next
+          hops += 1
+        } else {
+          break;
+        }
+      }
+      return nav.nodes[curr].pos;
+
+      //  const step = nav.route(this.waypoint, this.goal);
+      //  if (step) return nav.nodes[step.next].pos;
     }
     return dest;
   }
