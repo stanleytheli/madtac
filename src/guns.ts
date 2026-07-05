@@ -131,6 +131,7 @@ export interface GunSpec {
 
 const DEFAULT_AP_MELEE = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
 const DEFAULT_AP_9MM =   { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
+const DEFAULT_AP_45ACP = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
 const DEFAULT_AP_556 =   { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
 const DEFAULT_AP_762 =   { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
 const DEFAULT_AP_50AE =  { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
@@ -344,7 +345,7 @@ export const M9: GunSpec = {
   zoom: 1.8,
   speed: 0.925,
   fire: {
-    delay: 6,
+    delay: 8,
     bulletSpeed: 50,
     bulletLife: 60,
     auto: false,
@@ -366,6 +367,66 @@ export const M9: GunSpec = {
   movingFirstShotRecoilMin: 0.0,
   movingFirstShotRecoilMax: 0.0,
 };
+
+export const USPS: GunSpec = {
+  name: "USP-S",
+  primary: false,
+  icon: "usps",
+  rightGrip: { f: 50, l: 0 },
+  leftGrip: { f: 55, l: -9 },
+  //leftGrip: { f: 35, l: 20 },
+  //leftGrip: { f: 30, l: 10 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 60, l : 0}, // 0
+                    { f : 20, l : -27}, // 15
+                    { f : 20, l : -27}, // 30
+                    { f : 55, l : -9}, // 45
+                    { f: 70, l: -12}, // 55
+                    { f: 45, l: -12}, // 65
+                    { f: 45, l: -12}, // 70
+                    { f: 70, l: -12}, // 80
+                    { f: 60, l: 0}, // 90
+                    ],
+    leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
+  },
+
+  barrel: { start: 95, end: 135, width: 8 },
+  color: "#000000",
+
+  otherParts: [
+    {p0: {f: 50, l: 0}, p1: {f: 90, l: 0}, width: 8, color: "#000000"},
+    {p0: {f: 85, l: 0}, p1: {f: 100, l: 0}, width: 4, color: "#000000"}
+  ],
+
+  damage: 22,
+  armorPen: DEFAULT_AP_45ACP,
+  zoom: 2.0,
+  speed: 0.925,
+  fire: {
+    delay: 8,
+    bulletSpeed: 50,
+    bulletLife: 60,
+    auto: false,
+    spread: 0.01,
+    magSize: 12,
+    reserveMags: 4,
+    reloadTime: 90,
+    drawTime: 45,
+    tracerWidth: 4,
+    tracerLength: 130,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 12,
+  recoilRecovery: 3,
+  recoilCoef: 0.115,
+  recoilGain: 11.5,
+  recoilDelay: 30,
+  movePenalty: 1.5,
+  movingFirstShotRecoilMin: 0.0,
+  movingFirstShotRecoilMax: 0.0,
+};
+
 
 export const Deagle: GunSpec = {
   name: "Desert Eagle",
@@ -392,7 +453,7 @@ export const Deagle: GunSpec = {
   color: "#7e858f",
   damage: 40,
   armorPen: DEFAULT_AP_50AE,
-  zoom: 1.8,
+  zoom: 2.0,
   speed: 0.85,
   fire: {
     delay: 10,

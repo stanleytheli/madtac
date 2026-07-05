@@ -132,7 +132,7 @@ const nav = EDIT ? null : new NavGraph(world);
 // Demo pickups for the hand-coded map (a saved level carries its own items).
 if (!loaded) {
   // Some guns lying around to pick up.
-  world.items.push(new GunItem(vec(-120, -80), new Gun(Guns.Deagle)));
+  world.items.push(new GunItem(vec(-120, -80), new Gun(Guns.USPS)));
   world.items.push(new GunItem(vec(80, 120), new Gun(Guns.M249)));
 
   // ...and some armor to try on.
