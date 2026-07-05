@@ -182,29 +182,33 @@ export class Gun {
     if (this.spec.reloadAnim && this.spec.fire !== undefined && this.reloadTicks > 0) {
       const t = this.spec.fire.reloadTime - this.reloadTicks
       let anim = this.spec.reloadAnim
-      let times = this.spec.reloadAnim.times
-  
-      let idx = 1
-      for (let i = 1; i < times.length; i++) {
-        if (t <= times[i]) {
-           idx = i;
-           break;
+
+      if (anim.leftPositions && anim.leftTimes) {
+        let times = anim.leftTimes
+        let idx = 1
+        for (let i = 1; i < times.length; i++) {
+          if (t <= times[i]) {
+            idx = i;
+            break;
+          }
         }
-      }
-      
-      // interpolate between reloadAnim.handPositions[idx-1], handPositions[idx]
-      const p = ( t - times[idx - 1] ) / ( times[idx] - times[idx - 1] )
-      // p * final + (1 - p) * initial
-      if (anim.leftPositions) {
+        const p = ( t - times[idx - 1] ) / ( times[idx] - times[idx - 1] )
         left = scale(grip(anim.leftPositions[idx]), p)
         left = add(left, scale(grip(anim.leftPositions[idx - 1]), 1 - p))
       }
-
-      if (anim.rightPositions) {
+      if (anim.rightPositions && anim.rightTimes) {
+        let times = anim.rightTimes
+        let idx = 1
+        for (let i = 1; i < times.length; i++) {
+          if (t <= times[i]) {
+            idx = i;
+            break;
+          }
+        }
+        const p = ( t - times[idx - 1] ) / ( times[idx] - times[idx - 1] )
         right = scale(grip(anim.rightPositions[idx]), p)
-        right = add(left, scale(grip(anim.rightPositions[idx - 1]), 1 - p))
+        right = add(right, scale(grip(anim.rightPositions[idx - 1]), 1 - p))
       }
-
     }
 
 
