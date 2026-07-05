@@ -63,11 +63,13 @@ const EDIT = params.get("edit") === "true";
 // The map: ?level=<name> picks a JSON from src/levels/; with no param a file
 // named default.json is used if the folder has one; otherwise the hand-coded
 // demo map below. (?edit composes: ?edit=true&level=foo edits that level.)
+const DEFAULT_LEVEL = "arena-teamfight-skins"
+
 const levelName = params.get("level");
 if (levelName && !(levelName in LEVELS)) {
   console.warn(`unknown level "${levelName}" — falling back to the default map`);
 }
-const levelText = LEVELS[levelName ?? "default"] ?? null;
+const levelText = LEVELS[levelName ?? DEFAULT_LEVEL] ?? null;
 const loaded = levelText ? loadLevel(levelText) : null;
 const world = loaded ? loaded.world : createWorld();
 
