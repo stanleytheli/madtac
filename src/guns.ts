@@ -291,7 +291,7 @@ export const M249: GunSpec = {
   zoom: 2.2,
   speed: 0.75,
   fire: {
-    delay: 7,
+    delay: 6,
     bulletSpeed: 60,
     bulletLife: 70,
     auto: true,
