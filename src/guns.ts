@@ -52,6 +52,19 @@ export interface ArmorPen {
   l4: number;
 }
 
+export interface HandsAnimation {
+  rightPositions?: GripLocal[];
+  leftPositions?: GripLocal[];
+  times: number[];
+}
+
+export interface LinePart {
+  p0: GripLocal,
+  p1: GripLocal,
+  color: string,
+  width: number,
+}
+
 export interface GunSpec {
   name: string;
   primary: boolean;
@@ -59,10 +72,17 @@ export interface GunSpec {
   icon?: string;
   rightGrip: GripLocal;
   leftGrip: GripLocal;
+
+  reloadAnim?: HandsAnimation;
+  // fireAnim?: HandsAnimation; 
+  
   /** Barrel drawn as a rounded bar from `barrel.start` to `barrel.end` along forward. */
   barrel?: { start: number; end: number; width: number };
   /** Gun body color. The gun renders itself, so this is not part of the character skin. */
   color: string;
+
+  otherParts?: LinePart[];
+
   /** Damage dealt per bullet, before armor. */
   damage: number;
   /** Per-tier armor penetration. Stored now; consumed once armor exists. */
@@ -71,7 +91,7 @@ export interface GunSpec {
   zoom: number;
   /** Movement speed multiplier while equipped (CSGO-style: heavier guns are slower). */
   speed: number;
-  /** Firing behaviour. Omitted for weapons that can't shoot at all. */
+  /** Firing behaviour. */
   fire?: FireSpec;
   /**
    * Melee weapon (fists, and knives/bats later). Modeled as a gun that fires a
@@ -120,6 +140,24 @@ export const M16: GunSpec = {
   icon: "m16",
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 65, l: -6 },
+  //leftGrip: { f: 55, l: -12},
+
+  reloadAnim: {
+    leftPositions: [{ f : 65, l : -6}, // 0
+                    { f : 20, l : -27}, // 40
+                    { f : 20, l : -27}, // 60
+                    { f : 65, l : -6}, // 100
+                    { f: 70, l: -12}, // 105
+                    { f: 70, l: -12}, // 115
+                    { f: 55, l: -12}, // 125
+                    { f: 55, l: -12}, // 130
+                    { f: 70, l: -12}, // 140
+                    { f : 65, l : -6}, // 150
+                    ],
+    times: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
+  },
+
+
   barrel: { start: 35, end: 110, width: 11 },
   color: "#26292e",
   damage: 20,
@@ -156,6 +194,22 @@ export const AK47: GunSpec = {
   icon: "ak47",
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 65, l: -6 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 65, l : -6}, // 0
+                    { f : 20, l : -27}, // 40
+                    { f : 20, l : -27}, // 60
+                    { f : 65, l : -6}, // 100
+                    { f: 70, l: -12}, // 105
+                    { f: 70, l: -12}, // 115
+                    { f: 55, l: -12}, // 125
+                    { f: 55, l: -12}, // 130
+                    { f: 70, l: -12}, // 140
+                    { f : 65, l : -6}, // 150
+                    ],
+    times: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
+  },
+
   barrel: { start: 35, end: 110, width: 11 },
   color: "#53360b",
   damage: 25,
@@ -192,8 +246,44 @@ export const M249: GunSpec = {
   icon: "m249_small",
   rightGrip: { f: 45, l: 0 },
   leftGrip: { f: 75, l: -6 },
-  barrel: { start: 30, end: 120, width: 14 },
+  barrel: { start: 30, end: 125, width: 14 },
   color: "#1f1f1f",
+
+  otherParts: [
+    {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309"}
+  ],
+
+  reloadAnim: {
+    leftPositions: [{ f: 75, l: -6 }, // 0
+                    { f: 60, l: -6 }, // 15
+                    { f: 60, l: -10 }, // 25
+                    { f: 60, l: -10 }, // 35
+                    { f: 60, l: 10 }, // 55
+                    { f: 60, l: -10 }, // 75
+                    { f: 60, l: -10 }, // 85
+
+                    { f: 60, l: -20 }, // 95
+
+                    { f : 20, l : -27}, // 140
+                    { f : 20, l : -27}, // 190
+                    { f: 60, l: -20 }, // 235
+                    { f: 60, l: -10 }, // 245
+                    { f: 60, l: -10 }, // 260
+
+                    { f: 60, l: 20 }, // 275
+                    { f: 60, l: 20 }, // 290
+                    { f: 60, l: 0 }, // 305
+                    { f: 60, l: 0 }, // 315
+      
+                    { f: 75, l: -10 }, // 330
+                    { f: 55, l: -10 }, // 340
+                    { f: 55, l: -10 }, // 345
+                    { f: 75, l: -10 }, // 355
+                    { f: 75, l: -6 }, // 360
+                    ],
+    times: [0, 15, 25, 35, 55, 75, 85, 95, 140, 190, 235, 245, 260, 275, 290, 305, 315, 330, 340, 345, 355, 360]
+  },
+
   damage: 18,
   armorPen: DEFAULT_AP_556,
   zoom: 2.2,
@@ -232,6 +322,19 @@ export const M9: GunSpec = {
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
 
+  reloadAnim: {
+    leftPositions: [{ f : 55, l : -9}, // 0
+                    { f : 20, l : -27}, // 15
+                    { f : 20, l : -27}, // 25
+                    { f : 55, l : -9}, // 40
+                    { f: 70, l: -12}, // 45
+                    { f: 45, l: -12}, // 55
+                    { f: 70, l: -12}, // 65
+                    { f : 55, l : -9}, // 70
+                    ],
+    times: [0, 15, 25, 40, 45, 55, 65, 70]
+  },
+
   barrel: { start: 50, end: 100, width: 8 },
   color: "#33373d",
   damage: 17,
@@ -268,6 +371,21 @@ export const Deagle: GunSpec = {
   icon: "deagle",
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 60, l : 0}, // 0
+                    { f : 20, l : -27}, // 15
+                    { f : 20, l : -27}, // 30
+                    { f : 55, l : -9}, // 45
+                    { f: 70, l: -12}, // 55
+                    { f: 45, l: -12}, // 65
+                    { f: 45, l: -12}, // 70
+                    { f: 70, l: -12}, // 80
+                    { f: 60, l: 0}, // 90
+                    ],
+    times: [0, 15, 30, 45, 55, 65, 70, 80, 90]
+  },
+
   barrel: { start: 55, end: 110, width: 11 },
   color: "#7e858f",
   damage: 40,
@@ -304,6 +422,21 @@ export const Golden_Deagle: GunSpec = {
   icon: "golden_deagle",
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 60, l : 0}, // 0
+                    { f : 20, l : -27}, // 15
+                    { f : 20, l : -27}, // 30
+                    { f : 55, l : -9}, // 45
+                    { f: 70, l: -12}, // 55
+                    { f: 45, l: -12}, // 65
+                    { f: 45, l: -12}, // 70
+                    { f: 70, l: -12}, // 80
+                    { f: 60, l: 0}, // 90
+                    ],
+    times: [0, 15, 30, 45, 55, 65, 70, 80, 90]
+  },
+
   barrel: { start: 55, end: 110, width: 11 },
   color: "#f0d313",
   damage: 50,

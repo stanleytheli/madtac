@@ -21,7 +21,8 @@ function drawBar(
   ctx.fillStyle = color;
   ctx.beginPath();
   const r = w / 2;
-  ctx.roundRect(-dist(p0, p1) / 2, -r, dist(p0, p1), w, r);
+  // ctx.roundRect(-dist(p0, p1) / 2, -r, dist(p0, p1), w, r);
+  ctx.roundRect(-dist(p0, p1) / 2, -r, dist(p0, p1), w, 0);
   ctx.fill();
   ctx.restore();
 }
@@ -178,6 +179,35 @@ export class Gun {
     let right = grip(this.spec.rightGrip);
     let left = grip(this.spec.leftGrip);
 
+    if (this.spec.reloadAnim && this.spec.fire !== undefined && this.reloadTicks > 0) {
+      const t = this.spec.fire.reloadTime - this.reloadTicks
+      let anim = this.spec.reloadAnim
+      let times = this.spec.reloadAnim.times
+  
+      let idx = 1
+      for (let i = 1; i < times.length; i++) {
+        if (t <= times[i]) {
+           idx = i;
+           break;
+        }
+      }
+      
+      // interpolate between reloadAnim.handPositions[idx-1], handPositions[idx]
+      const p = ( t - times[idx - 1] ) / ( times[idx] - times[idx - 1] )
+      // p * final + (1 - p) * initial
+      if (anim.leftPositions) {
+        left = scale(grip(anim.leftPositions[idx]), p)
+        left = add(left, scale(grip(anim.leftPositions[idx - 1]), 1 - p))
+      }
+
+      if (anim.rightPositions) {
+        right = scale(grip(anim.rightPositions[idx]), p)
+        right = add(left, scale(grip(anim.rightPositions[idx - 1]), 1 - p))
+      }
+
+    }
+
+
     // Punch: thrust the active hand forward and back over the animation (sin = a
     // quick out-and-return). The arm IK follows the hand, so the whole arm jabs.
     if (this.meleeTicks > 0) {
@@ -201,6 +231,10 @@ export class Gun {
     outlineColor: string,
     outlineWidth = DEFAULT_PARAMS.outline,
   ): void {
+    const side = perp(forward); // unit vector to the holder's right
+    const grip = (g: { f: number; l: number }): Vec2 =>
+      add(headCenter, add(scale(forward, g.f - this.kickback), scale(side, g.l)));
+
     const b = this.spec.barrel;
     if (!b) return; // e.g. unarmed: nothing to draw
 
@@ -210,6 +244,13 @@ export class Gun {
     // draw muzzle flash below gun -- just looks better imo
     if (this.flashTicks > 0) {
       drawMuzzleFlash(ctx, p1, forward, this.flashTicks / FLASH_TICKS);
+    }
+
+    if (this.spec.otherParts !== undefined) {
+      for (const line of this.spec.otherParts) {
+        drawBar(ctx, grip(line.p0), grip(line.p1), line.width + outlineWidth * 2, outlineColor);
+        drawBar(ctx, grip(line.p0), grip(line.p1), line.width, line.color)
+      }
     }
 
     drawBar(ctx, p0, p1, b.width + outlineWidth * 2, outlineColor); // outline
