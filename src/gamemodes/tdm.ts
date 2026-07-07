@@ -131,6 +131,11 @@ export class TeamDeathmatchMode implements Gamemode {
   private queue: { agent: Agent; at: number }[] = [];
   /** The player's identity, kept for the respawn-screen loadout dropdown. */
   private playerAgent: Agent | null = null;
+  /** Character -> its Agent, kept even after the character dies. A bullet holds
+   *  its (now-dead) shooter's Character alive, so a kill that lands after the
+   *  shooter died — or respawned as a new Character — still credits the right
+   *  agent, instead of failing to match any agent's current `char`. */
+  private charAgent = new WeakMap<Character, Agent>();
 
   constructor(tdm?: TdmOverrides) {
     this.cfg = resolveTdm(tdm);
@@ -140,6 +145,7 @@ export class TeamDeathmatchMode implements Gamemode {
     this.phase = "playing";
     this.agents = [];
     this.queue = [];
+    this.charAgent = new WeakMap();
 
     const names = shuffle(NAMES.slice());
     let n = 0;
@@ -210,6 +216,7 @@ export class TeamDeathmatchMode implements Gamemode {
       agent.char = c;
       ctx.addCharacter(c);
     }
+    if (agent.char) this.charAgent.set(agent.char, agent);
   }
 
   /** Store the player's next-life kit (respawn-screen dropdown), keeping only
@@ -230,14 +237,15 @@ export class TeamDeathmatchMode implements Gamemode {
 
   onDeath(dead: Character, ctx: GameCtx): void {
     if (this.phase === "over") return;
-    const victim = this.agents.find((a) => a.char === dead);
+    const victim = this.charAgent.get(dead);
     if (!victim) return; // not a TDM combatant
 
     victim.deaths += 1;
     victim.char = null;
 
-    // Credit the kill to whoever fired the fatal shot (if still identifiable).
-    const killer = dead.lastAttacker ? this.agents.find((a) => a.char === dead.lastAttacker) : undefined;
+    // Credit the kill to whoever fired the fatal shot — resolved through the
+    // persistent map, so it counts even if the shooter has since died/respawned.
+    const killer = dead.lastAttacker ? this.charAgent.get(dead.lastAttacker as Character) : undefined;
     if (killer && killer !== victim) killer.kills += 1;
 
     if (this.teamDeaths(victim.team) >= this.cfg.killLimit) {
