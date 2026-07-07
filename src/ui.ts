@@ -312,7 +312,7 @@ function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: 
   const x = (w - PANEL_W) / 2;
   const y = (h - panelH) / 2;
 
-  fillSquircle(ctx, x, y, PANEL_W, panelH, 12, "rgba(0,0,0,0.78)");
+  fillSquircle(ctx, x, y, PANEL_W, panelH, 0, "rgba(0,0,0,0.78)");
 
   const padX = 22;
   const kCol = x + PANEL_W - 130;
@@ -328,10 +328,15 @@ function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: 
   ctx.fillText("D", dCol + 14, y + 20);
 
   let ry = y + HEAD_H + ROW_H / 2;
+  let i = 0;
   for (const r of rows) {
     if (r.isPlayer) {
-      fillSquircle(ctx, x + 8, ry - ROW_H / 2 + 2, PANEL_W - 16, ROW_H - 4, 6, "rgba(255,255,255,0.10)");
+      fillSquircle(ctx, x + 8, ry - ROW_H / 2 + 2, PANEL_W - 16, ROW_H - 4, 0, "rgba(255,255,255,0.10)");
     }
+    if (i % 2 == 0) {
+      fillSquircle(ctx, x + 8, ry - ROW_H / 2, PANEL_W - 16, ROW_H, 0, "rgba(255,255,255,0.05)");
+    }
+    
     // Team color dot + name.
     ctx.fillStyle = r.color;
     ctx.beginPath();
@@ -347,6 +352,8 @@ function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: 
     ctx.fillText(String(r.kills), kCol + 14, ry + 1);
     ctx.fillText(String(r.deaths), dCol + 14, ry + 1);
     ry += ROW_H;
+
+    i++;
   }
 }
 
@@ -361,20 +368,28 @@ function drawGamemodeHud(ctx: CanvasRenderingContext2D, hud: GamemodeHud, w: num
   const GAP = 8;
   const MARGIN = 24;
 
+  ctx.font = uiFont("bold 17px");
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgb(0,0,0)";
+  ctx.fillText(`${hud.name}`, MARGIN + 1, h - MARGIN - BAR_H * hud.scores.length - 19)
+  ctx.fillStyle = "rgb(255,255,255)";
+  ctx.fillText(`${hud.name}`, MARGIN, h - MARGIN - BAR_H * hud.scores.length - 20)
+
   ctx.textBaseline = "middle";
   // First score on top: lay them out upward from the bottom edge.
   let y = h - MARGIN - BAR_H;
   for (let i = hud.scores.length - 1; i >= 0; i--) {
     const s = hud.scores[i];
     const frac = s.limit > 0 ? clamp01(s.remaining / s.limit) : 0;
-    fillSquircle(ctx, MARGIN, y, BAR_W, BAR_H, 4, SQUIRCLE_BG);
-    if (frac > 0) fillSquircle(ctx, MARGIN, y, BAR_W * frac, BAR_H, 4, s.color);
-    ctx.font = uiFont("bold 13px");
+    
+    // fillSquircle(ctx, MARGIN, y, BAR_W, BAR_H, 0, SQUIRCLE_BG);
+    if (frac > 0) fillSquircle(ctx, MARGIN, y, BAR_W * frac, BAR_H, 0, s.color);
+    ctx.font = uiFont("bold 17px");
     ctx.textAlign = "left";
-    ctx.fillStyle = "rgba(0,0,0,0.55)";
-    ctx.fillText(`${s.label}  ${s.remaining}`, MARGIN + 9, y + BAR_H / 2 + 2);
-    ctx.fillStyle = "#ffffff";
-    ctx.fillText(`${s.label}  ${s.remaining}`, MARGIN + 8, y + BAR_H / 2 + 1);
+    ctx.fillStyle = "rgb(0,0,0)";
+    ctx.fillText(`${s.remaining}`, MARGIN + BAR_W * frac + 9, y + BAR_H / 2 + 2);
+    ctx.fillStyle = s.color;
+    ctx.fillText(`${s.remaining}`, MARGIN + BAR_W * frac + 8, y + BAR_H / 2 + 1);
     y -= BAR_H + GAP;
   }
 

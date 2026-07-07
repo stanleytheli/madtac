@@ -288,6 +288,7 @@ export class TeamDeathmatchMode implements Gamemode {
     }
 
     return {
+      name: "Team Deathmatch",
       scores,
       banner,
       over: this.phase === "over",

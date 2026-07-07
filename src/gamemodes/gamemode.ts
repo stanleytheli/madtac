@@ -73,6 +73,7 @@ export interface PlayerRow {
 
 /** What a gamemode wants drawn on top of the normal HUD. */
 export interface GamemodeHud {
+  name: string;
   /** Bottom-left ticket bars, one per team (empty = draw nothing). */
   scores: TeamScore[];
   /** Centered overlay text (win/lose, respawn countdown). */
