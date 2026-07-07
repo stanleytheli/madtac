@@ -1,12 +1,12 @@
 import { Character } from "./actor.ts";
 import { BODY_RADIUS, type Skin } from "./character.ts";
-import { hasLineOfSight } from "./collision.ts";
 import { EnemyGun, Gun } from "./gun.ts";
 import { M16, UNARMED, type GunSpec } from "./guns.ts";
 import type { NavGraph } from "./nav.ts";
+import { profiler } from "./profiler.ts";
 import { areHostile, type TeamId } from "./team.ts";
 import { angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "./vec.ts";
-import type { World } from "./world.ts";
+import { losClear, type World } from "./world.ts";
 
 /** Everything an AI gets to look at each tick. Built once per tick by main.ts
  *  and shared by every thinking character. */
@@ -15,6 +15,8 @@ export interface AiContext {
   characters: readonly Character[];
   /** The level's baked path cache, or null if the level has no nodes. */
   nav: NavGraph | null;
+  /** The current sim tick — AIs use it to stagger their planning (see stagger). */
+  tick: number;
 }
 
 /** Flat gray placeholder enemy. */
@@ -93,6 +95,12 @@ export interface RobotOptions {
    *  long before it's reacted to, and (TacOracle) state changes like "recoil
    *  settled" or "reload done" are acted on this late. 0 = inhumanly instant. */
   reactionTime?: number;
+  /** Re-plan (the expensive target scan + movement decision) only once every
+   *  this many ticks, phase-offset per instance so a squad spreads its thinking
+   *  across ticks instead of all recomputing the same frame. Aiming, movement
+   *  continuation, and firing still run every tick, so combat stays smooth.
+   *  1 = plan every tick. */
+  stagger?: number;
 }
 
 const ROBOT_DEFAULTS: Required<RobotOptions> = {
@@ -106,6 +114,7 @@ const ROBOT_DEFAULTS: Required<RobotOptions> = {
   team: "enemy",
   realGun: false,
   reactionTime: 0,
+  stagger: 1,
 };
 
 /**
@@ -116,12 +125,26 @@ const ROBOT_DEFAULTS: Required<RobotOptions> = {
  * guns/etc.), and subclassed for mobile AIs (see oracle.ts) via the `act` hook.
  */
 export class Robot extends Character {
+  /** Monotonic source of round-robin plan-tick phases (see thinkPhase). */
+  private static nextPhase = 0;
+  /** Actual heading (radians), eased toward `aimAngle` every tick in think(). */
   protected angle: number;
+  /** Desired heading, chosen during planning (target dir / wander / nav facing);
+   *  think() interpolates `angle` toward it so turning is smooth between plans. */
+  protected aimAngle: number;
   /** Ticks since a hostile was last in sight (Infinity = never). Subclasses use
    *  it to decide how long to hold the last combat aim after losing sight. */
   protected ticksSinceTarget = Infinity;
   /** See RobotOptions.reactionTime. */
   protected readonly reactionTime: number;
+  /** See RobotOptions.stagger (>= 1). */
+  protected readonly stagger: number;
+  /** Per-instance plan-tick phase. Assigned round-robin from a global counter
+   *  (not random) so successive robots land in successive stagger slots — the
+   *  plan load spreads evenly across ticks instead of clumping. */
+  private readonly thinkPhase = Robot.nextPhase++;
+  /** The target from the last plan tick, aimed at + fired on between plans. */
+  protected lastTarget: Character | null = null;
   /** Sight-acquisition clock: counts up (to reactionTime) while a hostile is
    *  in view, and decays — rather than resetting — while none is, so a
    *  one-tick blink around a corner doesn't restart the clock but a
@@ -144,28 +167,56 @@ export class Robot extends Character {
     this.z = opts.z;
     this.team = opts.team;
     this.reactionTime = opts.reactionTime;
+    this.stagger = Math.max(1, Math.floor(opts.stagger));
     this.angle = Math.random() * Math.PI * 2;
+    this.aimAngle = this.angle;
     this.wanderTarget = this.angle;
     this.forward = fromAngle(this.angle);
   }
 
   /** Per-tick AI. Call after `tickWeapon()` so the fire cooldown is up to date. */
   think(ai: AiContext): void {
+    // Expensive planning (target scan + movement decision) runs only on this
+    // AI's plan ticks; between them it coasts (cheap continuation). Aiming and
+    // firing below run every tick regardless, so DPS and tracking stay smooth.
+    if (this.stagger <= 1 || (ai.tick + this.thinkPhase) % this.stagger === 0) {
+      this.decide(ai);
+    } else {
+      this.coast(ai);
+    }
+
+    // Aim & fire run EVERY tick (not just plan ticks). Planning only picks the
+    // *desired* heading (aimAngle); the actual heading eases toward it here, so
+    // turning stays smooth at 60 Hz regardless of stagger — no thinking, just
+    // interpolation. A live target is tracked directly (pure geometry).
+    const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
+    if (target) this.aimAngle = angleOf(sub(target.pos, this.pos));
+    this.angle = turnToward(this.angle, this.aimAngle);
+    this.forward = fromAngle(this.angle);
+
+    if (this.shouldFire(ai, target) && this.fire(ai.world)) this.onFired();
+  }
+
+  /** The full, expensive decision — acquire a target, aim at it, and act. Runs
+   *  on plan ticks only; the sight/alert clocks advance by `stagger` so their
+   *  tick-denominated tuning (reactionTime, aim hold, focus memory) still tracks
+   *  real time. */
+  private decide(ai: AiContext): void {
+    const gain = this.stagger;
     // Sight is per-level: a balcony guard ignores (and can't hit) a ground-level
     // target, and vice versa, until they share a z.
-    const spotted = this.selectTarget(ai);
+    const spotted = profiler.measure("ai.select", () => this.selectTarget(ai));
     // ...and reaction-gated: a hostile only becomes the target after staying
     // in view for reactionTime ticks (see seenFor).
     this.seenFor = spotted
-      ? Math.min(this.seenFor + 1, this.reactionTime)
-      : Math.max(this.seenFor - 1, 0);
+      ? Math.min(this.seenFor + gain, this.reactionTime)
+      : Math.max(this.seenFor - gain, 0);
     const target = spotted && this.seenFor >= this.reactionTime ? spotted : null;
 
     if (target) {
-      // Track and shoot.
+      // Track and shoot — think() eases the heading toward the target each tick.
       this.alerted = true;
       this.ticksSinceTarget = 0;
-      this.angle = turnToward(this.angle, angleOf(sub(target.pos, this.pos)));
     } else if (!this.alerted && this.speed < 1e-3) {
       // Never spotted anyone and standing still: idly turn to a new random
       // heading now and then. (While walking, movement owns the facing — see
@@ -175,18 +226,19 @@ export class Robot extends Character {
         this.wanderTimer = WANDER_MIN + Math.floor(Math.random() * (WANDER_MAX - WANDER_MIN));
       }
       this.wanderTimer -= 1;
-      this.angle = turnToward(this.angle, this.wanderTarget);
+      this.aimAngle = this.wanderTarget;
     }
-    // else: has seen a target but lost sight -> hold angle, "on alert".
+    // else: has seen a target but lost sight -> hold aimAngle, "on alert".
 
-    if (!target) this.ticksSinceTarget += 1; // Infinity stays Infinity
+    if (!target) this.ticksSinceTarget += gain; // Infinity stays Infinity
 
-    this.act(ai, target);
-
-    this.forward = fromAngle(this.angle);
-
-    if (this.shouldFire(ai, target) && this.fire(ai.world)) this.onFired();
+    profiler.measure("ai.act", () => this.act(ai, target));
+    this.lastTarget = target;
   }
+
+  /** Between plan ticks: cheap continuation of the last plan. The base Robot is
+   *  stationary so there's nothing to do; movers override this to keep walking. */
+  protected coast(_ai: AiContext): void {}
 
   /** Subclass hook: which visible hostile to engage. The base Robot takes the
    *  physically closest; smarter AIs (TacOracle) weigh how quickly each could
@@ -257,7 +309,7 @@ export class Robot extends Character {
   protected visibility(world: World, target: Character): number {
     let seen = 0;
     for (const pt of targetPoints(target)) {
-      if (hasLineOfSight(this.pos, pt, world.obstacles, this.z)) seen += 1;
+      if (losClear(world, this.pos, pt, this.z)) seen += 1;
     }
     return seen;
   }

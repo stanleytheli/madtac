@@ -12,7 +12,7 @@ export interface Box {
   angle?: number;
 }
 
-interface AABB {
+export interface AABB {
   minx: number;
   maxx: number;
   miny: number;
@@ -165,4 +165,172 @@ export function hasLineOfSight(
     if (segmentIntersectsAabb(toLocal(a, o), toLocal(b, o), boxAabb(o))) return false;
   }
   return true;
+}
+
+/** World-space bounding box of a (possibly rotated) centered rect. Unlike
+ *  boxAabb this is the true axis-aligned extent in world space — for spatial
+ *  binning and viewport culling. */
+export function worldAabb(o: Box): AABB {
+  const a = o.angle ?? 0;
+  const c = Math.abs(Math.cos(a));
+  const s = Math.abs(Math.sin(a));
+  const hx = (o.w / 2) * c + (o.h / 2) * s;
+  const hy = (o.w / 2) * s + (o.h / 2) * c;
+  return { minx: o.pos.x - hx, maxx: o.pos.x + hx, miny: o.pos.y - hy, maxy: o.pos.y + hy };
+}
+
+// Pack signed cell coords into one non-negative int key (world spans a few
+// thousand px; /CELL keeps |coord| well under the 32k offset).
+const CELL_BITS = 16;
+const CELL_OFFSET = 1 << (CELL_BITS - 1);
+const cellKey = (cx: number, cy: number): number =>
+  (((cx + CELL_OFFSET) & 0xffff) << CELL_BITS) | ((cy + CELL_OFFSET) & 0xffff);
+
+/**
+ * A uniform spatial index over the sight-blocking obstacles, partitioned first
+ * by z level then by 2D grid cell. `blocked()` walks only the cells a segment
+ * actually crosses on its level (Amanatides–Woo DDA) and tests each obstacle at
+ * most once (a per-query stamp dedupes obstacles that straddle cells), turning
+ * the old "scan every obstacle" line-of-sight test into "scan a handful."
+ *
+ * Static: built once from the level geometry (obstacles don't move mid-match).
+ * Holds ALL obstacles (fences included): the sight/bullet queries (`blocked`,
+ * `hit`) skip permeable ones per-test, while the movement query (`solidCircle`)
+ * counts them — fences block walking but not sight or bullets.
+ */
+export class ObstacleGrid {
+  private readonly cell: number;
+  private readonly all: Obstacle[] = [];
+  /** z -> (cellKey -> indices into `all`). */
+  private readonly layers = new Map<number, Map<number, number[]>>();
+  private readonly stamp: Int32Array;
+  private query = 0;
+
+  constructor(obstacles: readonly Obstacle[], cell = 256) {
+    this.cell = cell;
+    for (const o of obstacles) {
+      const idx = this.all.length;
+      this.all.push(o);
+      let layer = this.layers.get(o.z);
+      if (!layer) {
+        layer = new Map();
+        this.layers.set(o.z, layer);
+      }
+      const box = worldAabb(o);
+      const cx0 = Math.floor(box.minx / cell);
+      const cx1 = Math.floor(box.maxx / cell);
+      const cy0 = Math.floor(box.miny / cell);
+      const cy1 = Math.floor(box.maxy / cell);
+      for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cy = cy0; cy <= cy1; cy++) {
+          const key = cellKey(cx, cy);
+          let bucket = layer.get(key);
+          if (!bucket) {
+            bucket = [];
+            layer.set(key, bucket);
+          }
+          bucket.push(idx);
+        }
+      }
+    }
+    this.stamp = new Int32Array(this.all.length);
+  }
+
+  /** The sight-blocking obstacle on level `z` containing point `p`, or null.
+   *  Only the one grid cell `p` falls in is searched (an obstacle covering `p`
+   *  is binned in that cell), so bullet↔wall hit tests cost O(cell occupancy),
+   *  not O(all obstacles). Fences are skipped (they don't stop bullets). */
+  hit(p: Vec2, z: number): Obstacle | null {
+    const layer = this.layers.get(z);
+    if (!layer) return null;
+    const bucket = layer.get(cellKey(Math.floor(p.x / this.cell), Math.floor(p.y / this.cell)));
+    if (!bucket) return null;
+    for (const idx of bucket) {
+      const o = this.all[idx];
+      if (o.permeable) continue;
+      if (pointInBox(p, o)) return o;
+    }
+    return null;
+  }
+
+  /** Does any SOLID obstacle on level `z` (fences included — they block walking)
+   *  overlap the circle at `p` of radius `r`? Searches the up-to-4 cells the
+   *  circle's box touches; the per-query stamp dedupes obstacles across them.
+   *  This is the movement/nav path (see nav.walkable). */
+  solidCircle(p: Vec2, r: number, z: number): boolean {
+    const layer = this.layers.get(z);
+    if (!layer) return false;
+    const cell = this.cell;
+    const cx0 = Math.floor((p.x - r) / cell);
+    const cx1 = Math.floor((p.x + r) / cell);
+    const cy0 = Math.floor((p.y - r) / cell);
+    const cy1 = Math.floor((p.y + r) / cell);
+    const q = ++this.query;
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const bucket = layer.get(cellKey(cx, cy));
+        if (!bucket) continue;
+        for (const idx of bucket) {
+          if (this.stamp[idx] === q) continue;
+          this.stamp[idx] = q;
+          if (circleIntersectsBox(p, r, this.all[idx])) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Does any obstacle on level `z` block the segment a->b? */
+  blocked(a: Vec2, b: Vec2, z: number): boolean {
+    const layer = this.layers.get(z);
+    if (!layer) return false;
+    const q = ++this.query;
+    const cell = this.cell;
+
+    const test = (key: number): boolean => {
+      const bucket = layer.get(key);
+      if (!bucket) return false;
+      for (const idx of bucket) {
+        if (this.stamp[idx] === q) continue;
+        this.stamp[idx] = q;
+        const o = this.all[idx];
+        if (o.permeable) continue; // fences don't block sight
+        if (segmentIntersectsAabb(toLocal(a, o), toLocal(b, o), boxAabb(o))) return true;
+      }
+      return false;
+    };
+
+    // Amanatides–Woo: step cell to cell along the segment.
+    let cx = Math.floor(a.x / cell);
+    let cy = Math.floor(a.y / cell);
+    const ex = Math.floor(b.x / cell);
+    const ey = Math.floor(b.y / cell);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const stepX = dx > 0 ? 1 : dx < 0 ? -1 : 0;
+    const stepY = dy > 0 ? 1 : dy < 0 ? -1 : 0;
+    const invx = dx !== 0 ? 1 / dx : Infinity;
+    const invy = dy !== 0 ? 1 / dy : Infinity;
+    let tMaxX = stepX !== 0 ? ((stepX > 0 ? cx + 1 : cx) * cell - a.x) * invx : Infinity;
+    let tMaxY = stepY !== 0 ? ((stepY > 0 ? cy + 1 : cy) * cell - a.y) * invy : Infinity;
+    const tDeltaX = stepX !== 0 ? Math.abs(cell * invx) : Infinity;
+    const tDeltaY = stepY !== 0 ? Math.abs(cell * invy) : Infinity;
+
+    // Bounded by the Manhattan cell span plus slack, so float error can't loop.
+    const maxSteps = Math.abs(ex - cx) + Math.abs(ey - cy) + 2;
+    for (let i = 0; i <= maxSteps; i++) {
+      if (test(cellKey(cx, cy))) return true;
+      if (cx === ex && cy === ey) break;
+      if (tMaxX < tMaxY) {
+        if (tMaxX > 1) break;
+        cx += stepX;
+        tMaxX += tDeltaX;
+      } else {
+        if (tMaxY > 1) break;
+        cy += stepY;
+        tMaxY += tDeltaY;
+      }
+    }
+    return false;
+  }
 }

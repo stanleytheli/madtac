@@ -1,17 +1,19 @@
 import { Character } from "./actor.ts";
 import type { Body } from "./body.ts";
-import { DEFAULT_SKIN } from "./character.ts";
+import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
+import { worldAabb, type Box } from "./collision.ts";
 import { Editor } from "./editor.ts";
 import { Game } from "./game.ts";
-import { DEFAULT_MODE, GAMEMODES } from "./gamemodes/gamemode.ts";
+import { DEFAULT_MODE, GAMEMODES, type GamemodeHud } from "./gamemodes/gamemode.ts";
 import { resolveTdm, type TdmOverrides } from "./gamemodes/tdm.ts";
 import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
-import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./level.ts";
+import { ARMOR_SPECS, GUN_SPECS, loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./level.ts";
 import { LEVELS } from "./levels.ts";
 import { initInput, isDown, mouse } from "./input.ts";
 import { drawParticles } from "./particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./poly.ts";
+import { profiler } from "./profiler.ts";
 import { drawHud, HealthBar } from "./ui.ts";
 import { dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import {
@@ -138,6 +140,83 @@ const camera = game ? game.camera : { size: editorPlayer!.gun.spec.zoom };
 const healthBar = new HealthBar({ width: 450, height: 35 });
 // Slightly shorter cyan bar for armor, stacked above the health bar.
 const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", radius: 0, displayLoss: false });
+
+/**
+ * The respawn-screen loadout dropdown (TDM): a small DOM panel with primary /
+ * secondary / armor selects, shown only while the player is dead and choosing
+ * their next kit. Built once (for modes that support it) and toggled by the HUD.
+ */
+function buildRespawnMenu(g: Game): (hud: GamemodeHud | null) => void {
+  const SELECT_CSS =
+    "background:#23262c;color:#dfe2e8;border:1px solid #3a3e46;border-radius:4px;font:inherit;padding:3px 6px;min-width:150px;";
+  const addOpts = (sel: HTMLSelectElement, specs: Record<string, { name: string }>): void => {
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "(none)";
+    sel.append(none);
+    for (const [key, spec] of Object.entries(specs)) {
+      const o = document.createElement("option");
+      o.value = key;
+      o.textContent = spec.name;
+      sel.append(o);
+    }
+  };
+  const mkSelect = (specs: Record<string, { name: string }>): HTMLSelectElement => {
+    const s = document.createElement("select");
+    s.style.cssText = SELECT_CSS;
+    addOpts(s, specs);
+    return s;
+  };
+  const primary = mkSelect(GUN_SPECS);
+  const secondary = mkSelect(GUN_SPECS);
+  const armor = mkSelect(ARMOR_SPECS);
+
+  const panel = document.createElement("div");
+  panel.style.cssText =
+    "position:fixed;left:50%;top:58%;transform:translateX(-50%);display:none;flex-direction:column;" +
+    "gap:8px;background:rgba(14,16,20,0.9);color:#dfe2e8;font:13px system-ui,sans-serif;" +
+    "padding:14px 16px;border-radius:10px;z-index:20;min-width:260px;";
+  const title = document.createElement("div");
+  title.textContent = "LOADOUT";
+  title.style.cssText = "font-weight:bold;letter-spacing:1px;opacity:0.7;text-align:center;";
+  panel.append(title);
+  const row = (label: string, sel: HTMLSelectElement): HTMLElement => {
+    const r = document.createElement("div");
+    r.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:12px;";
+    const l = document.createElement("span");
+    l.textContent = label;
+    r.append(l, sel);
+    return r;
+  };
+  panel.append(row("Primary", primary), row("Secondary", secondary), row("Armor", armor));
+  document.body.append(panel);
+
+  const apply = (): void =>
+    g.gamemode.setPlayerLoadout?.({
+      primary: primary.value || undefined,
+      secondary: secondary.value || undefined,
+      armor: armor.value || undefined,
+    });
+  primary.onchange = apply;
+  secondary.onchange = apply;
+  armor.onchange = apply;
+
+  let shown = false;
+  return (hud: GamemodeHud | null): void => {
+    const show = !!hud?.choosingLoadout;
+    if (show && !shown) {
+      // Just opened: reflect the player's current chosen kit in the dropdowns.
+      primary.value = hud!.loadout?.primary ?? "";
+      secondary.value = hud!.loadout?.secondary ?? "";
+      armor.value = hud!.loadout?.armor ?? "";
+    }
+    panel.style.display = show ? "flex" : "none";
+    shown = show;
+  };
+}
+
+// Only modes with a customizable respawn (TDM) build the menu.
+const updateRespawnMenu = game && game.gamemode.setPlayerLoadout ? buildRespawnMenu(game) : null;
 
 const screenCenter = (): Vec2 => vec(window.innerWidth / 2, window.innerHeight / 2);
 
@@ -349,7 +428,10 @@ function addPoly(path: Path2D, poly: Poly): void {
  * balcony lip, a bullet flying off the deck) stays visible. Infinite floors
  * (the ground) blanket their whole level instead of contributing rects.
  */
-function levelMasks(z: number): {
+function levelMasks(
+  z: number,
+  inView: (o: Box) => boolean,
+): {
   visibleInf: boolean;
   hiddenInf: boolean;
   visible: Path2D | null;
@@ -368,9 +450,13 @@ function levelMasks(z: number): {
     if (f.level !== z) continue;
     const vis = floorVisible(f, player.z, player.pos);
     if (f.infinite) {
+      // Infinite floors blanket the whole level — never cull them.
       if (vis) visibleInf = true;
       else hiddenInf = true;
-    } else if (vis) {
+      continue;
+    }
+    if (!inView(f)) continue; // off-screen: no effect on visible pixels
+    if (vis) {
       addVisible(rectCorners(f.pos, f.w, f.h, f.angle));
     } else {
       // Inflated so the mask's AA edge clears flush content (see MASK_EPS).
@@ -379,6 +465,7 @@ function levelMasks(z: number): {
   }
   for (const s of world.stairs) {
     if (s.zAtMin !== z && s.zAtMax !== z) continue;
+    if (!inView(s)) continue;
     if (stairsVisible(s, player.z)) {
       addVisible(rectCorners(s.pos, s.w, s.h, s.angle, STAIR_MASK_PAD));
     } else {
@@ -433,7 +520,9 @@ function render(): void {
   ctx.scale(1 / zoom, 1 / zoom);
   ctx.translate(-camPos.x, -camPos.y);
 
+  profiler.begin("render.grid");
   if (showGrid) drawGrid(camPos, center, w, h, zoom, gridColor, gridWidth, gridGap);
+  profiler.end("render.grid");
 
   // World-space rect covering the whole screen (padded): the outer boundary the
   // subtractive masks punch their holes in.
@@ -442,32 +531,48 @@ function render(): void {
   const vpW = w * zoom + 128;
   const vpH = h * zoom + 128;
 
+  // Viewport culling: skip anything whose bounds fall entirely off-screen. The
+  // vp rect is already padded (64px), so nothing near an edge pops. Turns the
+  // "draw the whole map every frame" cost into "draw what's on screen".
+  const vminx = vpX;
+  const vmaxx = vpX + vpW;
+  const vminy = vpY;
+  const vmaxy = vpY + vpH;
+  const rectInView = (o: Box): boolean => {
+    const a = worldAabb(o);
+    return a.maxx >= vminx && a.minx <= vmaxx && a.maxy >= vminy && a.miny <= vmaxy;
+  };
+  const pointInView = (p: Vec2, r: number): boolean =>
+    p.x + r >= vminx && p.x - r <= vmaxx && p.y + r >= vminy && p.y - r <= vmaxy;
+
   // Painter's order by level, lowest first: higher floors composite over lower
   // ones, so walking under a balcony puts it over your head for free.
+  profiler.begin("render.levels");
   for (const z of presentLevels()) {
     // Surfaces draw alpha-eased and unmasked: a fading roof lingers translucent
     // while the objects it hid stay masked sharply below.
     for (const f of world.floors) {
-      if (!f.infinite && f.level === z && f.alpha > 0.01 && !f.invisible) drawFloor(f);
+      if (!f.infinite && f.level === z && f.alpha > 0.01 && !f.invisible && rectInView(f)) drawFloor(f);
     }
     for (const s of world.stairs) {
-      if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01) drawStairs(s);
+      if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01 && rectInView(s)) drawStairs(s);
     }
 
-    const drawObjects = (): void => {
-      // An obstacle's optional visibleFrom/invisible are purely cosmetic
-      // (second-story walls hidden from the ground, invisible barriers) — it
-      // still collides either way.
-      for (const o of world.obstacles) {
-        if (o.z !== z || o.invisible) continue;
-        if (!o.visibleFrom || zsetHas(o.visibleFrom, player.z)) drawObstacle(o);
-      }
-      for (const b of bodies) if (b.z === z) b.draw(ctx); // corpses under the living
-      for (const it of world.items) if (it.z === z) it.draw(ctx); // ground pickups
-      for (const c of characters) if (c.z === z) c.draw(ctx);
-      drawBullets(z);
-      drawParticles(ctx, world.particles, z);
-    };
+    const drawObjects = (): void =>
+      profiler.measure("render.draw", () => {
+        // An obstacle's optional visibleFrom/invisible are purely cosmetic
+        // (second-story walls hidden from the ground, invisible barriers) — it
+        // still collides either way.
+        for (const o of world.obstacles) {
+          if (o.z !== z || o.invisible || !rectInView(o)) continue;
+          if (!o.visibleFrom || zsetHas(o.visibleFrom, player.z)) drawObstacle(o);
+        }
+        for (const b of bodies) if (b.z === z && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
+        for (const it of world.items) if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx);
+        for (const c of characters) if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx);
+        drawBullets(z);
+        drawParticles(ctx, world.particles, z);
+      });
 
     // At and above the enclosure cap the world is hidden, except through the
     // stairwell shafts that pierce it — so from inside a bunker you still see
@@ -489,7 +594,7 @@ function render(): void {
       continue;
     }
 
-    const m = levelMasks(z);
+    const m = profiler.measure("render.mask", () => levelMasks(z, rectInView));
 
     if (m.visibleInf) {
       // A visible infinite floor (the ground) backs the whole level: no masking.
@@ -523,12 +628,16 @@ function render(): void {
     }
   }
 
+  profiler.end("render.levels");
+
   // Editor overlay: snap grid, spawn markers, selection outline + handles.
   editor?.drawWorld(ctx);
 
   ctx.restore();
 
   if (!editor) {
+    const gh = game!.gamemode.hud(game!);
+    profiler.begin("render.hud");
     drawHud(ctx, {
       w,
       h,
@@ -538,25 +647,85 @@ function render(): void {
       armorBar,
       mouse,
       interactableLabel: game!.interactable ? game!.interactable.label : null,
-      gamemode: game!.gamemode.hud(game!) ?? undefined,
+      gamemode: gh ?? undefined,
       showScoreboard: isDown("tab"),
     });
+    profiler.end("render.hud");
+    updateRespawnMenu?.(gh);
   }
+
+  if (profiler.enabled) drawProfilerOverlay(ctx, window.innerWidth);
+}
+
+// --- profiler overlay (toggle with P) ---------------------------------------
+let profReport: { label: string; msPerFrame: number; calls: number }[] = [];
+let pDown = false;
+
+function drawProfilerOverlay(ctx: CanvasRenderingContext2D, w: number): void {
+  const pad = 8;
+  const lineH = 15;
+  const rows = profReport;
+  const boxW = 240;
+  const boxH = pad * 2 + lineH * (rows.length + 2);
+  const x = w - boxW - 10;
+  const y = 10;
+  ctx.save();
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(x, y, boxW, boxH);
+  ctx.font = "12px ui-monospace, Consolas, monospace";
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#8fd6ff";
+  ctx.fillText("PROFILER (P)  ms/frame", x + pad, y + pad);
+  let ly = y + pad + lineH * 2 - 4;
+  for (const r of rows) {
+    // update/render are totals; indent the sub-spans under them.
+    const sub = r.label.includes(".");
+    ctx.fillStyle = sub ? "#9aa4af" : "#e6e9ee";
+    ctx.fillText((sub ? "  " : "") + r.label, x + pad, ly);
+    ctx.textAlign = "right";
+    ctx.fillText(r.msPerFrame.toFixed(2), x + boxW - pad, ly);
+    ctx.textAlign = "left";
+    ly += lineH;
+  }
+  ctx.restore();
 }
 
 function frame(now: number): void {
+  // P toggles the profiler overlay (and resets the accumulators).
+  if (isDown("p")) {
+    if (!pDown) {
+      profiler.enabled = !profiler.enabled;
+      profiler.reset();
+      profReport = [];
+    }
+    pDown = true;
+  } else pDown = false;
+
   accumulator += now - last;
   last = now;
   // Guard against huge jumps (e.g. tab was backgrounded).
   if (accumulator > 250) accumulator = 250;
 
+  profiler.begin("update");
   while (accumulator >= STEP) {
     if (editor) editor.update();
     else game!.update();
     accumulator -= STEP;
   }
+  profiler.end("update");
 
+  profiler.begin("render");
   render();
+  profiler.end("render");
+
+  profiler.endFrame();
+  // Refresh the on-screen averages about once a second.
+  if (profiler.enabled && profiler.frameCount >= 60) {
+    profReport = profiler.rows();
+    profiler.reset();
+  }
+
   requestAnimationFrame(frame);
 }
 

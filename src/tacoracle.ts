@@ -49,12 +49,13 @@
  */
 import type { Character } from "./actor.ts";
 import { BODY_RADIUS, type Skin } from "./character.ts";
-import { hasLineOfSight, segmentIntersectsCircle } from "./collision.ts";
 import { walkable } from "./nav.ts";
 import { Oracle, type OracleOptions } from "./oracle.ts";
+import { profiler } from "./profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "./team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "./vec.ts";
+import { losClear } from "./world.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
 export const TAC_ORACLE_SKIN: Skin = {
@@ -83,6 +84,9 @@ const MIN_AIM_TOLERANCE = deg2rad(3);
 /** Default reaction time, ticks (~250ms — a decent human). See
  *  RobotOptions.reactionTime; 0 restores the launch-day inhuman slickness. */
 const DEFAULT_REACTION_TIME = 15;
+/** Default plan cadence (ticks between full re-plans; see RobotOptions.stagger).
+ *  5 ≈ 12 plans/s — cheap, and firing/aiming/movement still run every tick. */
+const DEFAULT_STAGGER = 5;
 /** Default extra trigger delay per shot on semi-auto guns (clicking, not
  *  holding: the mechanical fire delay alone is an inhuman trigger finger). */
 const DEFAULT_SEMI_AUTO_DELAY = 5;
@@ -120,6 +124,23 @@ const CHASE_EVAL_TICKS = 30;
  *  spray several degrees off the aim line, so grazing a friend's silhouette
  *  with the center line isn't good enough. */
 const FRIENDLY_MARGIN = BODY_RADIUS * 2;
+
+/** Is teammate `mate` downrange of a shot from `from` at `to` — in front of the
+ *  muzzle (not behind it) and within `margin` of the line? Unlike a capsule test
+ *  (segmentIntersectsCircle, which caps at the endpoints) this ignores anyone
+ *  behind the shooter, so a squadmate hugging your back never vetoes the shot —
+ *  the bug that stalled stacked teammates into a mutual "no one fires" standoff. */
+function friendInLine(from: Vec2, to: Vec2, mate: Vec2, margin: number): boolean {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const len2 = dx * dx + dy * dy;
+  if (len2 < 1e-6) return false;
+  const t = ((mate.x - from.x) * dx + (mate.y - from.y) * dy) / len2;
+  if (t <= 0 || t >= 1) return false; // behind the muzzle, or beyond the target
+  const ex = mate.x - (from.x + dx * t);
+  const ey = mate.y - (from.y + dy * t);
+  return ex * ex + ey * ey < margin * margin;
+}
 
 export interface TacOracleOptions extends OracleOptions {
   /** Burst-discipline aim budget (see DEFAULT_LAMBDA). */
@@ -183,6 +204,7 @@ export class TacOracle extends Oracle {
       skin: TAC_ORACLE_SKIN,
       realGun: true,
       reactionTime: DEFAULT_REACTION_TIME,
+      stagger: DEFAULT_STAGGER,
       ...options,
     });
     this.lambda = options.lambda ?? DEFAULT_LAMBDA;
@@ -227,6 +249,29 @@ export class TacOracle extends Oracle {
     }
   }
 
+  /** Between plan ticks (stagger): keep the gun's burst/reload/click bookkeeping
+   *  live every tick — otherwise firing would stall — and continue the committed
+   *  move (walk toward the strafe/cover spot, or coast the graph chase) without
+   *  any candidate rescoring or path query. */
+  protected override coast(ai: AiContext): void {
+    this.vel = vec(0, 0);
+    const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
+    this.updateMode(target ?? this.focus);
+    // Mirror act's stand-to-shoot hold so a heavy gunner doesn't creep mid-burst.
+    if (
+      target &&
+      this.mode === "shoot" &&
+      this.fireOk &&
+      !this.burstDone &&
+      this.gun.spec.movePenalty >= STAND_TO_SHOOT_PENALTY &&
+      this.laneClear(ai, target)
+    ) {
+      return;
+    }
+    if (this.strafeTarget) this.stepToward(this.strafeTarget);
+    else this.coastStep(ai); // continue the committed graph chase
+  }
+
   /** Burst / reload bookkeeping -> which mode this tick is fought in, with
    *  readiness changes acknowledged reactionTime late (see fireOk). `ref` is
    *  whoever the spray is being judged against (target, or remembered focus). */
@@ -269,10 +314,11 @@ export class TacOracle extends Oracle {
     return (this.lambda * BODY_RADIUS) / (Math.PI * Math.max(d, 1));
   }
 
-  /** No teammate within FRIENDLY_MARGIN of the line of fire at `target`. */
+  /** No teammate downrange within FRIENDLY_MARGIN of the line of fire at `target`
+   *  (teammates behind the muzzle don't count — see friendInLine). */
   private laneClear(ai: AiContext, target: Character): boolean {
     return !this.teammates(ai, target).some((m) =>
-      segmentIntersectsCircle(this.pos, target.pos, m.pos, FRIENDLY_MARGIN),
+      friendInLine(this.pos, target.pos, m.pos, FRIENDLY_MARGIN),
     );
   }
 
@@ -449,16 +495,18 @@ export class TacOracle extends Oracle {
   /** The lateral spots to consider — here (always cands[0]) plus offsets to
    *  both sides — walkability-filtered on this z, each scored vs `opponent`. */
   private candidates(ai: AiContext, opponent: Character): Candidate[] {
-    const side = this.sideAxis(opponent);
-    const out: Candidate[] = [this.scoreAt(ai, this.pos, 0, opponent)];
-    for (const off of this.strafeOffsets) {
-      for (const s of [-1, 1]) {
-        const point = add(this.pos, scale(side, off * s));
-        if (!walkable(ai.world, this.pos, this.z, point, this.z)) continue;
-        out.push(this.scoreAt(ai, point, off * s, opponent));
+    return profiler.measure("ai.candidates", () => {
+      const side = this.sideAxis(opponent);
+      const out: Candidate[] = [this.scoreAt(ai, this.pos, 0, opponent)];
+      for (const off of this.strafeOffsets) {
+        for (const s of [-1, 1]) {
+          const point = add(this.pos, scale(side, off * s));
+          if (!walkable(ai.world, this.pos, this.z, point, this.z)) continue;
+          out.push(this.scoreAt(ai, point, off * s, opponent));
+        }
       }
-    }
-    return out;
+      return out;
+    });
   }
 
   /** Score one spot's firing lane onto the opponent, one ray per target point:
@@ -471,9 +519,9 @@ export class TacOracle extends Oracle {
     if (opponent.z === this.z) {
       const mates = this.teammates(ai, opponent);
       for (const pt of targetPoints(opponent)) {
-        if (!hasLineOfSight(from, pt, ai.world.obstacles, this.z)) continue; // geometry: 0
+        if (!losClear(ai.world, from, pt, this.z)) continue; // geometry: 0
         exposed += 1; // a friend in the ray is a bad lane, but never cover
-        if (mates.some((m) => segmentIntersectsCircle(from, pt, m.pos, FRIENDLY_MARGIN))) {
+        if (mates.some((m) => friendInLine(from, pt, m.pos, FRIENDLY_MARGIN))) {
           score -= 1;
         } else {
           clear += 1;

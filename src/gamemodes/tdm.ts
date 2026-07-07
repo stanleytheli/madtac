@@ -11,9 +11,9 @@
 import type { Character } from "../actor.ts";
 import { makeTroop } from "../enemies.ts";
 import type { TdmConfig, TeamConfig } from "../level.ts";
-import { SKINS } from "../specs.ts";
+import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../specs.ts";
 import { TEAMS } from "../team.ts";
-import type { GameCtx, Gamemode, GamemodeHud, PlayerRow, TeamScore } from "./gamemode.ts";
+import type { GameCtx, Gamemode, GamemodeHud, PlayerLoadout, PlayerRow, TeamScore } from "./gamemode.ts";
 
 /** Applied when a TDM level omits some or all of `meta.tdm`. */
 export const DEFAULT_TDM: TdmConfig = {
@@ -99,18 +99,17 @@ function rollEquip(tier: number): { gun: string; armor?: string } {
 }
 
 /** A persistent combatant identity — outlives the Character objects it drives,
- *  so a bot keeps its callsign, K/D, and rolled weapon across respawns. */
+ *  so callsign and K/D survive respawns. */
 interface Agent {
   name: string;
   team: "blue" | "red";
   isPlayer: boolean;
   skill: number;
-  /** GUN_SPECS key rolled once: a bot keeps it every life; the player starts
-   *  with it (but then keeps whatever it scavenges — see spawnAgent). */
-  gun: string;
-  /** ARMOR_SPECS key for this agent's equip tier (bots only; the player keeps
-   *  its own armor — deliberately left un-normalized for now). */
-  armor?: string;
+  /** Equipment tier. Bots re-roll a gun+armor from it every (re)spawn. */
+  equip: number;
+  /** The player's chosen kit (sampled once at start, then edited at the respawn
+   *  screen). Bots have none — they re-roll from `equip` each life. */
+  loadout?: PlayerLoadout;
   kills: number;
   deaths: number;
   /** The live character this agent currently drives, or null while awaiting respawn. */
@@ -129,6 +128,8 @@ export class TeamDeathmatchMode implements Gamemode {
   private phase: "playing" | "over" = "playing";
   private agents: Agent[] = [];
   private queue: { agent: Agent; at: number }[] = [];
+  /** The player's identity, kept for the respawn-screen loadout dropdown. */
+  private playerAgent: Agent | null = null;
 
   constructor(tdm?: TdmOverrides) {
     this.cfg = resolveTdm(tdm);
@@ -153,20 +154,23 @@ export class TeamDeathmatchMode implements Gamemode {
     ctx.player.team = "blue";
     const blueSkin = SKINS[TEAM_SKIN.blue];
     if (blueSkin) ctx.player.skin = blueSkin;
+    // The player's kit is sampled from blue's tier ONCE; thereafter it persists
+    // and is edited at the respawn screen (setPlayerLoadout).
     const pe = rollEquip(this.cfg.blue.equip);
     const player: Agent = {
       name: nextName(), team: "blue", isPlayer: true, skill: this.cfg.blue.skill,
-      gun: pe.gun, kills: 0, deaths: 0, char: ctx.player,
+      equip: this.cfg.blue.equip, loadout: { primary: pe.gun, armor: pe.armor },
+      kills: 0, deaths: 0, char: ctx.player,
     };
     this.agents.push(player);
-    this.spawnAgent(ctx, player, { primary: pe.gun });
+    this.playerAgent = player;
+    this.spawnAgent(ctx, player);
 
     const makeBots = (team: "blue" | "red", cfg: TeamConfig, count: number): void => {
       for (let i = 0; i < count; i++) {
-        const e = rollEquip(cfg.equip);
         const a: Agent = {
           name: nextName(), team, isPlayer: false, skill: cfg.skill,
-          gun: e.gun, armor: e.armor, kills: 0, deaths: 0, char: null,
+          equip: cfg.equip, kills: 0, deaths: 0, char: null,
         };
         this.agents.push(a);
         this.spawnAgent(ctx, a);
@@ -176,25 +180,26 @@ export class TeamDeathmatchMode implements Gamemode {
     makeBots("red", this.cfg.red, this.cfg.red.troops);
   }
 
-  /** (Re)spawn an agent's character at one of its team's zones. `playerLoadout`
-   *  (initial spawn only) arms the player to a kit; omitted, the player keeps its
-   *  current weapons (refreshed). Bots are always rebuilt with their rolled gun. */
-  private spawnAgent(ctx: GameCtx, agent: Agent, playerLoadout?: { primary?: string }): void {
+  /** (Re)spawn an agent's character at one of its team's zones. The player is
+   *  re-armed to its chosen `loadout` (persists across lives); a bot re-rolls a
+   *  fresh gun+armor from its equip tier every spawn. */
+  private spawnAgent(ctx: GameCtx, agent: Agent): void {
     const sp = ctx.spawnPoint(agent.team);
     if (!sp) {
       console.warn(`TDM: no ${agent.team} spawn zone — ${agent.name} couldn't spawn`);
       return;
     }
     if (agent.isPlayer) {
-      ctx.revivePlayer(sp.pos, sp.z, playerLoadout);
+      ctx.revivePlayer(sp.pos, sp.z, agent.loadout);
       agent.char = ctx.player;
     } else {
+      const e = rollEquip(agent.equip); // sampled fresh each life
       const p = skillParams(agent.skill);
       const c = makeTroop(sp.pos, {
         team: agent.team,
         z: sp.z,
-        gun: agent.gun,
-        armor: agent.armor,
+        gun: e.gun,
+        armor: e.armor,
         skin: TEAM_SKIN[agent.team],
         reactionTime: p.reactionTime,
         lambda: p.lambda,
@@ -203,6 +208,17 @@ export class TeamDeathmatchMode implements Gamemode {
       agent.char = c;
       ctx.addCharacter(c);
     }
+  }
+
+  /** Store the player's next-life kit (respawn-screen dropdown), keeping only
+   *  keys that exist so a stale/garbage value can't break a spawn. */
+  setPlayerLoadout(loadout: PlayerLoadout): void {
+    if (!this.playerAgent) return;
+    this.playerAgent.loadout = {
+      primary: loadout.primary && loadout.primary in GUN_SPECS ? loadout.primary : undefined,
+      secondary: loadout.secondary && loadout.secondary in GUN_SPECS ? loadout.secondary : undefined,
+      armor: loadout.armor && loadout.armor in ARMOR_SPECS ? loadout.armor : undefined,
+    };
   }
 
   /** A team's total deaths = its ticket count spent. */
@@ -235,7 +251,7 @@ export class TeamDeathmatchMode implements Gamemode {
     const waiting: { agent: Agent; at: number }[] = [];
     for (const p of this.queue) {
       if (ctx.tick < p.at) waiting.push(p);
-      else this.spawnAgent(ctx, p.agent); // player keeps its weapons; bots re-arm with their gun
+      else this.spawnAgent(ctx, p.agent); // player: chosen kit; bot: freshly re-rolled
     }
     this.queue = waiting;
   }
@@ -258,15 +274,26 @@ export class TeamDeathmatchMode implements Gamemode {
       isPlayer: a.isPlayer,
     }));
 
+    // Player awaiting respawn: it's dead (no live char) while the match plays on.
+    const choosingLoadout = this.phase === "playing" && !!this.playerAgent && this.playerAgent.char === null;
+
     let banner: string | undefined;
     if (this.phase === "over") {
       const blueLost = this.teamDeaths("blue") >= this.cfg.killLimit;
       banner = `${blueLost ? "Defeat" : "Victory"}\nPress Enter to restart`;
-    } else {
+    } else if (choosingLoadout) {
       const mine = this.queue.find((p) => p.agent.isPlayer);
-      if (mine) banner = `Respawning in ${Math.max(1, Math.ceil((mine.at - ctx.tick) / 60))}`;
+      const secs = mine ? Math.max(1, Math.ceil((mine.at - ctx.tick) / 60)) : 1;
+      banner = `Respawning in ${secs}`;
     }
 
-    return { scores, banner, over: this.phase === "over", players };
+    return {
+      scores,
+      banner,
+      over: this.phase === "over",
+      players,
+      choosingLoadout,
+      loadout: this.playerAgent?.loadout,
+    };
   }
 }

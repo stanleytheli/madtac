@@ -35,10 +35,18 @@ export interface GameCtx {
   /** A random point inside a random zone of `team`, or null if it has none. */
   spawnPoint(team: TeamId): { pos: Vec2; z: number } | null;
   /** Reset the player object in place and re-add it to the roster (reusing the
-   *  object so render/camera refs stay valid). With `loadout` (GUN_SPECS keys)
-   *  the player is re-armed to that kit with full ammo; without it, the player
-   *  keeps whatever weapons it currently holds, ammo refreshed. */
-  revivePlayer(pos: Vec2, z: number, loadout?: { primary?: string; secondary?: string }): void;
+   *  object so render/camera refs stay valid). With `loadout` (GUN_SPECS /
+   *  ARMOR_SPECS keys) the player is re-armed to that kit with full ammo; without
+   *  it, the player keeps whatever it currently holds, ammo refreshed. */
+  revivePlayer(pos: Vec2, z: number, loadout?: PlayerLoadout): void;
+}
+
+/** A player kit chosen at the respawn screen — GUN_SPECS / ARMOR_SPECS keys
+ *  (undefined = empty slot / no armor). */
+export interface PlayerLoadout {
+  primary?: string;
+  secondary?: string;
+  armor?: string;
 }
 
 /** One team's line on the bottom-left scoreboard. */
@@ -73,6 +81,11 @@ export interface GamemodeHud {
   over: boolean;
   /** Per-combatant K/D for the Tab scoreboard (undefined = no player list). */
   players?: PlayerRow[];
+  /** The player is dead and picking their next kit — show the respawn-screen
+   *  loadout dropdown (see setPlayerLoadout). */
+  choosingLoadout?: boolean;
+  /** The player's current chosen kit, to populate that dropdown. */
+  loadout?: PlayerLoadout;
 }
 
 export interface Gamemode {
@@ -91,6 +104,9 @@ export interface Gamemode {
   onDeath(dead: Character, ctx: GameCtx): void;
   /** Scoreboard/banner for the HUD, or null for no gamemode UI. */
   hud(ctx: GameCtx): GamemodeHud | null;
+  /** Set the player's chosen kit for their next life (respawn-screen dropdown).
+   *  Only modes with a customizable respawn (TDM) implement this. */
+  setPlayerLoadout?(loadout: PlayerLoadout): void;
 }
 
 /** Every mode, keyed by the id levels put in `meta.mode`. */

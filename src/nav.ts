@@ -15,9 +15,10 @@
  * queries are O(1). Build it once per level load; rebuild if nodes/walls change.
  */
 import { BODY_RADIUS } from "./character.ts";
-import { circleIntersectsBox, hasLineOfSight } from "./collision.ts";
+import { circleIntersectsBox } from "./collision.ts";
+import { profiler } from "./profiler.ts";
 import { dist, vec, type Vec2 } from "./vec.ts";
-import { stairZ, type PathNode, type World } from "./world.ts";
+import { losClear, stairZ, type PathNode, type World } from "./world.ts";
 
 /** Max straight-line distance of a movable link. */
 export const MOVE_RADIUS = 350;
@@ -48,18 +49,27 @@ export function zAt(world: World, p: Vec2, currentZ: number): number {
  * test squares them off, rejecting diagonals a round body actually clears).
  */
 export function walkable(world: World, from: Vec2, fromZ: number, to: Vec2, toZ: number): boolean {
-  const steps = Math.max(1, Math.ceil(dist(from, to) / MARCH_STEP));
-  let z = fromZ;
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    const p = vec(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
-    z = zAt(world, p, z);
-    for (const o of world.obstacles) {
-      if (o.z !== z) continue;
-      if (circleIntersectsBox(p, BODY_RADIUS, o)) return false;
+  return profiler.measure("ai.walkable", () => {
+    const steps = Math.max(1, Math.ceil(dist(from, to) / MARCH_STEP));
+    let z = fromZ;
+    const grid = world.grid;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const p = vec(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t);
+      z = zAt(world, p, z);
+      // Fences ARE solid to movement (unlike sight/bullets), so this uses the
+      // grid's all-obstacle circle query — not the permeable-skipping LOS path.
+      if (grid) {
+        if (grid.solidCircle(p, BODY_RADIUS, z)) return false;
+      } else {
+        for (const o of world.obstacles) {
+          if (o.z !== z) continue;
+          if (circleIntersectsBox(p, BODY_RADIUS, o)) return false;
+        }
+      }
     }
-  }
-  return z === toZ;
+    return z === toZ;
+  });
 }
 
 /** Classify the link between two nodes (also used by the editor's node overlay). */
@@ -68,7 +78,7 @@ export function nodeEdge(
   a: PathNode,
   b: PathNode,
 ): { visible: boolean; movable: boolean } {
-  const visible = a.z === b.z && hasLineOfSight(a.pos, b.pos, world.obstacles, a.z);
+  const visible = a.z === b.z && losClear(world, a.pos, b.pos, a.z);
   const movable =
     dist(a.pos, b.pos) <= MOVE_RADIUS &&
     walkable(world, a.pos, a.z, b.pos, b.z) &&
@@ -194,7 +204,7 @@ export class NavGraph {
       if (nd.z !== z) continue;
       const d = dist(pos, nd.pos);
       if (d >= bd) continue;
-      if (!hasLineOfSight(pos, nd.pos, world.obstacles, z)) continue;
+      if (!losClear(world, pos, nd.pos, z)) continue;
       best = nd.id;
       bd = d;
     }

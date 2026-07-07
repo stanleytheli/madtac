@@ -19,7 +19,7 @@
 import type { Character } from "./actor.ts";
 import type { Skin } from "./character.ts";
 import { walkable, zAt, type NavGraph } from "./nav.ts";
-import { turnToward, Robot, type AiContext, type RobotOptions } from "./robot.ts";
+import { Robot, type AiContext, type RobotOptions } from "./robot.ts";
 import { add, angleOf, dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import type { World } from "./world.ts";
 
@@ -80,6 +80,37 @@ export class Oracle extends Robot {
     this.navChase(ai, chase, target);
   }
 
+  protected override coast(ai: AiContext): void {
+    this.coastStep(ai);
+  }
+
+  /** Cheap between-plan movement: take one more step toward the destination the
+   *  last plan already committed to (the beeline target when at the goal node,
+   *  else the committed waypoint) — no path query, no line-of-sight work. */
+  protected coastStep(ai: AiContext): void {
+    this.vel = vec(0, 0);
+    const nav = ai.nav;
+    let dest: Vec2 | null = null;
+    let direct = false;
+    if (this.atGoalNode) {
+      const chase = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
+      if (chase) {
+        direct = true;
+        dest = chase.pos;
+      }
+    } else if (nav && this.waypoint >= 0 && this.waypoint < nav.nodes.length) {
+      dest = nav.nodes[this.waypoint].pos;
+    }
+    if (!dest) return;
+    if (direct && dist(this.pos, dest) <= this.standoff) return;
+    const d = dist(this.pos, dest);
+    if (d < 1e-3) return;
+    const next = add(this.pos, scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d)));
+    if (direct && zAt(ai.world, next, this.z) !== this.z) return; // beeline never flips z
+    this.vel = sub(next, this.pos);
+    this.pos = next;
+  }
+
   /** The Oracle's whole movement policy, reusable by subclasses: walk the
    *  graph toward `chase`, beelining only within the shared node cell. The
    *  step taken is recorded in `vel`, so anything reading speed (the real
@@ -123,9 +154,8 @@ export class Oracle extends Robot {
     // (beeline / no graph) just face the walk.
     if (!target && this.ticksSinceTarget > AIM_HOLD_TICKS) {
       const look = direct ? dest : this.lookahead(ai.nav, dest);
-      if (dist(look, this.pos) > 1e-3) {
-        this.angle = turnToward(this.angle, angleOf(sub(look, this.pos)));
-      }
+      // Set the desired heading; think() eases the actual heading toward it.
+      if (dist(look, this.pos) > 1e-3) this.aimAngle = angleOf(sub(look, this.pos));
     }
   }
 

@@ -1,5 +1,5 @@
 import { BODY_RADIUS } from "./character.ts";
-import { pointInBox } from "./collision.ts";
+import { hasLineOfSight, pointInBox, type ObstacleGrid } from "./collision.ts";
 import {
   BLOOD,
   CRATE_SHRAPNEL,
@@ -374,6 +374,16 @@ export interface World {
   items: GroundItem[]; // pickups lying on the ground
   bullets: Bullet[];
   particles: Particle[];
+  /** Spatial index over sight-blocking obstacles (see ObstacleGrid), built once
+   *  from the static geometry. Absent in the editor / before it's built — then
+   *  losClear falls back to scanning the obstacle array. */
+  grid?: ObstacleGrid;
+}
+
+/** Clear line of sight from `a` to `b` on level `z`, using the world's spatial
+ *  index when it's been built (the fast path) and scanning obstacles otherwise. */
+export function losClear(world: World, a: Vec2, b: Vec2, z: number): boolean {
+  return world.grid ? !world.grid.blocked(a, b, z) : hasLineOfSight(a, b, world.obstacles, z);
 }
 
 export const WALL_T = 26; // shared wall thickness (demo map + editor defaults)
@@ -712,17 +722,26 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       const sample = add(start, scale(step, i));
 
       // Obstacles (walls/crates) on this bullet's level block first. Fences
-      // (permeable) never stop bullets.
-      for (const o of w.obstacles) {
-        if (o.z !== b.z || o.permeable) continue;
-        if (pointInBox(sample, o)) {
-          const at = backOut(sample, backDir, (p) => pointInBox(p, o));
-          spawnParticles(w.particles, at, backDir, o.particle, b.z);
-          consumed = true;
-          break;
+      // (permeable) never stop bullets. The spatial index finds the struck wall
+      // in one cell lookup; without it (editor/no index), scan the array.
+      let struck: Obstacle | null = null;
+      if (w.grid) {
+        struck = w.grid.hit(sample, b.z);
+      } else {
+        for (const o of w.obstacles) {
+          if (o.z !== b.z || o.permeable) continue;
+          if (pointInBox(sample, o)) {
+            struck = o;
+            break;
+          }
         }
       }
-      if (consumed) break;
+      if (struck) {
+        const at = backOut(sample, backDir, (p) => pointInBox(p, struck!));
+        spawnParticles(w.particles, at, backDir, struck.particle, b.z);
+        consumed = true;
+        break;
+      }
 
       // Then characters on this level (never the shooter).
       for (const t of targets) {

@@ -16,8 +16,8 @@ import { Character, type Loadout } from "./actor.ts";
 import * as Armors from "./armor.ts";
 import { Body } from "./body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
-import { hasLineOfSight, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
-import type { GameCtx, Gamemode } from "./gamemodes/gamemode.ts";
+import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
+import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
 import { isDown, mouse, moveAxis, pointer } from "./input.ts";
@@ -31,6 +31,7 @@ import {
   type LevelState,
 } from "./level.ts";
 import { NavGraph } from "./nav.ts";
+import { profiler } from "./profiler.ts";
 import { Robot, type AiContext } from "./robot.ts";
 import type { TeamId } from "./team.ts";
 import { hudHitTest, type SlotKind } from "./ui.ts";
@@ -78,6 +79,9 @@ export class Game implements GameCtx {
   ) {
     this.world = level.world;
     this.initialItems = level.world.items.slice();
+    // Build the sight index before the nav graph so the graph's all-pairs
+    // visibility build rides the fast line-of-sight path too.
+    this.world.grid = new ObstacleGrid(this.world.obstacles);
     this.nav = new NavGraph(this.world);
     this.player = this.buildPlayer();
     this.camera = { size: this.player.gun.spec.zoom };
@@ -157,16 +161,19 @@ export class Game implements GameCtx {
   }
 
   /** Reset the player in place at a spawn point and re-add it to the roster.
-   *  With `loadout` (GUN_SPECS keys) the player is re-armed to that kit; without
-   *  it the player keeps its current weapons, rebuilt fresh (i.e. full ammo). */
-  revivePlayer(pos: Vec2, z: number, loadout?: { primary?: string; secondary?: string }): void {
+   *  With `loadout` (GUN_SPECS / ARMOR_SPECS keys) the player is re-armed to that
+   *  kit; without it the player keeps its current weapons + the level's spawn
+   *  armor. Guns are rebuilt from spec, so ammo is always full. */
+  revivePlayer(pos: Vec2, z: number, loadout?: PlayerLoadout): void {
     let kit: Loadout;
+    let armorKey: string | undefined;
     if (loadout) {
       kit = {
         primary: loadout.primary ? slotGun(loadout.primary, DEFAULT_PLAYER_PRIMARY) : undefined,
         secondary: loadout.secondary ? slotGun(loadout.secondary, DEFAULT_PLAYER_SECONDARY) : undefined,
         hand: new Gun(Guns.UNARMED),
       };
+      armorKey = loadout.armor;
     } else {
       // Keep whatever the player was carrying, rebuilt from spec so ammo refills.
       const clone = (g: Gun | null): Gun | undefined => (g ? new Gun(g.spec) : undefined);
@@ -175,11 +182,11 @@ export class Game implements GameCtx {
         secondary: clone(this.player.slots.secondary),
         hand: new Gun(Guns.UNARMED),
       };
+      armorKey = this.level.playerSpawn[0]?.armor;
     }
     this.player.respawn(vec(pos.x, pos.y), z, kit);
-    const spawn = this.level.playerSpawn[0];
-    if (spawn?.armor && ARMOR_SPECS[spawn.armor]) {
-      this.player.equipArmor(new Armors.Armor(ARMOR_SPECS[spawn.armor]));
+    if (armorKey && ARMOR_SPECS[armorKey]) {
+      this.player.equipArmor(new Armors.Armor(ARMOR_SPECS[armorKey]));
     }
     if (!this.characters.includes(this.player)) this.characters.push(this.player);
   }
@@ -390,7 +397,9 @@ export class Game implements GameCtx {
       }
     }
 
+    profiler.begin("surfaces");
     updateSurfaceAlphas(this.world, this.player.z, this.player.pos);
+    profiler.end("surfaces");
 
     for (const c of this.characters) c.tickWeapon();
 
@@ -401,25 +410,35 @@ export class Game implements GameCtx {
     }
     this.prevDown = pointer.down;
 
-    const ai: AiContext = { world: this.world, characters: this.characters, nav: this.nav };
+    profiler.begin("ai");
+    const ai: AiContext = { world: this.world, characters: this.characters, nav: this.nav, tick: this.tick };
     for (const c of this.characters) {
       if (c instanceof Robot && c.hp > 0) c.think(ai);
     }
+    profiler.end("ai");
+
+    profiler.begin("collide");
     for (const c of this.characters) {
       if (c !== this.player) this.resolveCollisions(c);
     }
+    profiler.end("collide");
 
+    profiler.begin("bullets");
     updateBullets(this.world, this.characters);
+    profiler.end("bullets");
 
+    profiler.begin("items");
     for (const b of this.bodies) b.update(this.world.obstacles);
     for (const it of this.world.items) it.update(this.world.obstacles);
     separateItems(this.world.items);
-    this.reapDead();
+    profiler.end("items");
 
+    profiler.begin("rules");
+    this.reapDead();
     // Rules evaluation runs after the dead are reaped and scored.
     this.gamemode.update(this);
-
     // Clear corpses/drops that have aged out (TDM; no-op when no TTL is set).
     this.despawnStale();
+    profiler.end("rules");
   }
 }
