@@ -164,7 +164,7 @@ export const M16: GunSpec = {
   color: "#26292e",
   damage: 20,
   armorPen: DEFAULT_AP_556,
-  zoom: 2.2,
+  zoom: 2.3,
   speed: 0.85,
   fire: {
     delay: 7,
@@ -216,7 +216,7 @@ export const AK47: GunSpec = {
   color: "#53360b",
   damage: 25,
   armorPen: DEFAULT_AP_762,
-  zoom: 2.2,
+  zoom: 2.3,
   speed: 0.85,
   fire: {
     delay: 8,
@@ -289,7 +289,7 @@ export const M249: GunSpec = {
 
   damage: 18,
   armorPen: DEFAULT_AP_556,
-  zoom: 2.2,
+  zoom: 2.3,
   speed: 0.75,
   fire: {
     delay: 6,
@@ -342,7 +342,7 @@ export const M9: GunSpec = {
   color: "#33373d",
   damage: 17,
   armorPen: DEFAULT_AP_9MM,
-  zoom: 1.8,
+  zoom: 1.9,
   speed: 0.925,
   fire: {
     delay: 8,
@@ -453,7 +453,7 @@ export const Deagle: GunSpec = {
   color: "#7e858f",
   damage: 40,
   armorPen: DEFAULT_AP_50AE,
-  zoom: 2.0,
+  zoom: 2.1,
   speed: 0.85,
   fire: {
     delay: 10,
@@ -504,7 +504,7 @@ export const Golden_Deagle: GunSpec = {
   color: "#f0d313",
   damage: 50,
   armorPen: DEFAULT_AP_50AE,
-  zoom: 2.0,
+  zoom: 2.2,
   speed: 0.8,
   fire: {
     delay: 13,
@@ -545,7 +545,7 @@ export const UNARMED: GunSpec = {
   color: "#000000", // no barrel, so unused
   damage: 20,
   armorPen: DEFAULT_AP_MELEE,
-  zoom: 1.8,
+  zoom: 1.9,
   speed: 1.0,
   fire: {
     delay: 16, // punch cadence (ticks between hits)

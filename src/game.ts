@@ -203,7 +203,9 @@ export class Game implements GameCtx {
     return t.x === 0 && t.y === 0 ? vec(0, -1) : norm(t);
   }
 
-  /** The camera's zoom target: the equipped gun's zoom bent by the floor underfoot. */
+  /** The camera's zoom target: the equipped gun's zoom bent by the floor
+   *  underfoot. Only ONE floor's deltaZoom applies at a time — overlapping
+   *  lookout floors don't stack; the last (topmost, by render order) wins. */
   private zoomTarget(): number {
     let abs: number | null = null;
     let delta = 0;
@@ -211,21 +213,27 @@ export class Game implements GameCtx {
       if (f.level !== this.player.z || (f.zoom === undefined && f.deltaZoom === undefined)) continue;
       if (!f.infinite && !pointInBox(this.player.pos, f)) continue;
       if (f.zoom !== undefined) abs = f.zoom;
-      if (f.deltaZoom !== undefined) delta += f.deltaZoom;
+      if (f.deltaZoom !== undefined) delta = f.deltaZoom;
     }
     return Math.max(0.3, abs ?? this.player.gun.spec.zoom + delta);
   }
 
-  private resolveCollisions(c: Character): void {
+  /** Push `c` out of walls, and (unless `vsChars` is false) out of other
+   *  characters. The player is resolved with `vsChars=false` so bots never shove
+   *  it — bots yield to the player instead, on their own per-tick resolve pass
+   *  (which always runs), so walking into a bot pushes the bot, not the player. */
+  private resolveCollisions(c: Character, vsChars = true): void {
     let pos = c.pos;
     for (let i = 0; i < 2; i++) {
       for (const o of this.world.obstacles) {
         if (o.z !== c.z) continue;
         pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
       }
-      for (const other of this.characters) {
-        if (other === c || other.z !== c.z) continue;
-        pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
+      if (vsChars) {
+        for (const other of this.characters) {
+          if (other === c || other.z !== c.z) continue;
+          pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
+        }
       }
     }
     c.pos = pos;
@@ -386,7 +394,7 @@ export class Game implements GameCtx {
       let speedMult = this.player.gun.spec.speed;
       if (this.player.armor) speedMult *= this.player.armor.spec.speed;
       this.player.move(moveAxis(), speedMult);
-      this.resolveCollisions(this.player);
+      this.resolveCollisions(this.player, false); // walls block the player; bots yield to it
     }
 
     // Stair transitions: crossing a staircase's midpoint flips your level.

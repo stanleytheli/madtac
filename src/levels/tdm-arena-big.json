@@ -453,9 +453,9 @@
   {"kind":"stairs","x":-1360,"y":-1210,"w":120,"h":140,"axis":"y","zAtMin":-1,"zAtMax":0,"visibleFrom":{"atLeast":-1},"color":"#2e2e2e","color2":"#4d4d4d","steps":4,"depth":0},
   {"kind":"stairs","x":-1360,"y":-1550,"w":120,"h":140,"axis":"y","zAtMin":0,"zAtMax":-1,"visibleFrom":{"atLeast":-1},"color":"#2e2e2e","color2":"#4d4d4d","steps":4,"depth":0},
   {"kind":"floor","x":0,"y":0,"w":0,"h":0,"level":0,"depth":0,"color":"#424242","visibleFrom":{"atLeast":-1},"infinite":true,"grid":true,"gridColor":"#6b6b6b","gridWidth":0,"gridGap":500,"zoom":0,"deltaZoom":0},
-  {"kind":"floor","x":830,"y":-1330,"w":420,"h":1140,"level":1,"depth":0,"color":"#707070","visibleFrom":{"atLeast":-1},"hideWhenUnder":true,"zoom":0,"deltaZoom":0},
-  {"kind":"floor","x":-890,"y":-1330,"w":420,"h":1140,"level":1,"depth":0,"color":"#707070","visibleFrom":{"atLeast":-1},"hideWhenUnder":true,"zoom":0,"deltaZoom":0},
-  {"kind":"floor","x":910,"y":-1380,"w":1300,"h":200,"level":-1,"depth":0,"color":"#2e2e2e","visibleFrom":{"atLeast":-1},"zoom":0,"deltaZoom":0},
-  {"kind":"floor","x":-950,"y":-1380,"w":1300,"h":200,"level":-1,"depth":0,"color":"#2e2e2e","visibleFrom":{"atLeast":-1},"zoom":0,"deltaZoom":0},
-  {"kind":"floor","x":-30,"y":-1380,"w":580,"h":520,"level":-1,"depth":0,"color":"#2e2e2e","visibleFrom":{"atLeast":-1},"zoom":0,"deltaZoom":0}
+  {"kind":"floor","x":830,"y":-1330,"w":420,"h":1140,"level":1,"depth":0,"color":"#707070","visibleFrom":{"atLeast":-1},"hideWhenUnder":true,"zoom":0,"deltaZoom":0.25},
+  {"kind":"floor","x":-890,"y":-1330,"w":420,"h":1140,"level":1,"depth":0,"color":"#707070","visibleFrom":{"atLeast":-1},"hideWhenUnder":true,"zoom":0,"deltaZoom":0.25},
+  {"kind":"floor","x":910,"y":-1380,"w":1300,"h":200,"level":-1,"depth":0,"color":"#2e2e2e","visibleFrom":{"atLeast":-1},"zoom":0,"deltaZoom":-0.5},
+  {"kind":"floor","x":-950,"y":-1380,"w":1300,"h":200,"level":-1,"depth":0,"color":"#2e2e2e","visibleFrom":{"atLeast":-1},"zoom":0,"deltaZoom":-0.5},
+  {"kind":"floor","x":-30,"y":-1380,"w":580,"h":520,"level":-1,"depth":0,"color":"#2e2e2e","visibleFrom":{"atLeast":-1},"zoom":0,"deltaZoom":-0.5}
 ] }
