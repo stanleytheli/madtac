@@ -129,6 +129,9 @@ export interface TacOracleOptions extends OracleOptions {
   /** Extra ticks between shots on semi-auto guns, on top of the gun's fire
    *  delay (simulated trigger clicking). Ignored by full-auto guns. */
   semiAutoDelay?: number;
+  /** Lateral strafe/cover candidate offsets (see STRAFE_OFFSETS). A richer set
+   *  = more thorough lane exploration; used to scale the AI's skill. */
+  strafeOffsets?: number[];
 }
 
 /** One scored lateral spot. `exposed` counts rays not blocked by geometry —
@@ -147,6 +150,7 @@ export class TacOracle extends Oracle {
   private readonly lambda: number;
   private readonly engageRange: number;
   private readonly semiAutoDelay: number;
+  private readonly strafeOffsets: number[];
   private mode: "shoot" | "cover" = "shoot";
   /** Latched when the envelope crosses burstLimit; cleared when the pattern resets. */
   private burstDone = false;
@@ -184,6 +188,7 @@ export class TacOracle extends Oracle {
     this.lambda = options.lambda ?? DEFAULT_LAMBDA;
     this.engageRange = options.engageRange ?? DEFAULT_ENGAGE_RANGE;
     this.semiAutoDelay = options.semiAutoDelay ?? DEFAULT_SEMI_AUTO_DELAY;
+    this.strafeOffsets = options.strafeOffsets ?? STRAFE_OFFSETS;
   }
 
   protected override act(ai: AiContext, target: Character | null): void {
@@ -446,7 +451,7 @@ export class TacOracle extends Oracle {
   private candidates(ai: AiContext, opponent: Character): Candidate[] {
     const side = this.sideAxis(opponent);
     const out: Candidate[] = [this.scoreAt(ai, this.pos, 0, opponent)];
-    for (const off of STRAFE_OFFSETS) {
+    for (const off of this.strafeOffsets) {
       for (const s of [-1, 1]) {
         const point = add(this.pos, scale(side, off * s));
         if (!walkable(ai.world, this.pos, this.z, point, this.z)) continue;

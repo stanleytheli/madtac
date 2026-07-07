@@ -1,39 +1,23 @@
 import { Character } from "./actor.ts";
-import * as Armors from "./armor.ts";
-import { Body } from "./body.ts";
-import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
-import { hasLineOfSight, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
+import type { Body } from "./body.ts";
+import { DEFAULT_SKIN } from "./character.ts";
 import { Editor } from "./editor.ts";
+import { Game } from "./game.ts";
+import { DEFAULT_MODE, GAMEMODES } from "./gamemodes/gamemode.ts";
+import { resolveTdm, type TdmOverrides } from "./gamemodes/tdm.ts";
 import { Gun } from "./gun.ts";
 import * as Guns from "./guns.ts";
-import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
-import { spawnEnemy } from "./enemies.ts";
-import {
-  ARMOR_SPECS,
-  DEFAULT_PLAYER_PRIMARY,
-  DEFAULT_PLAYER_SECONDARY,
-  GUN_SPECS,
-  SKINS,
-  loadLevel,
-  type EnemySpawn,
-  type PlayerSpawn,
-} from "./level.ts";
+import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./level.ts";
 import { LEVELS } from "./levels.ts";
-import { NavGraph } from "./nav.ts";
-import { Robot, type AiContext } from "./robot.ts";
-import { initInput, isDown, mouse, moveAxis, pointer } from "./input.ts";
+import { initInput, isDown, mouse } from "./input.ts";
 import { drawParticles } from "./particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./poly.ts";
-import { drawHud, HealthBar, hudHitTest, type SlotKind } from "./ui.ts";
-import { dist, fromAngle, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
+import { drawHud, HealthBar } from "./ui.ts";
+import { dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
 import {
-  createWorld,
   enclosureCap,
   floorVisible,
   stairsVisible,
-  stairZ,
-  updateBullets,
-  updateSurfaceAlphas,
   zsetHas,
   type Floor,
   type Obstacle,
@@ -61,345 +45,106 @@ initInput(canvas);
 const params = new URLSearchParams(location.search);
 const EDIT = params.get("edit") === "true";
 
-// The map: ?level=<name> picks a JSON from src/levels/; with no param a file
-// named default.json is used if the folder has one; otherwise the hand-coded
-// demo map below. (?edit composes: ?edit=true&level=foo edits that level.)
-const DEFAULT_LEVEL = "arena-teamfight"
+// The map: ?level=<name> picks a JSON from src/levels/; with no param the
+// arena-teamfight map loads. (?edit composes: ?edit=true&level=foo edits it.)
+const DEFAULT_LEVEL = "arena-teamfight";
 
 const levelName = params.get("level");
 if (levelName && !(levelName in LEVELS)) {
   console.warn(`unknown level "${levelName}" — falling back to the default map`);
 }
 const levelText = LEVELS[levelName ?? DEFAULT_LEVEL] ?? null;
-const loaded = levelText ? loadLevel(levelText) : null;
-const world = loaded ? loaded.world : createWorld();
+const loaded = loadLevel(levelText ?? `{ "version": 1, "entities": [] }`);
 
-// Where — and as what — the player starts: a singleton entity in the editor,
-// so saved levels carry the position, loadout, armor, and skin. Levels without
-// one fall back to the origin at ground level with the classic kit.
-const playerSpawn: PlayerSpawn[] = loaded ? loaded.playerSpawn : [{ pos: vec(0, 0), z: 0 }];
-const start = playerSpawn[0] ?? { pos: vec(0, 0), z: 0 };
+// The active gamemode: a ?mode= override wins, else the level's own meta.mode,
+// else the sandbox default. (Only the play path uses it; the editor doesn't.)
+const modeId = params.get("mode") ?? loaded.meta.mode ?? DEFAULT_MODE;
+const makeMode = GAMEMODES[modeId] ?? GAMEMODES[DEFAULT_MODE];
 
-/** The gun for a player slot: "none" = empty, omitted/unknown = the default. */
-function slotGun(key: string | undefined, fallback: string): Gun | undefined {
-  if (key === "none") return undefined;
-  const spec = GUN_SPECS[key ?? fallback] ?? GUN_SPECS[fallback];
-  return spec ? new Gun(spec) : undefined;
+// Case-insensitive view of the query string, so ?blueTroops= and ?bluetroops=
+// (and ?BLUETROOPS=) all work.
+const lowerParams = new Map<string, string>();
+for (const [k, v] of params) lowerParams.set(k.toLowerCase(), v);
+
+/** A finite number from a URL param (case-insensitive), or undefined. */
+function numParam(key: string): number | undefined {
+  const v = lowerParams.get(key.toLowerCase());
+  if (v === undefined) return undefined;
+  const n = parseFloat(v);
+  return Number.isFinite(n) ? n : undefined;
 }
 
-const player = new Character(vec(start.pos.x, start.pos.y), SKINS[start.skin ?? ""] ?? DEFAULT_SKIN, {
-  primary: slotGun(start.primary, DEFAULT_PLAYER_PRIMARY),
-  secondary: slotGun(start.secondary, DEFAULT_PLAYER_SECONDARY),
-  hand: new Gun(Guns.UNARMED),
-});
-if (start.armor && ARMOR_SPECS[start.armor]) {
-  player.equipArmor(new Armors.Armor(ARMOR_SPECS[start.armor]));
-}
-player.z = start.z;
-player.team = "player";
-
-// Enemy spawns as *data* (type keys ENEMY_TYPES in enemies.ts) so the editor can
-// read/write them like any other entity. The demo cast: two grunts in the open,
-// one in the balcony doorway (straddling the hidden second story and the
-// always-visible balcony — from the ground you see only its balcony half), one
-// in the sealed bunker, one in the open-air trench (visible from the surface,
-// unlike the bunker guard), and one under the cake building's stickout
-// (revealed the moment you step in the door). They only engage — and can only
-// be hit — once you share their level.
-const spawns: EnemySpawn[] = loaded
-  ? loaded.spawns
-  : [
-      { type: "robot", gun: "M16", pos: vec(320, -260), z: 0 },
-      { type: "oracle", gun: "M16", pos: vec(450, -400), z: 0 },
-      { type: "tacoracle", gun: "M16", pos: vec(560, -260), z: 0 },
-      // { type: "elite", gun: "M16", armor: "ARMOR_L3", pos: vec(-500, 0), z: 0 },
-      { type: "robot", gun: "M9", pos: vec(-640, -450), z: 1 },
-      { type: "robot", gun: "M16", pos: vec(880, -140), z: -1 },
-      { type: "robot", gun: "M9", pos: vec(260, 480), z: -1 },
-      { type: "robot", gun: "M9", pos: vec(60, -720), z: 0 },
-    ];
-
-let characters: Character[] = [player];
-if (!EDIT) {
-  for (const s of spawns) characters.push(spawnEnemy(s));
-}
-const bodies: Body[] = [];
-
-// The level's baked path cache (Dijkstra over the node graph), for mobile AIs.
-// The editor doesn't simulate, so it skips the build (and previews link sets
-// live instead — see Editor.drawWorld).
-const nav = EDIT ? null : new NavGraph(world);
-
-// Demo pickups for the hand-coded map (a saved level carries its own items).
-if (!loaded) {
-  // Some guns lying around to pick up.
-  world.items.push(new GunItem(vec(-120, -80), new Gun(Guns.USPS)));
-  world.items.push(new GunItem(vec(80, 120), new Gun(Guns.M249)));
-
-  // ...and some armor to try on.
-  world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L1)));
-  world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L2)));
-  world.items.push(new ArmorItem(vec(-40, 90), new Armors.Armor(Armors.ARMOR_L3)));
-  world.items.push(new ArmorItem(vec(170, -40), new Armors.Armor(Armors.ARMOR_L4)));
-
-  // Bunker loot: worth braving the dark (and its guard) for.
-  world.items.push(new GunItem(vec(760, -100), new Gun(Guns.Golden_Deagle), vec(0, 0), -1));
-}
-
-// Start surface fades at their correct values so nothing fades in on frame one.
-updateSurfaceAlphas(world, player.z, player.pos, true);
-
-// In edit mode the Editor owns input, camera zoom, and the spawn markers.
-const editor = EDIT ? new Editor({ world, spawns, playerSpawn }, player, canvas) : null;
-
-// Camera: position follows the player; `size` eases toward the weapon's zoom.
-const camera = { size: player.gun.spec.zoom };
-const ZOOM_EASE = 0.12;
-
-/**
- * The camera's zoom target: the equipped gun's zoom, modified by whatever floor
- * the player is standing on (inside its rect, at its level) — an absolute floor
- * `zoom` replaces it outright (interiors that limit vision), `deltaZoom`s add
- * to it (balcony lookout points). Absolute wins if a spot somehow has both.
- */
-function zoomTarget(): number {
-  let abs: number | null = null;
-  let delta = 0;
-  for (const f of world.floors) {
-    if (f.level !== player.z || (f.zoom === undefined && f.deltaZoom === undefined)) continue;
-    if (!f.infinite && !pointInBox(player.pos, f)) continue;
-    if (f.zoom !== undefined) abs = f.zoom;
-    if (f.deltaZoom !== undefined) delta += f.deltaZoom;
+/** TDM parameter overrides read off the URL, e.g.
+ *  ?mode=tdm&killLimit=10&respawnDelay=90&blueTroops=2&redSkill=1&redEquip=4 */
+function tdmUrlOverrides(): TdmOverrides {
+  const o: TdmOverrides = {};
+  const kl = numParam("killLimit");
+  if (kl !== undefined) o.killLimit = kl;
+  const rd = numParam("respawnDelay");
+  if (rd !== undefined) o.respawnDelay = rd;
+  for (const side of ["blue", "red"] as const) {
+    const s: Partial<TeamConfig> = {};
+    const troops = numParam(`${side}Troops`);
+    if (troops !== undefined) s.troops = troops;
+    const skill = numParam(`${side}Skill`);
+    if (skill !== undefined) s.skill = skill;
+    const equip = numParam(`${side}Equip`);
+    if (equip !== undefined) s.equip = equip;
+    if (Object.keys(s).length > 0) o[side] = s;
   }
-  return Math.max(0.3, abs ?? player.gun.spec.zoom + delta);
+  return o;
 }
 
-const PICKUP_RANGE = 75; // world px the player can reach a ground item from
-let interactable: GroundItem | null = null; // nearest reachable item this tick (for prompt + E)
-
-/** Nearest ground item on the player's level, within reach and line of sight.
- *  Items lying on a staircase are grabbable across levels — a gun dropped on
- *  the upper flight shouldn't need item-falling physics to be reachable. */
-function findInteractable(): GroundItem | null {
-  let best: GroundItem | null = null;
-  let bestD = Infinity;
-  for (const it of world.items) {
-    const onStairs = world.stairs.some((s) => stairZ(s, it.pos) !== null);
-    if (it.z !== player.z && !onStairs) continue; // can't grab across levels
-    const d = dist(player.pos, it.pos);
-    if (d > PICKUP_RANGE || d >= bestD) continue;
-    if (!hasLineOfSight(player.pos, it.pos, world.obstacles, player.z)) continue; // can't reach through walls
-    best = it;
-    bestD = d;
-  }
-  return best;
+// Effective meta for the gamemode: the level's meta with the chosen mode and,
+// for TDM, its parameters merged with any URL overrides (URL wins). This stays
+// runtime-only — the loaded level (and what the editor would save) is untouched.
+const meta: LevelMeta = { ...loaded.meta, mode: modeId };
+if (modeId === "tdm") {
+  const u = tdmUrlOverrides();
+  const base = loaded.meta.tdm;
+  meta.tdm = resolveTdm({
+    killLimit: u.killLimit ?? base?.killLimit,
+    respawnDelay: u.respawnDelay ?? base?.respawnDelay,
+    blue: { ...base?.blue, ...u.blue },
+    red: { ...base?.red, ...u.red },
+  });
 }
 
-/** A small random outward toss impulse for anything spawned on the player. */
-function tossVel(): Vec2 {
-  return fromAngle(Math.random() * Math.PI * 2, 9.5);
+// --- session vs editor -------------------------------------------------------
+let game: Game | null = null;
+let editor: Editor | null = null;
+let editorPlayer: Character | null = null;
+const editorBodies: Body[] = [];
+
+if (EDIT) {
+  const start = loaded.playerSpawn[0] ?? { pos: vec(0, 0), z: 0 };
+  editorPlayer = new Character(vec(start.pos.x, start.pos.y), SKINS[start.skin ?? ""] ?? DEFAULT_SKIN, {
+    hand: new Gun(Guns.UNARMED),
+  });
+  editorPlayer.z = start.z;
+  editor = new Editor(loaded, editorPlayer, canvas);
+} else {
+  game = new Game(loaded, makeMode(meta));
 }
 
-/** Pick up a ground item: guns go into their slot, armor gets worn. Whatever was
- *  displaced (a gun in that slot, or the previously worn armor) drops back out. */
-function pickUp(item: GroundItem): void {
-  const idx = world.items.indexOf(item);
-  if (idx >= 0) world.items.splice(idx, 1);
-  const here = (): Vec2 => vec(player.pos.x, player.pos.y);
-
-  if (item instanceof GunItem) {
-    const dropped = player.holster(item.gun);
-    // Physics slides the tossed item clear of anything it might spawn inside of.
-    if (dropped) world.items.push(new GunItem(here(), dropped, tossVel(), player.z));
-  } else if (item instanceof ArmorItem) {
-    const prev = player.equipArmor(item.armor);
-    if (prev) world.items.push(new ArmorItem(here(), prev, tossVel(), player.z));
-  }
-  interactable = null;
-}
-
-/** Drop the player's currently equipped weapon into the world (Q). Fists can't be dropped. */
-function dropEquippedWeapon(): void {
-  const dropped = player.dropEquipped();
-  if (!dropped) return;
-  const vel = fromAngle(Math.random() * Math.PI * 2, 9.5);
-  world.items.push(new GunItem(vec(player.pos.x, player.pos.y), dropped, vel, player.z));
-}
-
-/** Drop whatever the player right-clicked in the HUD: a specific weapon slot, or
- *  the worn armor. No-op if that slot is empty. */
-function dropFromHud(kind: SlotKind): void {
-  const at = vec(player.pos.x, player.pos.y);
-  if (kind === "armor") {
-    const a = player.dropArmor();
-    if (a) world.items.push(new ArmorItem(at, a, tossVel(), player.z));
-  } else {
-    const g = player.dropSlot(kind);
-    if (g) world.items.push(new GunItem(at, g, tossVel(), player.z));
-  }
-}
+// Stable references for the renderer: the game's live arrays/objects (mutated in
+// place, never reassigned), or the editor's lone player when editing.
+const world = game ? game.world : loaded.world;
+const player = game ? game.player : editorPlayer!;
+const characters = game ? game.characters : [editorPlayer!];
+const bodies = game ? game.bodies : editorBodies;
+const camera = game ? game.camera : { size: editorPlayer!.gun.spec.zoom };
 
 const healthBar = new HealthBar({ width: 450, height: 35 });
 // Slightly shorter cyan bar for armor, stacked above the health bar.
-const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", radius: 0, displayLoss: false,});
-
-let prevDown = false; // pointer state last tick, for semi-auto edge detection
+const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", radius: 0, displayLoss: false });
 
 const screenCenter = (): Vec2 => vec(window.innerWidth / 2, window.innerHeight / 2);
-
-// Aim direction is scale/translation-invariant, so screen-space mouse works directly.
-function aimForward(): Vec2 {
-  const t = sub(mouse, screenCenter());
-  return t.x === 0 && t.y === 0 ? vec(0, -1) : norm(t);
-}
 
 // --- fixed-timestep loop: 60 physics ticks/s, render every frame ---
 const STEP = 1000 / 60;
 let accumulator = 0;
 let last = performance.now();
-
-function resolveCollisions(c: Character): void {
-  let pos = c.pos;
-  // Two passes so corners (crate + crate, or crate + character) settle. Only
-  // things on the character's level are solid to them.
-  for (let i = 0; i < 2; i++) {
-    for (const o of world.obstacles) {
-      if (o.z !== c.z) continue;
-      pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
-    }
-    for (const other of characters) {
-      if (other === c || other.z !== c.z) continue;
-      pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
-    }
-  }
-  c.pos = pos;
-}
-
-/** Convert any character that hit 0 HP into a Body, dropping its weapons, and remove it. */
-function reapDead(): void {
-  for (let i = characters.length - 1; i >= 0; i--) {
-    const c = characters[i];
-    if (c.hp <= 0) {
-      // Scatter the dead character's weapons from its body, on its level.
-      for (const gun of c.dropWeapons()) {
-        const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
-        world.items.push(new GunItem(vec(c.pos.x, c.pos.y), gun, vel, c.z));
-      }
-      const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
-      const a = c.dropArmor()
-      if (a) world.items.push(new ArmorItem(vec(c.pos.x, c.pos.y), a, vel, c.z));
-
-      bodies.push(Body.fromCharacter(c));
-      characters.splice(i, 1);
-    }
-  }
-}
-
-let jDown = false
-let kDown = false
-let eDown = false
-let qDown = false
-let rmbDown = false // right mouse button last tick, for click-edge detection
-
-function update(): void {
-  // Edit mode replaces the whole simulation: fly, edit, nothing shoots or ticks.
-  if (editor) {
-    editor.update();
-    return;
-  }
-
-  const playerAlive = player.hp > 0;
-  interactable = playerAlive ? findInteractable() : null;
-
-  if (playerAlive) {
-    if (isDown("1")) player.equip("primary");
-    if (isDown("2")) player.equip("secondary");
-    if (isDown("3")) player.equip("hand");
-    if (isDown("r")) player.reload();
-
-    if (isDown("e")) {
-      if (!eDown && interactable) pickUp(interactable);
-      eDown = true;
-    } else eDown = false;
-
-    if (isDown("q")) {
-      if (!qDown) dropEquippedWeapon();
-      qDown = true;
-    } else qDown = false;
-
-    // Right-click a HUD weapon/armor slot to drop that item.
-    if (pointer.rightDown) {
-      if (!rmbDown) {
-        const kind = hudHitTest(mouse, window.innerWidth, window.innerHeight, player);
-        if (kind) dropFromHud(kind);
-      }
-      rmbDown = true;
-    } else rmbDown = false;
-
-    if (isDown("j")) {
-      if (!jDown) player._takeDamage(22);
-      jDown = true;
-    } else jDown = false;
-    if (isDown("k")) {
-      if (!kDown) player._heal(10);
-      kDown = true;
-    } else kDown = false;
-  }
-
-  // Ease the camera zoom toward its target (gun zoom, bent by the floor underfoot).
-  camera.size += (zoomTarget() - camera.size) * ZOOM_EASE;
-
-  if (playerAlive) {
-    player.forward = aimForward();
-    let speedMult = 1.0;
-    speedMult *= player.gun.spec.speed;
-    if (player.armor) { // Armor speed value -- NOTE: deliberately not used in player max speed calculations
-      speedMult *= player.armor.spec.speed;
-    }
-    player.move(moveAxis(), speedMult);
-    resolveCollisions(player);
-  }
-
-  // Stair transitions: crossing a staircase's midpoint flips your level (sharp,
-  // by design — the visual ramp comes from the step gradient, not easing).
-  for (const c of characters) {
-    for (const s of world.stairs) {
-      const z = stairZ(s, c.pos);
-      if (z !== null) c.z = z;
-    }
-  }
-
-  // Surface fades (roofs melting away, floors of other levels) chase the view.
-  updateSurfaceAlphas(world, player.z, player.pos);
-
-  for (const c of characters) c.tickWeapon();
-
-  // Player firing: held trigger for auto, click edge for semi.
-  const f = player.gun.spec.fire;
-  if (playerAlive && f) {
-    const wantFire = f.auto ? pointer.down : pointer.down && !prevDown;
-    if (wantFire) player.fire(world);
-  }
-  prevDown = pointer.down;
-
-  // NPC AI: pick targets by team hostility, shoot, and (movers) chase.
-  const ai: AiContext = { world, characters, nav };
-  for (const c of characters) {
-    if (c instanceof Robot && c.hp > 0) c.think(ai);
-  }
-  // Movers walk with direct position steps; settle them out of walls and
-  // each other (the player already resolved right after their own move).
-  for (const c of characters) {
-    if (c !== player) resolveCollisions(c);
-  }
-
-  updateBullets(world, characters);
-
-  for (const b of bodies) b.update(world.obstacles);
-  for (const it of world.items) it.update(world.obstacles);
-  separateItems(world.items); // gently spread out any overlapping pickups
-  reapDead();
-}
 
 const GRID = 512; // default background grid spacing (world px)
 // Draw the grid covering the (zoom-enlarged) visible world region. `width` is
@@ -792,7 +537,9 @@ function render(): void {
       healthBar,
       armorBar,
       mouse,
-      interactableLabel: interactable ? interactable.label : null,
+      interactableLabel: game!.interactable ? game!.interactable.label : null,
+      gamemode: game!.gamemode.hud(game!) ?? undefined,
+      showScoreboard: isDown("tab"),
     });
   }
 }
@@ -804,7 +551,8 @@ function frame(now: number): void {
   if (accumulator > 250) accumulator = 250;
 
   while (accumulator >= STEP) {
-    update();
+    if (editor) editor.update();
+    else game!.update();
     accumulator -= STEP;
   }
 

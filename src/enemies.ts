@@ -16,8 +16,8 @@ import type { EnemySpawn } from "./level.ts";
 import { Oracle } from "./oracle.ts";
 import { ELITE_ROBOT_SKIN, Robot, type RobotOptions } from "./robot.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "./specs.ts";
-import { TacOracle } from "./tacoracle.ts";
-import { TEAMS } from "./team.ts";
+import { TacOracle, type TacOracleOptions } from "./tacoracle.ts";
+import { TEAMS, type TeamId } from "./team.ts";
 import { vec, type Vec2 } from "./vec.ts";
 
 export interface EnemyTypeDef {
@@ -68,6 +68,38 @@ export const LEGACY_ENEMY_TYPES: Record<string, { type: string; gun?: string }> 
   grunt: { type: "robot", gun: "M16" },
   pistol: { type: "robot", gun: "M9" },
 };
+
+/** Options for a gamemode-generated combatant (see makeTroop). Unlike an
+ *  EnemySpawn these carry the fine AI knobs a gamemode derives from "skill". */
+export interface TroopOptions {
+  team: TeamId;
+  z?: number;
+  /** GUN_SPECS key. Omitted = the type default. */
+  gun?: string;
+  /** ARMOR_SPECS key. Omitted = unarmored. */
+  armor?: string;
+  reactionTime?: number;
+  lambda?: number;
+  strafeOffsets?: number[];
+  skin?: string;
+}
+
+/** Build a TacOracle soldier for a gamemode (TDM). Bypasses the authored-spawn
+ *  data path so modes can pass the full skill knobs, not just the level fields. */
+export function makeTroop(pos: Vec2, o: TroopOptions): Robot {
+  const opts: TacOracleOptions = {
+    team: o.team,
+    z: o.z ?? 0,
+    reactionTime: o.reactionTime,
+    lambda: o.lambda,
+    strafeOffsets: o.strafeOffsets,
+  };
+  if (o.gun && GUN_SPECS[o.gun]) opts.gun = GUN_SPECS[o.gun];
+  if (o.skin && SKINS[o.skin]) opts.skin = SKINS[o.skin];
+  const r = new TacOracle(vec(pos.x, pos.y), opts);
+  if (o.armor && ARMOR_SPECS[o.armor]) r.equipArmor(new Armor(ARMOR_SPECS[o.armor]));
+  return r;
+}
 
 /** Instantiate a live NPC from a spawn record (type, position, loadout, team). */
 export function spawnEnemy(s: EnemySpawn): Robot {

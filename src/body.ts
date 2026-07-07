@@ -8,6 +8,8 @@ import type { Obstacle } from "./world.ts";
 const LIN_FRICTION = 0.9; // per-tick velocity retention as the corpse slides to rest
 const ANG_FRICTION = 0.92; // ...and for its spin
 const DARKEN = 0.45; // multiply skin colors by this to read as "dead"
+const FLASH_TICKS = 60; // corpse blinks over this many ticks before it despawns
+const BLINK = 6; // ticks per on/off half-cycle of the despawn flash
 
 // Initial death "pop": small but clearly visible launch + tumble.
 const SPAWN_SPEED_MIN = 5.5;
@@ -53,6 +55,11 @@ export class Body {
   angle: number; // facing, radians
   angularVel: number;
   readonly skin: Skin;
+  /** Ticks this corpse has existed (for timed despawn — see lifetime). */
+  age = 0;
+  /** Ticks until it despawns, or null to linger forever. Set by the session per
+   *  gamemode (e.g. TDM clears corpses so respawns don't bury the map). */
+  lifetime: number | null = null;
 
   private constructor(
     pos: Vec2,
@@ -88,8 +95,22 @@ export class Body {
     );
   }
 
+  /** True once the corpse has outlived its lifetime (immortal if lifetime null). */
+  get expired(): boolean {
+    return this.lifetime !== null && this.age >= this.lifetime;
+  }
+
+  /** Opacity: solid until the final FLASH_TICKS, then blinks toward despawn. */
+  private get alpha(): number {
+    if (this.lifetime === null) return 1;
+    const left = this.lifetime - this.age;
+    if (left >= FLASH_TICKS) return 1;
+    return Math.floor(left / BLINK) % 2 === 0 ? 0.2 : 1;
+  }
+
   /** Slide + spin toward rest, pushing out of solid obstacles on its own level. */
   update(obstacles: readonly Obstacle[]): void {
+    this.age += 1;
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, LIN_FRICTION);
     this.angle += this.angularVel;
@@ -107,7 +128,10 @@ export class Body {
       add(this.pos, add(scale(forward, g.f), scale(side, g.l)));
     const right = grip(UNARMED.rightGrip);
     const left = grip(UNARMED.leftGrip);
+    ctx.save();
+    ctx.globalAlpha = this.alpha;
     // No gun on a corpse: pass a no-op gun drawer.
     drawCharacter(ctx, this.pos, forward, right, left, this.skin, () => {});
+    ctx.restore();
   }
 }

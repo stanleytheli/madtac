@@ -6,8 +6,19 @@ export const mouse: Vec2 = vec(0, 0);
 /** Pointer button state: `down` = left held (fire), `rightDown` = right held (drop). */
 export const pointer = { down: false, rightDown: false };
 
+/** True for the editor's text/number inputs, where Tab should still move focus. */
+function isFormField(t: EventTarget | null): boolean {
+  const tag = (t as HTMLElement | null)?.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
 export function initInput(canvas: HTMLCanvasElement): void {
-  window.addEventListener("keydown", (e) => keys.add(e.key.toLowerCase()));
+  window.addEventListener("keydown", (e) => {
+    // Tab holds up the scoreboard; keep it from tabbing focus around the page
+    // (but leave the editor's form fields alone).
+    if (e.key === "Tab" && !isFormField(e.target)) e.preventDefault();
+    keys.add(e.key.toLowerCase());
+  });
   window.addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
   // Avoid stuck keys / held fire when focus is lost.
   window.addEventListener("blur", () => {

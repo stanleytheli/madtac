@@ -19,6 +19,11 @@ export interface GroundItem {
   readonly radius: number;
   /** Text shown in the interaction prompt (e.g. the weapon's name). */
   readonly label: string;
+  /** Ticks this item has existed (for timed despawn — see lifetime). */
+  age: number;
+  /** Ticks until it despawns, or null to linger forever. Set by the session per
+   *  gamemode (TDM clears death-drops); authored pickups keep null. */
+  lifetime: number | null;
   /** Advance one tick (slide to rest, collide with obstacles). No-op for static items. */
   update(obstacles: readonly Obstacle[]): void;
   draw(ctx: CanvasRenderingContext2D): void;
@@ -27,6 +32,17 @@ export interface GroundItem {
 const ITEM_RADIUS = 35; // collision radius vs walls/crates
 const ITEM_FRICTION = 0.85; // per-tick velocity retention as it slides to rest
 const SEPARATION_RATE = 0.25; // fraction of overlap resolved per tick (soft, gradual)
+const FLASH_TICKS = 60; // an item blinks over this many ticks before it despawns
+const BLINK = 6; // ticks per on/off half-cycle of the despawn flash
+
+/** Opacity for a timed item: solid until its final FLASH_TICKS, then blinking
+ *  toward despawn (always 1 if immortal). */
+function flashAlpha(age: number, lifetime: number | null): number {
+  if (lifetime === null) return 1;
+  const left = lifetime - age;
+  if (left >= FLASH_TICKS) return 1;
+  return Math.floor(left / BLINK) % 2 === 0 ? 0.2 : 1;
+}
 
 /**
  * Soft collision between ground items: any two whose footprints overlap drift
@@ -95,22 +111,23 @@ function drawGroundIcon(
   backdropRadius: number,
   scale: number,
   rotation: number,
+  alpha = 1,
 ): void {
   ctx.save();
+  ctx.globalAlpha = alpha; // dropped items fade out over their last few ticks
   ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, backdropRadius, 0, Math.PI * 2);
   ctx.fill();
-  ctx.restore();
 
   const img = iconSrc ? getImage(iconSrc) : null;
-  if (!img || !img.complete || img.naturalWidth === 0) return;
-  const w = img.naturalWidth * scale;
-  const h = img.naturalHeight * scale;
-  ctx.save();
-  ctx.translate(pos.x, pos.y);
-  ctx.rotate(rotation);
-  ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  if (img && img.complete && img.naturalWidth > 0) {
+    const w = img.naturalWidth * scale;
+    const h = img.naturalHeight * scale;
+    ctx.translate(pos.x, pos.y);
+    ctx.rotate(rotation);
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  }
   ctx.restore();
 }
 
@@ -120,6 +137,8 @@ export class GunItem implements GroundItem {
   vel: Vec2;
   z: number;
   readonly radius = ITEM_RADIUS;
+  age = 0;
+  lifetime: number | null = null;
   gun: Gun;
   private iconSrc: string;
 
@@ -143,6 +162,7 @@ export class GunItem implements GroundItem {
 
   /** Slide toward rest, pushing out of solid obstacles on its own level. */
   update(obstacles: readonly Obstacle[]): void {
+    this.age += 1;
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, ITEM_FRICTION);
     for (const o of obstacles) {
@@ -152,7 +172,7 @@ export class GunItem implements GroundItem {
   }
 
   draw(ctx: CanvasRenderingContext2D): void {
-    drawGroundIcon(ctx, this.pos, this.iconSrc, GUN_BACKDROP, ICON_SCALE, ICON_ROT);
+    drawGroundIcon(ctx, this.pos, this.iconSrc, GUN_BACKDROP, ICON_SCALE, ICON_ROT, flashAlpha(this.age, this.lifetime));
   }
 }
 
@@ -165,6 +185,8 @@ export class ArmorItem implements GroundItem {
   vel: Vec2;
   z: number;
   readonly radius = ARMOR_ITEM_RADIUS;
+  age = 0;
+  lifetime: number | null = null;
   armor: Armor;
   private iconSrc: string;
 
@@ -188,6 +210,7 @@ export class ArmorItem implements GroundItem {
 
   /** Slide toward rest, pushing out of solid obstacles on its own level. */
   update(obstacles: readonly Obstacle[]): void {
+    this.age += 1;
     this.pos = add(this.pos, this.vel);
     this.vel = scale(this.vel, ITEM_FRICTION);
     for (const o of obstacles) {
@@ -197,6 +220,6 @@ export class ArmorItem implements GroundItem {
   }
 
   draw(ctx: CanvasRenderingContext2D): void {
-    drawGroundIcon(ctx, this.pos, this.iconSrc, ARMOR_BACKDROP, ARMOR_ICON_SCALE, 0);
+    drawGroundIcon(ctx, this.pos, this.iconSrc, ARMOR_BACKDROP, ARMOR_ICON_SCALE, 0, flashAlpha(this.age, this.lifetime));
   }
 }

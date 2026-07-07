@@ -5,7 +5,7 @@ import { Gun } from "./gun.ts";
 import type { ArmorPen, GunSpec } from "./guns.ts";
 import { gunIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, scale, vec, type Vec2 } from "./vec.ts";
-import type { World } from "./world.ts";
+import type { Hittable, World } from "./world.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
 
@@ -52,6 +52,10 @@ export class Character {
    *  body launches this way on death. Null if never hit (e.g. test damage). */
   lastHitDir: Vec2 | null = null;
 
+  /** Whoever fired the most recent bullet to hit this character (for kill
+   *  attribution — see gamemodes/tdm.ts K/D). Null if never shot. */
+  lastAttacker: Hittable | null = null;
+
   /** Worn armor, or null. Soaks bullet damage and renders on the head (see draw). */
   armor: Armor | null = null;
 
@@ -67,6 +71,28 @@ export class Character {
       hand: loadout.hand,
     };
     this.equipped = loadout.primary ? "primary" : "hand";
+  }
+
+  /**
+   * Reset this character to a fresh spawn: full health, a new position/level,
+   * cleared momentum + armor, and a fresh loadout. Reuses the same object so
+   * every reference to it (the player held by main's render/camera) stays valid
+   * across a gamemode respawn — see gamemodes/tdm.ts.
+   */
+  respawn(pos: Vec2, z: number, loadout: Loadout): void {
+    this.pos = pos;
+    this.z = z;
+    this.vel = vec(0, 0);
+    this.forward = vec(0, -1);
+    this.hp = this.maxHp;
+    this.lastHitDir = null;
+    this.lastAttacker = null;
+    this.armor = null;
+    this.slots.primary = loadout.primary ?? null;
+    this.slots.secondary = loadout.secondary ?? null;
+    this.slots.hand = loadout.hand;
+    this.equipped = loadout.primary ? "primary" : "hand";
+    this.gun.resetDraw();
   }
 
   /** The currently held gun (never null: the hand slot is always filled). */
@@ -204,8 +230,9 @@ export class Character {
    * dealing `damage`. (Armor mitigation will hook in here later.) The world
    * spawns the blood particle for the impact.
    */
-  registerHit(dir: Vec2, _point: Vec2, damage: number, armorPen: ArmorPen): void {
+  registerHit(dir: Vec2, _point: Vec2, damage: number, armorPen: ArmorPen, attacker: Hittable | null = null): void {
     this.lastHitDir = dir;
+    this.lastAttacker = attacker;
 
     let toBody = damage;
     const armor = this.armor;

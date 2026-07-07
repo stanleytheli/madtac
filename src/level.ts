@@ -72,12 +72,55 @@ export interface PlayerSpawn {
   skin?: string;
 }
 
+/** A rectangular region a gamemode spawns combatants inside. Tagged with a team
+ *  so TDM maps are authored purely by placing zones (see gamemodes/tdm.ts). */
+export interface SpawnZone {
+  pos: Vec2;
+  w: number;
+  h: number;
+  /** Rotation in radians (omitted/0 = axis-aligned), like other rect entities. */
+  angle?: number;
+  z: number;
+  /** TEAMS key whose members spawn here. */
+  team: string;
+}
+
+/** Per-side Team Deathmatch settings. `troops` = AI bots on that side (the
+ *  player is an extra combatant on blue). `skill` ∈ [0,1] maps to reaction
+ *  time / burst bravery / strafe exploration; `equip` is an equipment tier. */
+export interface TeamConfig {
+  troops: number;
+  skill: number;
+  equip: number;
+}
+
+export interface TdmConfig {
+  /** Deaths a team can take before it loses (the ticket bar's length). */
+  killLimit: number;
+  /** Ticks before a downed slot respawns from its team's zones. */
+  respawnDelay: number;
+  blue: TeamConfig;
+  red: TeamConfig;
+}
+
+/** Top-level, non-entity level configuration. `mode` keys the gamemode registry
+ *  (omitted = the default sandbox); mode-specific config hangs off it. */
+export interface LevelMeta {
+  mode?: string;
+  tdm?: TdmConfig;
+}
+
 /** Everything a level owns: the world's static arrays plus the spawn tables. */
 export interface LevelState {
   world: World;
   spawns: EnemySpawn[];
   /** 0 or 1 entries — an array only so the entity defs stay uniform. */
   playerSpawn: PlayerSpawn[];
+  /** Gamemode spawn zones (see SpawnZone). Not part of the world — they never
+   *  collide and are invisible in-game, read only by gamemodes + the editor. */
+  spawnZones: SpawnZone[];
+  /** Top-level match configuration (gamemode + its settings). */
+  meta: LevelMeta;
 }
 
 const firstKey = (rec: Record<string, unknown>): string => Object.keys(rec)[0];
@@ -358,6 +401,27 @@ export const ENTITY_DEFS: EntityDef[] = [
     zOf: (e) => e.z,
   },
   {
+    kind: "spawnzone",
+    label: "Spawn zone",
+    shape: "rect",
+    fields: [
+      zField,
+      {
+        key: "team",
+        type: "select",
+        options: () => Object.values(TEAMS).map((t) => ({ value: t.id, label: t.label })),
+        get: (e) => e.team ?? "blue",
+        set: (e, v) => {
+          if (v in TEAMS) e.team = v;
+        },
+      },
+    ],
+    list: (s) => s.spawnZones,
+    match: () => true,
+    create: (pos, z): SpawnZone => ({ pos, w: 300, h: 300, z, team: "blue" }),
+    zOf: (e) => e.z,
+  },
+  {
     kind: "wall",
     label: "Wall",
     shape: "rect",
@@ -498,7 +562,10 @@ export function serializeLevel(state: LevelState): string {
       if (def.match(e)) lines.push("  " + JSON.stringify(entityToJSON(def, e)));
     }
   }
-  return `{ "version": 1, "entities": [\n${lines.join(",\n")}\n] }`;
+  // The match config, when set, rides on top of the entity list (compact, one
+  // line). Levels with no mode serialize exactly as before.
+  const metaLine = state.meta.mode ? `  "meta": ${JSON.stringify(state.meta)},\n` : "";
+  return `{ "version": 1,\n${metaLine}  "entities": [\n${lines.join(",\n")}\n] }`;
 }
 
 /**
@@ -508,7 +575,7 @@ export function serializeLevel(state: LevelState): string {
  * loadable across content changes.
  */
 export function applyLevel(state: LevelState, text: string): void {
-  const doc = JSON.parse(text) as { entities?: unknown[] };
+  const doc = JSON.parse(text) as { entities?: unknown[]; meta?: LevelMeta };
   const ents = Array.isArray(doc.entities) ? doc.entities : [];
   const w = state.world;
   w.obstacles.length = 0;
@@ -520,6 +587,8 @@ export function applyLevel(state: LevelState, text: string): void {
   w.particles.length = 0;
   state.spawns.length = 0;
   state.playerSpawn.length = 0;
+  state.spawnZones.length = 0;
+  state.meta = doc.meta && typeof doc.meta === "object" ? doc.meta : {};
 
   for (const raw of ents) {
     const j = raw as Record<string, any>;
@@ -557,6 +626,8 @@ export function loadLevel(text: string): LevelState {
     world: { obstacles: [], floors: [], stairs: [], nodes: [], items: [], bullets: [], particles: [] },
     spawns: [],
     playerSpawn: [],
+    spawnZones: [],
+    meta: {},
   };
   applyLevel(state, text);
   return state;

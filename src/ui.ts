@@ -5,6 +5,7 @@
 
 import type { Character } from "./actor.ts";
 import type { Armor } from "./armor.ts";
+import type { GamemodeHud, PlayerRow } from "./gamemodes/gamemode.ts";
 import type { Gun } from "./gun.ts";
 import { armorIcon, gunIcon } from "./item.ts";
 import type { Vec2 } from "./vec.ts";
@@ -231,6 +232,10 @@ export interface HudOptions {
   mouse: Vec2;
   /** Label for the "press E" pickup prompt, or null when nothing is reachable. */
   interactableLabel: string | null;
+  /** The active gamemode's scoreboard + banner, or undefined for no gamemode UI. */
+  gamemode?: GamemodeHud;
+  /** Whether to show the full K/D player list (Tab held). */
+  showScoreboard?: boolean;
 }
 
 /**
@@ -283,7 +288,109 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
 
   drawLoadout(ctx, player, w, h);
 
+  if (o.gamemode) drawGamemodeHud(ctx, o.gamemode, w, h);
+  if (o.showScoreboard && o.gamemode?.players) drawScoreboard(ctx, o.gamemode.players, w, h);
+
   ctx.restore();
+}
+
+/**
+ * The Tab scoreboard: a centered panel listing every combatant's callsign and
+ * K/D, grouped by team (blue then red) and ranked by kills. The human's own row
+ * is highlighted. Drawn in logical HUD units.
+ */
+function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: number, h: number): void {
+  const rows = [...players].sort((a, b) => {
+    if (a.team !== b.team) return a.team < b.team ? -1 : 1; // blue before red
+    return b.kills - a.kills;
+  });
+
+  const PANEL_W = 460;
+  const ROW_H = 26;
+  const HEAD_H = 40;
+  const panelH = HEAD_H + rows.length * ROW_H + 14;
+  const x = (w - PANEL_W) / 2;
+  const y = (h - panelH) / 2;
+
+  fillSquircle(ctx, x, y, PANEL_W, panelH, 12, "rgba(0,0,0,0.78)");
+
+  const padX = 22;
+  const kCol = x + PANEL_W - 130;
+  const dCol = x + PANEL_W - 60;
+
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(255,255,255,0.55)";
+  ctx.font = uiFont("bold 13px");
+  ctx.fillText("SCOREBOARD", x + padX, y + 20);
+  ctx.textAlign = "right";
+  ctx.fillText("K", kCol + 14, y + 20);
+  ctx.fillText("D", dCol + 14, y + 20);
+
+  let ry = y + HEAD_H + ROW_H / 2;
+  for (const r of rows) {
+    if (r.isPlayer) {
+      fillSquircle(ctx, x + 8, ry - ROW_H / 2 + 2, PANEL_W - 16, ROW_H - 4, 6, "rgba(255,255,255,0.10)");
+    }
+    // Team color dot + name.
+    ctx.fillStyle = r.color;
+    ctx.beginPath();
+    ctx.arc(x + padX + 5, ry, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.textAlign = "left";
+    ctx.fillStyle = r.isPlayer ? "#ffffff" : "#d7dbe2";
+    ctx.font = uiFont(`${r.isPlayer ? "bold " : ""}15px`);
+    ctx.fillText(r.isPlayer ? `${r.name} (you)` : r.name, x + padX + 18, ry + 1);
+    ctx.textAlign = "right";
+    ctx.fillStyle = "#d7dbe2";
+    ctx.font = uiFont("15px");
+    ctx.fillText(String(r.kills), kCol + 14, ry + 1);
+    ctx.fillText(String(r.deaths), dCol + 14, ry + 1);
+    ry += ROW_H;
+  }
+}
+
+/**
+ * The gamemode overlay: bare-bones ticket bars stacked in the bottom-left (one
+ * per team, filled to remaining/limit in the team color with a numeric label)
+ * and a centered banner for win/lose + respawn text. Drawn in logical HUD units.
+ */
+function drawGamemodeHud(ctx: CanvasRenderingContext2D, hud: GamemodeHud, w: number, h: number): void {
+  const BAR_W = 240;
+  const BAR_H = 18;
+  const GAP = 8;
+  const MARGIN = 24;
+
+  ctx.textBaseline = "middle";
+  // First score on top: lay them out upward from the bottom edge.
+  let y = h - MARGIN - BAR_H;
+  for (let i = hud.scores.length - 1; i >= 0; i--) {
+    const s = hud.scores[i];
+    const frac = s.limit > 0 ? clamp01(s.remaining / s.limit) : 0;
+    fillSquircle(ctx, MARGIN, y, BAR_W, BAR_H, 4, SQUIRCLE_BG);
+    if (frac > 0) fillSquircle(ctx, MARGIN, y, BAR_W * frac, BAR_H, 4, s.color);
+    ctx.font = uiFont("bold 13px");
+    ctx.textAlign = "left";
+    ctx.fillStyle = "rgba(0,0,0,0.55)";
+    ctx.fillText(`${s.label}  ${s.remaining}`, MARGIN + 9, y + BAR_H / 2 + 2);
+    ctx.fillStyle = "#ffffff";
+    ctx.fillText(`${s.label}  ${s.remaining}`, MARGIN + 8, y + BAR_H / 2 + 1);
+    y -= BAR_H + GAP;
+  }
+
+  if (hud.banner) {
+    const lines = hud.banner.split("\n");
+    ctx.textAlign = "center";
+    let ly = h / 2 - (lines.length - 1) * 18;
+    for (let i = 0; i < lines.length; i++) {
+      ctx.font = uiFont(i === 0 ? "bold 52px" : "bold 20px");
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillText(lines[i], w / 2 + 2, ly + 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(lines[i], w / 2, ly);
+      ly += i === 0 ? 46 : 26;
+    }
+  }
 }
 
 // Loadout panel, bottom-right: primary + secondary weapon slots stacked. The

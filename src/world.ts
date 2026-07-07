@@ -346,7 +346,7 @@ export function updateSurfaceAlphas(w: World, viewerZ: number, viewerPos: Vec2, 
 export interface Hittable {
   pos: Vec2;
   z: number;
-  registerHit(dir: Vec2, point: Vec2, damage: number, armorPen: ArmorPen): void;
+  registerHit(dir: Vec2, point: Vec2, damage: number, armorPen: ArmorPen, attacker: Hittable | null): void;
 }
 
 export interface Bullet {
@@ -728,7 +728,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       for (const t of targets) {
         if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
-          t.registerHit(norm(b.vel), sample, b.damage, b.armorPen);
+          t.registerHit(norm(b.vel), sample, b.damage, b.armorPen, b.owner);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           spawnParticles(w.particles, at, backDir, BLOOD, b.z);
           consumed = true;

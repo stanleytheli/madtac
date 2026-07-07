@@ -15,6 +15,8 @@
 import type { Character } from "./actor.ts";
 import { BODY_RADIUS } from "./character.ts";
 import { pointInBox } from "./collision.ts";
+import { GAMEMODES } from "./gamemodes/gamemode.ts";
+import { DEFAULT_TDM } from "./gamemodes/tdm.ts";
 import { isDown, mouse, moveAxis } from "./input.ts";
 import {
   ENTITY_DEFS,
@@ -25,8 +27,10 @@ import {
   type EntityDef,
   type FieldDef,
   type LevelState,
+  type TdmConfig,
 } from "./level.ts";
 import { LEVELS } from "./levels.ts";
+import { TEAMS } from "./team.ts";
 import { MOVE_RADIUS, nodeEdge } from "./nav.ts";
 import { add, angleOf, deg2rad, dist, norm, rad2deg, rotate, scale, sub, vec, type Vec2 } from "./vec.ts";
 import {
@@ -44,6 +48,14 @@ const MIN_SIZE = 8; // smallest rect a drag-draw or resize can produce
 const SEL_COLOR = "#3ddcff";
 const ROT_HANDLE_OFF = 26; // rotate-knob distance past the top edge, screen px
 const ROT_SNAP = Math.PI / 12; // rotate-drag snap step (15°) while snap is on
+
+/** A fresh TDM config for when a level first switches to Team Deathmatch in the
+ *  editor — a deep clone of the gamemode's own defaults (never share the object). */
+const defaultTdm = (): TdmConfig => ({
+  ...DEFAULT_TDM,
+  blue: { ...DEFAULT_TDM.blue },
+  red: { ...DEFAULT_TDM.red },
+});
 
 type Drag =
   | { mode: "draw"; start: Vec2; cur: Vec2 }
@@ -86,6 +98,7 @@ export class Editor {
   // DOM
   private status!: HTMLElement;
   private inspector!: HTMLElement;
+  private matchFields!: HTMLElement;
   private ta!: HTMLTextAreaElement;
   private snapBox!: HTMLInputElement;
   private nodesBox!: HTMLInputElement;
@@ -506,6 +519,33 @@ export class Editor {
       ctx.restore();
     }
 
+    // Spawn zones (gamemode data, not part of the world): team-colored
+    // translucent rects, brighter on the current level. This is their only
+    // rendering — they're invisible in play.
+    for (const zone of this.state.spawnZones) {
+      const col = TEAMS[zone.team]?.color ?? "#888888";
+      const onLevel = zone.z === this.player.z;
+      ctx.save();
+      ctx.translate(zone.pos.x, zone.pos.y);
+      ctx.rotate(zone.angle ?? 0);
+      ctx.globalAlpha = onLevel ? 0.16 : 0.06;
+      ctx.fillStyle = col;
+      ctx.fillRect(-zone.w / 2, -zone.h / 2, zone.w, zone.h);
+      ctx.globalAlpha = onLevel ? 0.85 : 0.3;
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 2 * z;
+      ctx.setLineDash([8 * z, 6 * z]);
+      ctx.strokeRect(-zone.w / 2, -zone.h / 2, zone.w, zone.h);
+      ctx.restore();
+      ctx.save();
+      ctx.globalAlpha = onLevel ? 0.9 : 0.35;
+      ctx.fillStyle = col;
+      ctx.font = `${12 * z}px monospace`;
+      ctx.textAlign = "center";
+      ctx.fillText(`${zone.team} spawn`, zone.pos.x, zone.pos.y);
+      ctx.restore();
+    }
+
     // hideWhenIn regions of the selected floor (or of a selected region's
     // parent): plain rectangle borders with their trigger z labeled.
     const rf =
@@ -738,6 +778,29 @@ export class Editor {
     viewRow.append(this.nodesBox, this.mk("span", "", "nav nodes (n)"));
     panel.append(viewRow);
 
+    // Match: gamemode picker + its per-mode parameters. Writes state.meta, which
+    // serializeLevel bakes into the level string (nothing for sandbox).
+    panel.append(this.header("match"));
+    const modeRow = this.mk("div", "display:flex;align-items:center;gap:6px;");
+    const modeSel = this.mk("select", Editor.INPUT_CSS + "flex:1;min-width:0;");
+    for (const key of Object.keys(GAMEMODES)) {
+      const opt = document.createElement("option");
+      opt.value = key;
+      opt.textContent = key;
+      modeSel.append(opt);
+    }
+    modeSel.value = this.state.meta.mode ?? "sandbox";
+    modeSel.onchange = () => {
+      // Sandbox is the implicit default: clear meta.mode so the level stays clean.
+      this.state.meta.mode = modeSel.value === "sandbox" ? undefined : modeSel.value;
+      this.renderMatchFields();
+    };
+    modeRow.append(this.mk("span", "opacity:0.8;", "mode"), modeSel);
+    panel.append(modeRow);
+    this.matchFields = this.mk("div", "display:flex;flex-direction:column;gap:4px;");
+    panel.append(this.matchFields);
+    this.renderMatchFields();
+
     // Inspector (rebuilt per selection).
     panel.append(this.header("selection"));
     // The infinite background floor has no rect to click in the world, so it
@@ -812,6 +875,50 @@ export class Editor {
     for (const c of Array.from(panel.children)) (c as HTMLElement).style.flexShrink = "0";
 
     document.body.append(panel);
+  }
+
+  /** A labeled number input bound to a getter/setter, for the match panel. */
+  private matchNumRow(
+    label: string,
+    get: () => number,
+    set: (v: number) => void,
+    opts: { min?: number; step?: number } = {},
+  ): HTMLElement {
+    const row = this.mk("div", "display:flex;align-items:center;justify-content:space-between;gap:6px;");
+    row.append(this.mk("span", "opacity:0.8;", label));
+    const inp = this.mk("input", Editor.INPUT_CSS + "width:80px;");
+    inp.type = "number";
+    if (opts.min !== undefined) inp.min = String(opts.min);
+    if (opts.step !== undefined) inp.step = String(opts.step);
+    inp.value = String(get());
+    inp.oninput = () => {
+      const v = parseFloat(inp.value);
+      if (Number.isFinite(v)) set(v);
+    };
+    row.append(inp);
+    return row;
+  }
+
+  /** (Re)build the mode-specific parameter inputs under the mode picker. */
+  private renderMatchFields(): void {
+    this.matchFields.replaceChildren();
+    if (this.state.meta.mode !== "tdm") return;
+
+    const t = (this.state.meta.tdm ??= defaultTdm());
+    this.matchFields.append(
+      this.matchNumRow("kill limit", () => t.killLimit, (v) => (t.killLimit = Math.max(1, Math.round(v))), { min: 1, step: 1 }),
+      this.matchNumRow("respawn delay", () => t.respawnDelay, (v) => (t.respawnDelay = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
+    );
+    for (const side of ["blue", "red"] as const) {
+      const c = t[side];
+      this.matchFields.append(this.header(`${side} team`));
+      this.matchFields.append(
+        this.matchNumRow("troops", () => c.troops, (v) => (c.troops = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
+        this.matchNumRow("skill 0-1", () => c.skill, (v) => (c.skill = Math.max(0, Math.min(1, v))), { min: 0, step: 0.1 }),
+        this.matchNumRow("equip 0-4", () => c.equip, (v) => (c.equip = Math.max(0, Math.min(4, Math.round(v)))), { min: 0, step: 1 }),
+      );
+    }
+    for (const child of Array.from(this.matchFields.children)) (child as HTMLElement).style.flexShrink = "0";
   }
 
   private setTool(def: EntityDef | null): void {
