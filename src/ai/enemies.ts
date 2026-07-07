@@ -81,6 +81,7 @@ export interface TroopOptions {
   reactionTime?: number;
   lambda?: number;
   strafeOffsets?: number[];
+  aimSigma?: number;
   skin?: string;
 }
 
@@ -93,6 +94,7 @@ export function makeTroop(pos: Vec2, o: TroopOptions): Robot {
     reactionTime: o.reactionTime,
     lambda: o.lambda,
     strafeOffsets: o.strafeOffsets,
+    aimSigma: o.aimSigma,
   };
   if (o.gun && GUN_SPECS[o.gun]) opts.gun = GUN_SPECS[o.gun];
   if (o.skin && SKINS[o.skin]) opts.skin = SKINS[o.skin];

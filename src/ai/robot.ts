@@ -5,7 +5,7 @@ import { M16, UNARMED, type GunSpec } from "../entities/guns.ts";
 import type { NavGraph } from "../world/nav.ts";
 import { profiler } from "../engine/profiler.ts";
 import { areHostile, type TeamId } from "../entities/team.ts";
-import { angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { add, angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, type World } from "../world/world.ts";
 
 /** Everything an AI gets to look at each tick. Built once per tick by main.ts
@@ -53,6 +53,9 @@ const TURN_GAIN = 0.05; // step grows with angular distance (spec: distance * 0.
 const TURN_FLOOR_DEG = 2; // ...plus a 1-degree floor so it always closes the gap
 const WANDER_MIN = 60; // ticks between idle random turns (~1s)
 const WANDER_MAX = 180; // ...up to ~3s
+/** How often the aim jitter offset is re-drawn while tracking one opponent
+ *  (ticks). Switching targets re-draws immediately (a fresh flick). */
+const AIM_RESAMPLE_TICKS = 20;
 
 /**
  * Rotate angle `a` toward angle `b` (both radians) the short way around, taking a
@@ -101,6 +104,10 @@ export interface RobotOptions {
    *  continuation, and firing still run every tick, so combat stays smooth.
    *  1 = plan every tick. */
   stagger?: number;
+  /** Aim jitter: the AI aims at a point drawn from N(target, aimSigma^2 * I) in
+   *  world px (resampled per plan tick), so it misses more up close than far —
+   *  like mouse wobble. 0 = pixel-perfect (the default for plain robots). */
+  aimSigma?: number;
 }
 
 const ROBOT_DEFAULTS: Required<RobotOptions> = {
@@ -115,6 +122,7 @@ const ROBOT_DEFAULTS: Required<RobotOptions> = {
   realGun: false,
   reactionTime: 0,
   stagger: 1,
+  aimSigma: 0,
 };
 
 /**
@@ -145,6 +153,11 @@ export class Robot extends Character {
   private readonly thinkPhase = Robot.nextPhase++;
   /** The target from the last plan tick, aimed at + fired on between plans. */
   protected lastTarget: Character | null = null;
+  /** Gaussian aim offset in world px (see RobotOptions.aimSigma), held between
+   *  re-draws; `aimResampleAt` is the tick the next re-draw is due. */
+  protected aimError: Vec2 = vec(0, 0);
+  private aimResampleAt = 0;
+  private readonly aimSigma: number;
   /** Sight-acquisition clock: counts up (to reactionTime) while a hostile is
    *  in view, and decays — rather than resetting — while none is, so a
    *  one-tick blink around a corner doesn't restart the clock but a
@@ -168,6 +181,7 @@ export class Robot extends Character {
     this.team = opts.team;
     this.reactionTime = opts.reactionTime;
     this.stagger = Math.max(1, Math.floor(opts.stagger));
+    this.aimSigma = opts.aimSigma;
     this.angle = Math.random() * Math.PI * 2;
     this.aimAngle = this.angle;
     this.wanderTarget = this.angle;
@@ -190,7 +204,9 @@ export class Robot extends Character {
     // turning stays smooth at 60 Hz regardless of stagger — no thinking, just
     // interpolation. A live target is tracked directly (pure geometry).
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
-    if (target) this.aimAngle = angleOf(sub(target.pos, this.pos));
+    // Aim at the (jittered) point, not the exact target — aimError is a per-plan
+    // Gaussian offset in world units, so the miss is bigger up close than far.
+    if (target) this.aimAngle = angleOf(sub(add(target.pos, this.aimError), this.pos));
     this.angle = turnToward(this.angle, this.aimAngle);
     this.forward = fromAngle(this.angle);
 
@@ -212,6 +228,16 @@ export class Robot extends Character {
       ? Math.min(this.seenFor + gain, this.reactionTime)
       : Math.max(this.seenFor - gain, 0);
     const target = spotted && this.seenFor >= this.reactionTime ? spotted : null;
+
+    // Aim jitter: hold a fixed offset, re-drawing only on a slow timer or the
+    // moment we switch which opponent we're aiming at (a fresh flick). Zero it
+    // with no target so a held/lost-sight aim doesn't drift.
+    if (!target || this.aimSigma <= 0) {
+      this.aimError = vec(0, 0);
+    } else if (target !== this.lastTarget || ai.tick >= this.aimResampleAt) {
+      this.aimError = this.sampleAimError();
+      this.aimResampleAt = ai.tick + AIM_RESAMPLE_TICKS;
+    }
 
     if (target) {
       // Track and shoot — think() eases the heading toward the target each tick.
@@ -239,6 +265,13 @@ export class Robot extends Character {
   /** Between plan ticks: cheap continuation of the last plan. The base Robot is
    *  stationary so there's nothing to do; movers override this to keep walking. */
   protected coast(_ai: AiContext): void {}
+
+  /** An isotropic 2D Gaussian offset with stddev `aimSigma` (Box–Muller). */
+  private sampleAimError(): Vec2 {
+    const r = this.aimSigma * Math.sqrt(-2 * Math.log(Math.max(1e-9, Math.random())));
+    const a = 2 * Math.PI * Math.random();
+    return vec(r * Math.cos(a), r * Math.sin(a));
+  }
 
   /** Subclass hook: which visible hostile to engage. The base Robot takes the
    *  physically closest; smarter AIs (TacOracle) weigh how quickly each could

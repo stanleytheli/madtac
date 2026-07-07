@@ -82,13 +82,14 @@ function shuffle<T>(a: T[]): T[] {
 
 /** Map a skill scalar in [0,1] to concrete TacOracle knobs: sharper reactions,
  *  braver bursts, and more lateral lane exploration as skill rises. */
-function skillParams(skill: number): { reactionTime: number; lambda: number; strafeOffsets: number[] } {
+function skillParams(skill: number): { reactionTime: number; lambda: number; strafeOffsets: number[]; aimSigma: number } {
   const s = clamp01(skill);
   const n = 2 + Math.round(4 * s); // 2..6 candidate offsets
   return {
     reactionTime: Math.round(30 - 27 * s), // 30 sluggish -> ~3 sharp
     lambda: 2.5 + 5.5 * s, // timid taps -> long brave bursts
     strafeOffsets: FULL_STRAFE.slice(FULL_STRAFE.length - n),
+    aimSigma: 48 - 42 * s, // ~48px wobble at skill 0 -> ~6px at skill 1
   };
 }
 
@@ -204,6 +205,7 @@ export class TeamDeathmatchMode implements Gamemode {
         reactionTime: p.reactionTime,
         lambda: p.lambda,
         strafeOffsets: p.strafeOffsets,
+        aimSigma: p.aimSigma,
       });
       agent.char = c;
       ctx.addCharacter(c);

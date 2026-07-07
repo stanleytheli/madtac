@@ -49,7 +49,7 @@
  */
 import type { Character } from "../entities/actor.ts";
 import { BODY_RADIUS, type Skin } from "../entities/character.ts";
-import { walkable } from "../world/nav.ts";
+import { walkable, zAt } from "../world/nav.ts";
 import { Oracle, type OracleOptions } from "./oracle.ts";
 import { profiler } from "../engine/profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
@@ -80,7 +80,7 @@ const STAND_TO_SHOOT_PENALTY = 2.0;
 /** Aim-settle floor: the trigger waits until the muzzle is within the aim
  *  budget of the target (or this, whichever is looser) — no spraying while
  *  the turn-toward swing is still carrying the gun onto them. */
-const MIN_AIM_TOLERANCE = deg2rad(3);
+const MIN_AIM_TOLERANCE = deg2rad(15);
 /** Default reaction time, ticks (~250ms — a decent human). See
  *  RobotOptions.reactionTime; 0 restores the launch-day inhuman slickness. */
 const DEFAULT_REACTION_TIME = 15;
@@ -98,6 +98,10 @@ const LOW_VISIBILITY = 2;
  *  past FRIENDLY_MARGIN's shadow, or a teammate dead in the lane would leave
  *  every near candidate equally blocked and the tie-break saying "stand". */
 const STRAFE_OFFSETS = [15, 30, 45, 60, 90, 120];
+/** Forward/back candidate distances along the opponent line. Stepping toward or
+ *  away can cross a stair midpoint and drop z — valid cover (breaks LoS) even
+ *  when there's nothing lateral to hide behind. Used for cover, not firing. */
+const AXIAL_OFFSETS = [40, 90];
 /** Re-score the candidate spots this often while committed to one. */
 const EVAL_TICKS = 10;
 /** Dodge rhythm: flip strafing direction every this many ticks (~0.5s). */
@@ -112,6 +116,10 @@ const LOW_VIS_PENALTY = 60;
 /** shootCost for a hostile with no lane from any local point: worse than any
  *  amount of strafing (max 120 + 60), so anyone shootable in place wins. */
 const NO_LANE_COST = 400;
+/** Weight on raw distance-to-target in target selection, added to shootCost
+ *  (which measures cost-to-first-shot). Breaks ties toward the closer enemy so
+ *  the AI doesn't fixate on a far but easily-shot one. */
+const BETA_DIST = 0.35;
 /** Cost edge a challenger needs over the current focus — don't flip-flop
  *  between two near-equal targets every re-evaluation. */
 const FOCUS_STICKINESS = 30;
@@ -124,6 +132,10 @@ const CHASE_EVAL_TICKS = 30;
  *  spray several degrees off the aim line, so grazing a friend's silhouette
  *  with the center line isn't good enough. */
 const FRIENDLY_MARGIN = BODY_RADIUS * 2;
+/** Anti-conga: how far ahead to look for a tailgated teammate while routing, and
+ *  how close to the travel line counts as "in front". */
+const CROWD_DIST = BODY_RADIUS * 2.2;
+const CROWD_MARGIN = BODY_RADIUS * 1.3;
 
 /** Is teammate `mate` downrange of a shot from `from` at `to` — in front of the
  *  muzzle (not behind it) and within `margin` of the line? Unlike a capsule test
@@ -165,6 +177,9 @@ interface Candidate {
   exposed: number;
   clear: number;
   score: number;
+  /** The level this spot resolves to (a fwd/back step may cross a stair). A
+   *  cross-z spot is cover but not a firing spot — strafeMove ignores it. */
+  z: number;
 }
 
 export class TacOracle extends Oracle {
@@ -243,9 +258,12 @@ export class TacOracle extends Oracle {
     } else if (target && dist(this.pos, target.pos) <= this.engageRange) {
       this.strafeMove(ai, target);
     } else {
-      // Out of sight (or too far to trade): Oracle graph-chase into range.
+      // Out of sight (or too far to trade): Oracle graph-chase into range —
+      // but peel aside first if tailgating a squadmate (breaks conga lines).
       this.strafeTarget = null;
-      this.navChase(ai, chase, target);
+      const blocker = this.blockingMate(ai, chase);
+      if (blocker) this.sidestep(ai, chase, blocker);
+      else this.navChase(ai, chase, target);
     }
   }
 
@@ -268,7 +286,14 @@ export class TacOracle extends Oracle {
     ) {
       return;
     }
-    if (this.strafeTarget) this.stepToward(this.strafeTarget);
+    if (this.strafeTarget) {
+      this.stepToward(this.strafeTarget);
+      return;
+    }
+    // Keep spacing between plan ticks too: peel aside if tailgating.
+    const chase = target ?? this.focus;
+    const blocker = chase ? this.blockingMate(ai, chase) : null;
+    if (chase && blocker) this.sidestep(ai, chase, blocker);
     else this.coastStep(ai); // continue the committed graph chase
   }
 
@@ -328,8 +353,12 @@ export class TacOracle extends Oracle {
   protected override shouldFire(ai: AiContext, target: Character | null): boolean {
     if (this.mode !== "shoot" || !this.fireOk || !target) return false;
     if (this.clickIn > 0) return false;
-    const d = dist(this.pos, target.pos);
-    let aimErr = Math.abs(angleOf(this.forward) - angleOf(sub(target.pos, this.pos)));
+    // Gate against the jittered aim point (where the muzzle actually points), so
+    // the trigger agrees with the aim — otherwise it'd fire the instant it's dead
+    // on the true target while the muzzle is off by aimError.
+    const aim = add(target.pos, this.aimError);
+    const d = dist(this.pos, aim);
+    let aimErr = Math.abs(angleOf(this.forward) - angleOf(sub(aim, this.pos)));
     if (aimErr > Math.PI) aimErr = 2 * Math.PI - aimErr;
     if (aimErr > Math.max(this.aimWidth(d), MIN_AIM_TOLERANCE)) return false;
     return this.laneClear(ai, target);
@@ -360,7 +389,7 @@ export class TacOracle extends Oracle {
     let bestCost = Infinity;
     for (const h of this.hostiles(ai)) {
       if (h.z !== this.z || !this.canSee(ai.world, h)) continue;
-      let cost = this.shootCost(ai, h);
+      let cost = this.shootCost(ai, h) + BETA_DIST * dist(this.pos, h.pos);
       if (h === this.focus) cost -= FOCUS_STICKINESS;
       if (cost < bestCost) {
         best = h;
@@ -435,8 +464,10 @@ export class TacOracle extends Oracle {
       if (!friendInLane && cur.clear > LOW_VISIBILITY) {
         this.strafeTarget = null; // lane is good: stand and shoot
       } else {
+        // Firing spots only: a cross-z (cover) candidate can't shoot from there.
         let best = cur;
         for (const c of cands) {
+          if (c.z !== this.z) continue;
           if (c.score > best.score) best = c;
           else if (c.score === best.score && Math.abs(c.offset) < Math.abs(best.offset)) best = c;
         }
@@ -492,17 +523,68 @@ export class TacOracle extends Oracle {
     return dist(this.pos, opponent.pos) > 1e-3 ? perp(norm(toOpp)) : vec(1, 0);
   }
 
+  /** The nearest squadmate directly ahead on the way to `chase` (within a short
+   *  lookahead of the travel line), or null. Reuses the anti-friendly-fire lane
+   *  test so followers don't tailgate into conga lines while routing. */
+  private blockingMate(ai: AiContext, chase: Character): Character | null {
+    const to = sub(chase.pos, this.pos);
+    const len = Math.hypot(to.x, to.y);
+    if (len < 1e-3) return null;
+    const probe = add(this.pos, scale(to, CROWD_DIST / len));
+    let best: Character | null = null;
+    let bestD = Infinity;
+    for (const m of this.teammates(ai, chase)) {
+      if (!friendInLine(this.pos, probe, m.pos, CROWD_MARGIN)) continue;
+      const d = dist(this.pos, m.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = m;
+      }
+    }
+    return best;
+  }
+
+  /** One lateral tick around `blocker` (toward the side it isn't on) instead of
+   *  tailgating it toward `chase`. Falls back to the other side if walled in. */
+  private sidestep(ai: AiContext, chase: Character, blocker: Character): void {
+    const to = sub(chase.pos, this.pos);
+    const dir = dist(this.pos, chase.pos) > 1e-3 ? norm(to) : vec(1, 0);
+    const side = perp(dir);
+    const rel = sub(blocker.pos, this.pos);
+    const away = dir.x * rel.y - dir.y * rel.x > 0 ? -1 : 1; // step off the blocker's side
+    for (const s of [away, -away]) {
+      const step = add(this.pos, scale(side, s * this.moveSpeed));
+      if (walkable(ai.world, this.pos, this.z, step, this.z)) {
+        this.vel = sub(step, this.pos);
+        this.pos = step;
+        return;
+      }
+    }
+  }
+
   /** The lateral spots to consider — here (always cands[0]) plus offsets to
    *  both sides — walkability-filtered on this z, each scored vs `opponent`. */
   private candidates(ai: AiContext, opponent: Character): Candidate[] {
     return profiler.measure("ai.candidates", () => {
       const side = this.sideAxis(opponent);
-      const out: Candidate[] = [this.scoreAt(ai, this.pos, 0, opponent)];
+      const out: Candidate[] = [this.scoreAt(ai, this.pos, 0, opponent, this.z)];
+      // Lateral strafe/cover spots (same level — firing lanes).
       for (const off of this.strafeOffsets) {
         for (const s of [-1, 1]) {
           const point = add(this.pos, scale(side, off * s));
           if (!walkable(ai.world, this.pos, this.z, point, this.z)) continue;
-          out.push(this.scoreAt(ai, point, off * s, opponent));
+          out.push(this.scoreAt(ai, point, off * s, opponent, this.z));
+        }
+      }
+      // Forward/back spots along the opponent line — may cross a stair and drop
+      // z, giving cover that breaks line of sight. Each resolves its own level.
+      const toOpp = dist(this.pos, opponent.pos) > 1e-3 ? norm(sub(opponent.pos, this.pos)) : vec(1, 0);
+      for (const off of AXIAL_OFFSETS) {
+        for (const s of [-1, 1]) {
+          const point = add(this.pos, scale(toOpp, off * s));
+          const cz = zAt(ai.world, point, this.z);
+          if (!walkable(ai.world, this.pos, this.z, point, cz)) continue;
+          out.push(this.scoreAt(ai, point, off * s, opponent, cz));
         }
       }
       return out;
@@ -512,14 +594,16 @@ export class TacOracle extends Oracle {
   /** Score one spot's firing lane onto the opponent, one ray per target point:
    *  obstacle-blocked 0, teammate in the ray -1, clear +1. All rays live on
    *  this.z, so an opponent on another level scores 0 everywhere. */
-  private scoreAt(ai: AiContext, from: Vec2, offset: number, opponent: Character): Candidate {
+  private scoreAt(ai: AiContext, from: Vec2, offset: number, opponent: Character, fromZ: number): Candidate {
     let exposed = 0;
     let clear = 0;
     let score = 0;
-    if (opponent.z === this.z) {
-      const mates = this.teammates(ai, opponent);
+    // On another level the opponent can't see (or be shot from) this spot: 0
+    // everywhere — pure cover, never a firing spot.
+    if (opponent.z === fromZ) {
+      const mates = this.teammates(ai, opponent, fromZ);
       for (const pt of targetPoints(opponent)) {
-        if (!losClear(ai.world, from, pt, this.z)) continue; // geometry: 0
+        if (!losClear(ai.world, from, pt, fromZ)) continue; // geometry: 0
         exposed += 1; // a friend in the ray is a bad lane, but never cover
         if (mates.some((m) => friendInLine(from, pt, m.pos, FRIENDLY_MARGIN))) {
           score -= 1;
@@ -529,17 +613,17 @@ export class TacOracle extends Oracle {
         }
       }
     }
-    return { point: from, offset, exposed, clear, score };
+    return { point: from, offset, exposed, clear, score, z: fromZ };
   }
 
-  /** Everyone on this level it must not shoot through (any non-hostile body). */
-  private teammates(ai: AiContext, opponent: Character): Character[] {
+  /** Everyone on level `z` it must not shoot through (any non-hostile body). */
+  private teammates(ai: AiContext, opponent: Character, z = this.z): Character[] {
     return ai.characters.filter(
       (c) =>
         c !== this &&
         c !== opponent &&
         c.hp > 0 &&
-        c.z === this.z &&
+        c.z === z &&
         !areHostile(this.team, c.team),
     );
   }
