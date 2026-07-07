@@ -11,13 +11,13 @@
  *   - new enemy flavour: add one entry to ENEMY_TYPES in enemies.ts
  *   - new entity kind:   add one EntityDef to ENTITY_DEFS below
  */
-import { Armor } from "./armor.ts";
-import { DEFAULT_ENEMY_GUN, ENEMY_TYPES, LEGACY_ENEMY_TYPES } from "./enemies.ts";
-import { Gun } from "./gun.ts";
-import { ArmorItem, GunItem } from "./item.ts";
-import { ARMOR_SPECS, GUN_SPECS, SKINS } from "./specs.ts";
-import { TEAMS } from "./team.ts";
-import { deg2rad, rad2deg, vec, type Vec2 } from "./vec.ts";
+import { Armor } from "../entities/armor.ts";
+import { DEFAULT_ENEMY_GUN, ENEMY_TYPES, LEGACY_ENEMY_TYPES } from "../ai/enemies.ts";
+import { Gun } from "../entities/gun.ts";
+import { ArmorItem, GunItem } from "../entities/item.ts";
+import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
+import { TEAMS } from "../entities/team.ts";
+import { deg2rad, rad2deg, vec, type Vec2 } from "../engine/vec.ts";
 import {
   WALL_T,
   makeCrate,

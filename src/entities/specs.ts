@@ -11,9 +11,9 @@ import type { Skin } from "./character.ts";
 import * as Characters from "./character.ts";
 import type { GunSpec } from "./guns.ts";
 import * as Guns from "./guns.ts";
-import * as Oracles from "./oracle.ts";
-import * as Robots from "./robot.ts";
-import * as TacOracles from "./tacoracle.ts";
+import * as Oracles from "../ai/oracle.ts";
+import * as Robots from "../ai/robot.ts";
+import * as TacOracles from "../ai/tacoracle.ts";
 
 /** Every exported GunSpec with a ground icon (icon-less specs like fists can't
  *  lie on the ground anyway). */

@@ -11,14 +11,14 @@
  * Lives apart from robot.ts so it can name every AI class (Robot, Oracle, ...)
  * without creating a module cycle with the subclasses.
  */
-import { Armor } from "./armor.ts";
-import type { EnemySpawn } from "./level.ts";
+import { Armor } from "../entities/armor.ts";
+import type { EnemySpawn } from "../world/level.ts";
 import { Oracle } from "./oracle.ts";
 import { ELITE_ROBOT_SKIN, Robot, type RobotOptions } from "./robot.ts";
-import { ARMOR_SPECS, GUN_SPECS, SKINS } from "./specs.ts";
+import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
 import { TacOracle, type TacOracleOptions } from "./tacoracle.ts";
-import { TEAMS, type TeamId } from "./team.ts";
-import { vec, type Vec2 } from "./vec.ts";
+import { TEAMS, type TeamId } from "../entities/team.ts";
+import { vec, type Vec2 } from "../engine/vec.ts";
 
 export interface EnemyTypeDef {
   /** Human-readable name (editor palette / inspector dropdown). */

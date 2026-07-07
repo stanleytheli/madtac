@@ -4,8 +4,8 @@ import { drawCharacter, type Skin } from "./character.ts";
 import { Gun } from "./gun.ts";
 import type { ArmorPen, GunSpec } from "./guns.ts";
 import { gunIcon } from "./item.ts";
-import { add, angleOf, deg2rad, len, scale, vec, type Vec2 } from "./vec.ts";
-import type { Hittable, World } from "./world.ts";
+import { add, angleOf, deg2rad, len, scale, vec, type Vec2 } from "../engine/vec.ts";
+import type { Hittable, World } from "../world/world.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
 

@@ -1,9 +1,9 @@
 import type { Character } from "./actor.ts";
 import { BODY_RADIUS, drawCharacter, type Skin } from "./character.ts";
-import { resolveCircleVsBox } from "./collision.ts";
+import { resolveCircleVsBox } from "../engine/collision.ts";
 import { UNARMED } from "./guns.ts";
-import { add, angleOf, fromAngle, perp, scale, type Vec2 } from "./vec.ts";
-import type { Obstacle } from "./world.ts";
+import { add, angleOf, fromAngle, perp, scale, type Vec2 } from "../engine/vec.ts";
+import type { Obstacle } from "../world/world.ts";
 
 const LIN_FRICTION = 0.9; // per-tick velocity retention as the corpse slides to rest
 const ANG_FRICTION = 0.92; // ...and for its spin

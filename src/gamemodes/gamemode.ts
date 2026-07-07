@@ -8,13 +8,13 @@
  * class + a line in GAMEMODES; the level's `meta.mode` (or a ?mode= override)
  * picks it at load.
  */
-import type { Character } from "../actor.ts";
-import type { Body } from "../body.ts";
-import type { LevelMeta, LevelState } from "../level.ts";
-import type { NavGraph } from "../nav.ts";
-import type { TeamId } from "../team.ts";
-import type { Vec2 } from "../vec.ts";
-import type { World } from "../world.ts";
+import type { Character } from "../entities/actor.ts";
+import type { Body } from "../entities/body.ts";
+import type { LevelMeta, LevelState } from "../world/level.ts";
+import type { NavGraph } from "../world/nav.ts";
+import type { TeamId } from "../entities/team.ts";
+import type { Vec2 } from "../engine/vec.ts";
+import type { World } from "../world/world.ts";
 import { SandboxMode } from "./sandbox.ts";
 import { TeamDeathmatchMode } from "./tdm.ts";
 

@@ -1,21 +1,21 @@
-import { Character } from "./actor.ts";
-import type { Body } from "./body.ts";
-import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
-import { worldAabb, type Box } from "./collision.ts";
-import { Editor } from "./editor.ts";
+import { Character } from "./entities/actor.ts";
+import type { Body } from "./entities/body.ts";
+import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
+import { worldAabb, type Box } from "./engine/collision.ts";
+import { Editor } from "./ui/editor.ts";
 import { Game } from "./game.ts";
 import { DEFAULT_MODE, GAMEMODES, type GamemodeHud } from "./gamemodes/gamemode.ts";
 import { resolveTdm, type TdmOverrides } from "./gamemodes/tdm.ts";
-import { Gun } from "./gun.ts";
-import * as Guns from "./guns.ts";
-import { ARMOR_SPECS, GUN_SPECS, loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./level.ts";
-import { LEVELS } from "./levels.ts";
-import { initInput, isDown, mouse } from "./input.ts";
-import { drawParticles } from "./particle.ts";
-import { disjointPolys, rectCorners, type Poly } from "./poly.ts";
-import { profiler } from "./profiler.ts";
-import { drawHud, HealthBar } from "./ui.ts";
-import { dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
+import { Gun } from "./entities/gun.ts";
+import * as Guns from "./entities/guns.ts";
+import { ARMOR_SPECS, GUN_SPECS, loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
+import { LEVELS } from "./world/levels.ts";
+import { initInput, isDown, mouse } from "./engine/input.ts";
+import { drawParticles } from "./engine/particle.ts";
+import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
+import { profiler } from "./engine/profiler.ts";
+import { drawHud, HealthBar } from "./ui/ui.ts";
+import { dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import {
   enclosureCap,
   floorVisible,
@@ -24,7 +24,7 @@ import {
   type Floor,
   type Obstacle,
   type Stairs,
-} from "./world.ts";
+} from "./world/world.ts";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
 const ctx = canvas.getContext("2d")!;
@@ -47,7 +47,7 @@ initInput(canvas);
 const params = new URLSearchParams(location.search);
 const EDIT = params.get("edit") === "true";
 
-// The map: ?level=<name> picks a JSON from src/levels/; with no param the
+// The map: ?level=<name> picks a JSON from src/world/levels/; with no param the
 // arena-teamfight map loads. (?edit composes: ?edit=true&level=foo edits it.)
 const DEFAULT_LEVEL = "tdm-arena-big";
 

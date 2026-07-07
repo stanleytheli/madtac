@@ -1,12 +1,12 @@
-import { Character } from "./actor.ts";
-import { BODY_RADIUS, type Skin } from "./character.ts";
-import { EnemyGun, Gun } from "./gun.ts";
-import { M16, UNARMED, type GunSpec } from "./guns.ts";
-import type { NavGraph } from "./nav.ts";
-import { profiler } from "./profiler.ts";
-import { areHostile, type TeamId } from "./team.ts";
-import { angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "./vec.ts";
-import { losClear, type World } from "./world.ts";
+import { Character } from "../entities/actor.ts";
+import { BODY_RADIUS, type Skin } from "../entities/character.ts";
+import { EnemyGun, Gun } from "../entities/gun.ts";
+import { M16, UNARMED, type GunSpec } from "../entities/guns.ts";
+import type { NavGraph } from "../world/nav.ts";
+import { profiler } from "../engine/profiler.ts";
+import { areHostile, type TeamId } from "../entities/team.ts";
+import { angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { losClear, type World } from "../world/world.ts";
 
 /** Everything an AI gets to look at each tick. Built once per tick by main.ts
  *  and shared by every thinking character. */

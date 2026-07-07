@@ -12,12 +12,12 @@
  * select · drag move · corner/edge handles resize · Del delete · Esc / right
  * click cancel tool & deselect · G toggle snap.
  */
-import type { Character } from "./actor.ts";
-import { BODY_RADIUS } from "./character.ts";
-import { pointInBox } from "./collision.ts";
-import { GAMEMODES } from "./gamemodes/gamemode.ts";
-import { DEFAULT_TDM } from "./gamemodes/tdm.ts";
-import { isDown, mouse, moveAxis } from "./input.ts";
+import type { Character } from "../entities/actor.ts";
+import { BODY_RADIUS } from "../entities/character.ts";
+import { pointInBox } from "../engine/collision.ts";
+import { GAMEMODES } from "../gamemodes/gamemode.ts";
+import { DEFAULT_TDM } from "../gamemodes/tdm.ts";
+import { isDown, mouse, moveAxis } from "../engine/input.ts";
 import {
   ENTITY_DEFS,
   applyLevel,
@@ -28,11 +28,11 @@ import {
   type FieldDef,
   type LevelState,
   type TdmConfig,
-} from "./level.ts";
-import { LEVELS } from "./levels.ts";
-import { TEAMS } from "./team.ts";
-import { MOVE_RADIUS, nodeEdge } from "./nav.ts";
-import { add, angleOf, deg2rad, dist, norm, rad2deg, rotate, scale, sub, vec, type Vec2 } from "./vec.ts";
+} from "../world/level.ts";
+import { LEVELS } from "../world/levels.ts";
+import { TEAMS } from "../entities/team.ts";
+import { MOVE_RADIUS, nodeEdge } from "../world/nav.ts";
+import { add, angleOf, deg2rad, dist, norm, rad2deg, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import {
   makeFloor,
   sortRenderDepth,
@@ -41,7 +41,7 @@ import {
   type Floor,
   type PathNode,
   type Region,
-} from "./world.ts";
+} from "../world/world.ts";
 
 const POINT_R = 45; // selection radius around point entities (items, spawns)
 const MIN_SIZE = 8; // smallest rect a drag-draw or resize can produce
@@ -811,7 +811,7 @@ export class Editor {
     panel.append(this.inspector);
     this.renderInspector();
 
-    // Level file I/O. Save downloads <name>.json — drop it into src/levels/ and
+    // Level file I/O. Save downloads <name>.json — drop it into src/world/levels/ and
     // it's bundled + bootable as ?level=<name> (default.json = the startup map).
     panel.append(this.header("level file"));
     const nameRow = this.mk("div", "display:flex;align-items:center;gap:4px;");
@@ -838,7 +838,7 @@ export class Editor {
     );
     panel.append(fileRow);
 
-    // Bundled levels (everything already in src/levels/), openable in place.
+    // Bundled levels (everything already in src/world/levels/), openable in place.
     const bundled = Object.keys(LEVELS);
     if (bundled.length > 0) {
       const openRow = this.mk("div", "display:flex;gap:4px;");
@@ -991,7 +991,7 @@ export class Editor {
   }
 
   /** Download the level as <name>.json (the browser can't write into the repo,
-   *  so the workflow is: save, then move the file into src/levels/). */
+   *  so the workflow is: save, then move the file into src/world/levels/). */
   private doSave(): void {
     const text = serializeLevel(this.state);
     const blob = new Blob([text + "\n"], { type: "application/json" });

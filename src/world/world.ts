@@ -1,5 +1,5 @@
-import { BODY_RADIUS } from "./character.ts";
-import { hasLineOfSight, pointInBox, type ObstacleGrid } from "./collision.ts";
+import { BODY_RADIUS } from "../entities/character.ts";
+import { hasLineOfSight, pointInBox, type ObstacleGrid } from "../engine/collision.ts";
 import {
   BLOOD,
   CRATE_SHRAPNEL,
@@ -8,10 +8,10 @@ import {
   updateParticles,
   type Particle,
   type ParticleStyle,
-} from "./particle.ts";
-import type { GroundItem } from "./item.ts";
-import type { ArmorPen } from "./guns.ts";
-import { add, dist, norm, rotate, scale, sub, vec, type Vec2 } from "./vec.ts";
+} from "../engine/particle.ts";
+import type { GroundItem } from "../entities/item.ts";
+import type { ArmorPen } from "../entities/guns.ts";
+import { add, dist, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at

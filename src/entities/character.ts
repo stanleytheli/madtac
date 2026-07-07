@@ -12,7 +12,7 @@ import {
   scale,
   sub,
   type Vec2,
-} from "./vec.ts";
+} from "../engine/vec.ts";
 
 export interface Skin {
   head: string;

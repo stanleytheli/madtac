@@ -12,16 +12,16 @@
  * nav graph are untouched by a reset, so the player object is reused (revived,
  * never replaced) and every reference main.ts holds to it stays valid.
  */
-import { Character, type Loadout } from "./actor.ts";
-import * as Armors from "./armor.ts";
-import { Body } from "./body.ts";
-import { BODY_RADIUS, DEFAULT_SKIN } from "./character.ts";
-import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./collision.ts";
+import { Character, type Loadout } from "./entities/actor.ts";
+import * as Armors from "./entities/armor.ts";
+import { Body } from "./entities/body.ts";
+import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
+import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./engine/collision.ts";
 import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
-import { Gun } from "./gun.ts";
-import * as Guns from "./guns.ts";
-import { isDown, mouse, moveAxis, pointer } from "./input.ts";
-import { ArmorItem, GunItem, separateItems, type GroundItem } from "./item.ts";
+import { Gun } from "./entities/gun.ts";
+import * as Guns from "./entities/guns.ts";
+import { isDown, mouse, moveAxis, pointer } from "./engine/input.ts";
+import { ArmorItem, GunItem, separateItems, type GroundItem } from "./entities/item.ts";
 import {
   ARMOR_SPECS,
   DEFAULT_PLAYER_PRIMARY,
@@ -29,14 +29,14 @@ import {
   GUN_SPECS,
   SKINS,
   type LevelState,
-} from "./level.ts";
-import { NavGraph } from "./nav.ts";
-import { profiler } from "./profiler.ts";
-import { Robot, type AiContext } from "./robot.ts";
-import type { TeamId } from "./team.ts";
-import { hudHitTest, type SlotKind } from "./ui.ts";
-import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./vec.ts";
-import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world.ts";
+} from "./world/level.ts";
+import { NavGraph } from "./world/nav.ts";
+import { profiler } from "./engine/profiler.ts";
+import { Robot, type AiContext } from "./ai/robot.ts";
+import type { TeamId } from "./entities/team.ts";
+import { hudHitTest, type SlotKind } from "./ui/ui.ts";
+import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ZOOM_EASE = 0.12;

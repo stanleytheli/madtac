@@ -1,5 +1,5 @@
 /**
- * The level folder registry. Every `src/levels/*.json` (as saved by the editor:
+ * The level folder registry. Every `src/world/levels/*.json` (as saved by the editor:
  * open ?edit=true, build, hit Save) is bundled automatically and available here
  * by filename — drop a file in the folder, no code changes needed.
  *

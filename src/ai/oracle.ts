@@ -16,12 +16,12 @@
  * beeline only within the shared node's cell, and a direct step never crosses
  * a stair midpoint (waypoint legs are the only sanctioned level changes).
  */
-import type { Character } from "./actor.ts";
-import type { Skin } from "./character.ts";
-import { walkable, zAt, type NavGraph } from "./nav.ts";
+import type { Character } from "../entities/actor.ts";
+import type { Skin } from "../entities/character.ts";
+import { walkable, zAt, type NavGraph } from "../world/nav.ts";
 import { Robot, type AiContext, type RobotOptions } from "./robot.ts";
-import { add, angleOf, dist, norm, scale, sub, vec, type Vec2 } from "./vec.ts";
-import type { World } from "./world.ts";
+import { add, angleOf, dist, norm, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import type { World } from "../world/world.ts";
 
 /** Teal seer. */
 export const ORACLE_SKIN: Skin = {

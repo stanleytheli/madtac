@@ -1,5 +1,5 @@
 import { add, rotate, sub, vec, type Vec2 } from "./vec.ts";
-import type { Obstacle } from "./world.ts";
+import type { Obstacle } from "../world/world.ts";
 
 /** The centered-rect shape every box test takes: obstacles, floors, stairs,
  *  regions. `angle` (radians, absent/0 = axis-aligned) rotates it about `pos` —

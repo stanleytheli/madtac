@@ -14,10 +14,10 @@
  * an n x n (from, to) -> (next hop, total path distance) table, so runtime path
  * queries are O(1). Build it once per level load; rebuild if nodes/walls change.
  */
-import { BODY_RADIUS } from "./character.ts";
-import { circleIntersectsBox } from "./collision.ts";
-import { profiler } from "./profiler.ts";
-import { dist, vec, type Vec2 } from "./vec.ts";
+import { BODY_RADIUS } from "../entities/character.ts";
+import { circleIntersectsBox } from "../engine/collision.ts";
+import { profiler } from "../engine/profiler.ts";
+import { dist, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, stairZ, type PathNode, type World } from "./world.ts";
 
 /** Max straight-line distance of a movable link. */

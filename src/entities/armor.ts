@@ -10,7 +10,7 @@
  * fraction that penetrates — `gun.armorPen[l{level}]`. When the armor's HP hits 0
  * it's destroyed and removed.
  */
-import { add, scale, type Vec2 } from "./vec.ts";
+import { add, scale, type Vec2 } from "../engine/vec.ts";
 
 /** Filled circle helper (no outline). */
 function circle(ctx: CanvasRenderingContext2D, c: Vec2, r: number, color: string): void {

@@ -8,11 +8,11 @@
  * and equipment quality, the kill limit, and the respawn delay all come from the
  * level's `meta.tdm` (with the defaults below when omitted).
  */
-import type { Character } from "../actor.ts";
-import { makeTroop } from "../enemies.ts";
-import type { TdmConfig, TeamConfig } from "../level.ts";
-import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../specs.ts";
-import { TEAMS } from "../team.ts";
+import type { Character } from "../entities/actor.ts";
+import { makeTroop } from "../ai/enemies.ts";
+import type { TdmConfig, TeamConfig } from "../world/level.ts";
+import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
+import { TEAMS } from "../entities/team.ts";
 import type { GameCtx, Gamemode, GamemodeHud, PlayerLoadout, PlayerRow, TeamScore } from "./gamemode.ts";
 
 /** Applied when a TDM level omits some or all of `meta.tdm`. */

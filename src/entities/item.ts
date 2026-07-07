@@ -1,9 +1,9 @@
 import type { Armor, ArmorSpec } from "./armor.ts";
-import { resolveCircleVsBox } from "./collision.ts";
+import { resolveCircleVsBox } from "../engine/collision.ts";
 import type { Gun } from "./gun.ts";
 import type { GunSpec } from "./guns.ts";
-import { add, len, scale, sub, vec, type Vec2 } from "./vec.ts";
-import type { Obstacle } from "./world.ts";
+import { add, len, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import type { Obstacle } from "../world/world.ts";
 
 /**
  * Something lying on the ground that the player can walk up to and grab with E.

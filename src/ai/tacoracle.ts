@@ -47,15 +47,15 @@
  * own level, and a candidate spot must be reachable without changing z (a
  * sidestep across a stair midpoint is a level change, not a strafe).
  */
-import type { Character } from "./actor.ts";
-import { BODY_RADIUS, type Skin } from "./character.ts";
-import { walkable } from "./nav.ts";
+import type { Character } from "../entities/actor.ts";
+import { BODY_RADIUS, type Skin } from "../entities/character.ts";
+import { walkable } from "../world/nav.ts";
 import { Oracle, type OracleOptions } from "./oracle.ts";
-import { profiler } from "./profiler.ts";
+import { profiler } from "../engine/profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
-import { areHostile } from "./team.ts";
-import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "./vec.ts";
-import { losClear } from "./world.ts";
+import { areHostile } from "../entities/team.ts";
+import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { losClear } from "../world/world.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
 export const TAC_ORACLE_SKIN: Skin = {

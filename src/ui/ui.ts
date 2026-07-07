@@ -3,12 +3,12 @@
  * restored), in CSS pixels around the screen center.
  */
 
-import type { Character } from "./actor.ts";
-import type { Armor } from "./armor.ts";
-import type { GamemodeHud, PlayerRow } from "./gamemodes/gamemode.ts";
-import type { Gun } from "./gun.ts";
-import { armorIcon, gunIcon } from "./item.ts";
-import type { Vec2 } from "./vec.ts";
+import type { Character } from "../entities/actor.ts";
+import type { Armor } from "../entities/armor.ts";
+import type { GamemodeHud, PlayerRow } from "../gamemodes/gamemode.ts";
+import type { Gun } from "../entities/gun.ts";
+import { armorIcon, gunIcon } from "../entities/item.ts";
+import type { Vec2 } from "../engine/vec.ts";
 
 /** Uniform downscale for the whole screen-space HUD (1 = original size). */
 export const UI_SCALE = 0.8;

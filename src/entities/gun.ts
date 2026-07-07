@@ -1,7 +1,7 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
 import type { GunSpec } from "./guns.ts";
-import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "./vec.ts";
-import { spawnBullet, type Hittable, type World } from "./world.ts";
+import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
+import { spawnBullet, type Hittable, type World } from "../world/world.ts";
 
 const PUNCH_TICKS = 10; // duration of one punch's hand thrust
 const PUNCH_REACH = 35; // world px the punching hand lunges forward at full extension
