@@ -44,14 +44,24 @@ export function resolveTdm(o?: TdmOverrides): TdmConfig {
 /** Each side's body skin (SKINS keys), so blue and red read at a glance. */
 const TEAM_SKIN: Record<"blue" | "red", string> = { blue: "BLUE_SKIN", red: "RED_SKIN" };
 
-/** Equipment ladder: tier -> a set of possible guns (rolled per agent, uniform)
- *  plus that tier's armor (GUN_SPECS / ARMOR_SPECS keys). */
-const EQUIP: { guns: string[]; armor?: string }[] = [
-  { guns: ["M9"] },
-  { guns: ["USPS", "M9"], armor: "ARMOR_L1" },
-  { guns: ["M16", "AK47"], armor: "ARMOR_L2" },
-  { guns: ["AK47", "M16", "M249"], armor: "ARMOR_L3" },
-  { guns: ["M249", "AK47"], armor: "ARMOR_L4" },
+/** Equipment ladder: per tier, pools for the primary slot, the secondary slot,
+ *  and armor (GUN_SPECS / ARMOR_SPECS keys). A loadout roll draws one of each at
+ *  random, so slots hold class-appropriate guns (rifle up top, sidearm below)
+ *  and armor varies too. A `""` entry means "empty" — include it in a pool to
+ *  roll a chance of no armor / no gun (e.g. `["", "ARMOR_L1"]` = 50/50 L1 or
+ *  bare). An empty pool `[]` always yields empty.
+ *
+ *  `both: false` hands out only ONE weapon — a random draw from a randomly
+ *  chosen pool, dropped in the equipped (primary) slot so a lone sidearm is
+ *  still in hand. The "spawn with an M9 and scramble for something better" tier.
+ *  Omitted/`true` = a full primary + secondary kit. */
+const EQUIP: { primaries: string[]; secondaries: string[]; armors: string[]; both?: boolean }[] = [
+  { primaries: ["M9"], secondaries: [], armors: [], both: false },
+  { primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["", "ARMOR_L1"], both: false },
+  { primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["ARMOR_L1", "ARMOR_L2"] },
+  { primaries: ["M16", "AK47"], secondaries: ["Deagle"], armors: ["ARMOR_L2", "ARMOR_L3"] },
+  { primaries: ["AK47", "M249"], secondaries: ["Deagle", "Golden_Deagle"], armors: ["ARMOR_L3", "ARMOR_L4"] },
+  { primaries: ["M249", "AK47", "M16"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
 ];
 
 /** Callsign pool. Shuffled once per match then handed out in order, so names are
@@ -93,10 +103,26 @@ function skillParams(skill: number): { reactionTime: number; lambda: number; str
   };
 }
 
-/** Roll a random gun from an equip tier (plus that tier's armor). */
-function rollEquip(tier: number): { gun: string; armor?: string } {
+/** Roll a random loadout from an equip tier: a primary + secondary + armor, each
+ *  drawn from its pool — or, when the tier is `both: false`, just one weapon
+ *  (random pool, equipped slot) plus armor. Any field may be empty. */
+function rollLoadout(tier: number): PlayerLoadout {
   const t = EQUIP[Math.max(0, Math.min(EQUIP.length - 1, Math.round(tier)))];
-  return { gun: pick(t.guns), armor: t.armor };
+  const armor = t.armors.length ? pick(t.armors) : undefined;
+  if (t.both === false) {
+    // One weapon, from a randomly chosen non-empty pool, placed in ITS class's
+    // slot — a lone sidearm goes to the secondary slot (Character then equips it
+    // since there's no primary), not jammed into the primary slot.
+    const pools = [t.primaries, t.secondaries].filter((p) => p.length > 0);
+    const gun = pools.length ? pick(pick(pools)) : undefined;
+    if (!gun) return { armor };
+    return GUN_SPECS[gun]?.primary ? { primary: gun, armor } : { secondary: gun, armor };
+  }
+  return {
+    primary: t.primaries.length ? pick(t.primaries) : undefined,
+    secondary: t.secondaries.length ? pick(t.secondaries) : undefined,
+    armor,
+  };
 }
 
 /** A persistent combatant identity — outlives the Character objects it drives,
@@ -108,8 +134,8 @@ interface Agent {
   skill: number;
   /** Equipment tier. Bots re-roll a gun+armor from it every (re)spawn. */
   equip: number;
-  /** The player's chosen kit (sampled once at start, then edited at the respawn
-   *  screen). Bots have none — they re-roll from `equip` each life. */
+  /** The player's chosen kit, edited at the respawn screen. Empty (no weapon) =
+   *  "auto": re-roll from `equip` each spawn like a bot. Bots leave this unset. */
   loadout?: PlayerLoadout;
   kills: number;
   deaths: number;
@@ -161,12 +187,12 @@ export class TeamDeathmatchMode implements Gamemode {
     ctx.player.team = "blue";
     const blueSkin = SKINS[TEAM_SKIN.blue];
     if (blueSkin) ctx.player.skin = blueSkin;
-    // The player's kit is sampled from blue's tier ONCE; thereafter it persists
-    // and is edited at the respawn screen (setPlayerLoadout).
-    const pe = rollEquip(this.cfg.blue.equip);
+    // The player starts on an EMPTY loadout = "auto": with neither weapon chosen
+    // it re-rolls a fresh kit from blue's tier every spawn, exactly like a bot.
+    // Once the respawn screen sets either weapon, that fixed kit is used instead.
     const player: Agent = {
       name: nextName(), team: "blue", isPlayer: true, skill: this.cfg.blue.skill,
-      equip: this.cfg.blue.equip, loadout: { primary: pe.gun, armor: pe.armor },
+      equip: this.cfg.blue.equip, loadout: {},
       kills: 0, deaths: 0, char: ctx.player,
     };
     this.agents.push(player);
@@ -187,9 +213,10 @@ export class TeamDeathmatchMode implements Gamemode {
     makeBots("red", this.cfg.red, this.cfg.red.troops);
   }
 
-  /** (Re)spawn an agent's character at one of its team's zones. The player is
-   *  re-armed to its chosen `loadout` (persists across lives); a bot re-rolls a
-   *  fresh gun+armor from its equip tier every spawn. */
+  /** (Re)spawn an agent's character at one of its team's zones. Bots re-roll a
+   *  fresh full kit from their equip tier every spawn; the player does the same
+   *  while its loadout is empty ("auto"), or gets its fixed chosen kit once a
+   *  weapon is set at the respawn screen. */
   private spawnAgent(ctx: GameCtx, agent: Agent): void {
     const sp = ctx.spawnPoint(agent.team);
     if (!sp) {
@@ -197,15 +224,18 @@ export class TeamDeathmatchMode implements Gamemode {
       return;
     }
     if (agent.isPlayer) {
-      ctx.revivePlayer(sp.pos, sp.z, agent.loadout);
+      // Empty loadout (neither weapon chosen) = auto: re-roll a fresh kit each
+      // spawn like a bot; choosing either weapon at the respawn screen locks it.
+      const auto = !agent.loadout?.primary && !agent.loadout?.secondary;
+      ctx.revivePlayer(sp.pos, sp.z, auto ? rollLoadout(agent.equip) : agent.loadout);
       agent.char = ctx.player;
     } else {
-      const e = rollEquip(agent.equip); // sampled fresh each life
+      const e = rollLoadout(agent.equip); // full kit, sampled fresh each life
       const p = skillParams(agent.skill);
       const c = makeTroop(sp.pos, {
         team: agent.team,
         z: sp.z,
-        gun: e.gun,
+        gun: e.primary || e.secondary, // wield the primary (rifle); sidearm if that's all
         armor: e.armor,
         skin: TEAM_SKIN[agent.team],
         reactionTime: p.reactionTime,

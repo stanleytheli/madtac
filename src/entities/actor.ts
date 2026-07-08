@@ -70,7 +70,7 @@ export class Character {
       secondary: loadout.secondary ?? null,
       hand: loadout.hand,
     };
-    this.equipped = loadout.primary ? "primary" : "hand";
+    this.equipped = loadout.primary ? "primary" : loadout.secondary ? "secondary" : "hand";
   }
 
   /**
@@ -91,7 +91,7 @@ export class Character {
     this.slots.primary = loadout.primary ?? null;
     this.slots.secondary = loadout.secondary ?? null;
     this.slots.hand = loadout.hand;
-    this.equipped = loadout.primary ? "primary" : "hand";
+    this.equipped = loadout.primary ? "primary" : loadout.secondary ? "secondary" : "hand";
     this.gun.resetDraw();
   }
 
