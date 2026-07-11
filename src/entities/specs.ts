@@ -9,6 +9,8 @@ import type { ArmorSpec } from "./armor.ts";
 import * as Armors from "./armor.ts";
 import type { Skin } from "./character.ts";
 import * as Characters from "./character.ts";
+import type { UtilitySpec } from "./consumable.ts";
+import * as Consumables from "./consumable.ts";
 import type { GunSpec } from "./guns.ts";
 import * as Guns from "./guns.ts";
 import * as Oracles from "../ai/oracle.ts";
@@ -21,6 +23,14 @@ export const GUN_SPECS: Record<string, GunSpec> = {};
 for (const [k, v] of Object.entries(Guns)) {
   if (v && typeof v === "object" && "armorPen" in v && (v as GunSpec).icon) {
     GUN_SPECS[k] = v as GunSpec;
+  }
+}
+
+/** Every exported UtilitySpec (belt/slot-4 consumables), keyed by export name. */
+export const UTILITY_SPECS: Record<string, UtilitySpec> = {};
+for (const [k, v] of Object.entries(Consumables)) {
+  if (v && typeof v === "object" && "useTime" in v && "maxCarry" in v && "apply" in v) {
+    UTILITY_SPECS[k] = v as UtilitySpec;
   }
 }
 

@@ -40,6 +40,7 @@
   {"kind":"node","x":120,"y":480,"z":-1},
   {"kind":"node","x":280,"y":480,"z":-1},
   {"kind":"gun","x":-120,"y":-80,"z":0,"gun":"Deagle"},
+  {"kind":"gun","x":-150,"y":-80,"z":0,"gun":"MP220"},
   {"kind":"gun","x":80,"y":120,"z":0,"gun":"M249"},
   {"kind":"gun","x":760,"y":-100,"z":-1,"gun":"Golden_Deagle"},
   {"kind":"armor","x":-40,"y":90,"z":0,"armor":"ARMOR_L1"},

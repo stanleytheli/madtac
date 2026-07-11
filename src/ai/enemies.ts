@@ -12,6 +12,7 @@
  * without creating a module cycle with the subclasses.
  */
 import { Armor } from "../entities/armor.ts";
+import type { UtilityStack } from "../entities/consumable.ts";
 import type { EnemySpawn } from "../world/level.ts";
 import { Oracle } from "./oracle.ts";
 import { ELITE_ROBOT_SKIN, Robot, type RobotOptions } from "./robot.ts";
@@ -83,6 +84,9 @@ export interface TroopOptions {
   strafeOffsets?: number[];
   aimSigma?: number;
   skin?: string;
+  /** Belt consumables to carry — bots don't use them, but they drop on death so
+   *  healing items circulate on the map. */
+  utilities?: UtilityStack[];
 }
 
 /** Build a TacOracle soldier for a gamemode (TDM). Bypasses the authored-spawn
@@ -100,6 +104,7 @@ export function makeTroop(pos: Vec2, o: TroopOptions): Robot {
   if (o.skin && SKINS[o.skin]) opts.skin = SKINS[o.skin];
   const r = new TacOracle(vec(pos.x, pos.y), opts);
   if (o.armor && ARMOR_SPECS[o.armor]) r.equipArmor(new Armor(ARMOR_SPECS[o.armor]));
+  if (o.utilities) for (const u of o.utilities) r.addUtility(u.spec, u.count);
   return r;
 }
 

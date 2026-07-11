@@ -9,6 +9,7 @@
  * level's `meta.tdm` (with the defaults below when omitted).
  */
 import type { Character } from "../entities/actor.ts";
+import { BANDAGE, SYRINGE, type UtilityStack } from "../entities/consumable.ts";
 import { makeTroop } from "../ai/enemies.ts";
 import type { TdmConfig, TeamConfig } from "../world/level.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
@@ -123,6 +124,16 @@ function rollLoadout(tier: number): PlayerLoadout {
     secondary: t.secondaries.length ? pick(t.secondaries) : undefined,
     armor,
   };
+}
+
+/** A small random belt for a bot: 0–2 bandages and a ~40% chance of a syringe.
+ *  Bots never use these, but they drop on death, so med kits circulate. */
+function rollUtilities(): UtilityStack[] {
+  const out: UtilityStack[] = [];
+  const bandages = Math.floor(Math.random() * 3); // 0..2
+  if (bandages > 0) out.push({ spec: BANDAGE, count: bandages });
+  if (Math.random() < 0.4) out.push({ spec: SYRINGE, count: 1 });
+  return out;
 }
 
 /** A persistent combatant identity — outlives the Character objects it drives,
@@ -242,6 +253,7 @@ export class TeamDeathmatchMode implements Gamemode {
         lambda: p.lambda,
         strafeOffsets: p.strafeOffsets,
         aimSigma: p.aimSigma,
+        utilities: rollUtilities(),
       });
       agent.char = c;
       ctx.addCharacter(c);

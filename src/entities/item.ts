@@ -1,5 +1,6 @@
 import type { Armor, ArmorSpec } from "./armor.ts";
 import { resolveCircleVsBox } from "../engine/collision.ts";
+import type { UtilitySpec } from "./consumable.ts";
 import type { Gun } from "./gun.ts";
 import type { GunSpec } from "./guns.ts";
 import { add, len, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
@@ -82,6 +83,19 @@ export function armorIcon(spec: ArmorSpec): HTMLImageElement | null {
   return img.complete && img.naturalWidth > 0 ? img : null;
 }
 
+/** The decoded icon for a utility spec, or null if it hasn't loaded yet. The
+ *  utility icon field carries its own extension (svg/png), unlike gun/armor. */
+export function utilityIcon(spec: UtilitySpec): HTMLImageElement | null {
+  return assetImage(spec.icon);
+}
+
+/** A decoded /assets image by full filename (incl. extension), or null until it
+ *  loads. For icons that aren't tied to a spec (e.g. the fists/melee glyph). */
+export function assetImage(file: string): HTMLImageElement | null {
+  const img = getImage(`/assets/${file}`);
+  return img.complete && img.naturalWidth > 0 ? img : null;
+}
+
 // Lazy, cached <img> loader. Drawing is skipped until the image has decoded.
 const imageCache = new Map<string, HTMLImageElement>();
 function getImage(src: string): HTMLImageElement {
@@ -124,6 +138,39 @@ function drawGroundIcon(
   if (img && img.complete && img.naturalWidth > 0) {
     const w = img.naturalWidth * scale;
     const h = img.naturalHeight * scale;
+    ctx.translate(pos.x, pos.y);
+    ctx.rotate(rotation);
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+  }
+  ctx.restore();
+}
+
+/**
+ * Like drawGroundIcon, but scales the sprite so its longer side is `targetPx`
+ * world px (rather than a fixed sprite-scale). Used for icons whose source size
+ * we don't hand-tune per asset (utilities: mixed svg/png).
+ */
+function drawGroundIconFit(
+  ctx: CanvasRenderingContext2D,
+  pos: Vec2,
+  iconSrc: string,
+  backdropRadius: number,
+  targetPx: number,
+  rotation: number,
+  alpha = 1,
+): void {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, backdropRadius, 0, Math.PI * 2);
+  ctx.fill();
+
+  const img = iconSrc ? getImage(iconSrc) : null;
+  if (img && img.complete && img.naturalWidth > 0) {
+    const k = targetPx / Math.max(img.naturalWidth, img.naturalHeight);
+    const w = img.naturalWidth * k;
+    const h = img.naturalHeight * k;
     ctx.translate(pos.x, pos.y);
     ctx.rotate(rotation);
     ctx.drawImage(img, -w / 2, -h / 2, w, h);
@@ -221,5 +268,52 @@ export class ArmorItem implements GroundItem {
 
   draw(ctx: CanvasRenderingContext2D): void {
     drawGroundIcon(ctx, this.pos, this.iconSrc, ARMOR_BACKDROP, ARMOR_ICON_SCALE, 0, flashAlpha(this.age, this.lifetime));
+  }
+}
+
+const UTILITY_ITEM_RADIUS = 28; // smaller footprint than a gun/armor
+const UTILITY_BACKDROP = ICON_SIZE * 0.4;
+const UTILITY_TARGET = 46; // longest-side world px on the ground
+
+/** A stack of a utility consumable lying on the ground (a death drop or a manual
+ *  drop). Carries its spec and how many are in the pile. */
+export class UtilityItem implements GroundItem {
+  pos: Vec2;
+  vel: Vec2;
+  z: number;
+  readonly radius = UTILITY_ITEM_RADIUS;
+  age = 0;
+  lifetime: number | null = null;
+  spec: UtilitySpec;
+  count: number;
+  private iconSrc: string;
+
+  constructor(pos: Vec2, spec: UtilitySpec, count = 1, vel: Vec2 = vec(0, 0), z = 0) {
+    this.pos = pos;
+    this.spec = spec;
+    this.count = count;
+    this.vel = vel;
+    this.z = z;
+    this.iconSrc = `/assets/${spec.icon}`;
+  }
+
+  get label(): string {
+    return this.count > 1 ? `${this.spec.name} (${this.count})` : this.spec.name;
+  }
+
+  /** Slide toward rest, pushing out of solid obstacles on its own level. */
+  update(obstacles: readonly Obstacle[]): void {
+    this.age += 1;
+    this.pos = add(this.pos, this.vel);
+    this.vel = scale(this.vel, ITEM_FRICTION);
+    for (const o of obstacles) {
+      if (o.z !== this.z) continue;
+      this.pos = resolveCircleVsBox(this.pos, UTILITY_ITEM_RADIUS, o);
+    }
+  }
+
+  draw(ctx: CanvasRenderingContext2D): void {
+    // Upright (no 45° tilt): these icons read best axis-aligned.
+    drawGroundIconFit(ctx, this.pos, this.iconSrc, UTILITY_BACKDROP, UTILITY_TARGET, 0, flashAlpha(this.age, this.lifetime));
   }
 }

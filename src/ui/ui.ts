@@ -7,7 +7,7 @@ import type { Character } from "../entities/actor.ts";
 import type { Armor } from "../entities/armor.ts";
 import type { GamemodeHud, PlayerRow } from "../gamemodes/gamemode.ts";
 import type { Gun } from "../entities/gun.ts";
-import { armorIcon, gunIcon } from "../entities/item.ts";
+import { armorIcon, assetImage, gunIcon, utilityIcon } from "../entities/item.ts";
 import type { Vec2 } from "../engine/vec.ts";
 
 /** Uniform downscale for the whole screen-space HUD (1 = original size). */
@@ -184,8 +184,10 @@ export class HealthBar {
   }
 
 
-  /** Draw centered horizontally at `cx`, with the bar's vertical center at `cy`. */
-  draw(ctx: CanvasRenderingContext2D, cx: number, cy: number, frac: number): void {
+  /** Draw centered horizontally at `cx`, with the bar's vertical center at `cy`.
+   *  `projFrac` (> `frac`) draws a green "incoming heal" bar behind the fill,
+   *  showing where an active regen (a syringe) will bring HP to. */
+  draw(ctx: CanvasRenderingContext2D, cx: number, cy: number, frac: number, projFrac = 0): void {
     const f = clamp01(frac);
     const { width, height, radius, pad } = this.style;
     const x = cx - width / 2;
@@ -208,6 +210,13 @@ export class HealthBar {
         this.displayFrac += (frac - this.displayFrac) * 0.05
         this.displayFrac -= 0.0005
       }
+    }
+
+    // Projected-heal bar (behind the fill): green up to where regen will land.
+    const p = clamp01(projFrac);
+    if (p > f) {
+      const projW = (width - pad * 2) * p;
+      fillSquircle(ctx, x + pad, y + pad, projW, innerH, innerR, "rgba(91, 214, 107, 0.65)");
     }
 
     const fillW = (width - pad * 2) * f;
@@ -269,7 +278,10 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   const healthCy = h - 28 - healthBar.style.height / 2;
   let topEdge = healthCy - healthBar.style.height / 2;
 
-  healthBar.draw(ctx, barCx, healthCy, player.hp / player.maxHp);
+  // Green "incoming heal" projection from an active regen (syringe).
+  const projFrac =
+    player.regenTicks > 0 ? (player.hp + player.regenRate * player.regenTicks) / player.maxHp : 0;
+  healthBar.draw(ctx, barCx, healthCy, player.hp / player.maxHp, projFrac);
 
   const armor = player.armor;
   const armorCy = topEdge - BAR_GAP - armorBar.style.height / 2;
@@ -281,9 +293,10 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
 
   drawAmmo(ctx, gun, barCx, topEdge - 12);
 
-  // Crosshair tracks the mouse; the reload/draw timer sits just under it.
+  // Crosshair tracks the mouse; the reload/draw/heal timer sits just under it.
   drawCrosshair(ctx, mouse.x, mouse.y);
-  if (gun.reloading) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
+  if (player.usingUtility) drawProgressBar(ctx, mouse.x, mouse.y + 30, player.useProgress, { fill: "#5bd66b" });
+  else if (gun.reloading) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
   else if (gun.drawing) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.drawProgress);
 
   drawLoadout(ctx, player, w, h);
@@ -416,9 +429,11 @@ const SLOT_H = 72;
 const SLOT_GAP = 8;
 const SLOT_MARGIN = 22;
 const ARMOR_SQ = 68; // side length of the square armor slot
+const HALF_H = 54; // height of the compact melee/utility row (slots 3 & 4)
 
-/** Which panel slot a point is over (see hudHitTest). */
-export type SlotKind = "primary" | "secondary" | "armor";
+/** Which panel slot a point is over (see hudHitTest). The weapon slots (1/2) and
+ *  armor are droppable; melee (3, fists) is not; utility (4) drops one. */
+export type SlotKind = "primary" | "secondary" | "armor" | "melee" | "utility";
 
 interface SlotRect {
   kind: SlotKind;
@@ -438,13 +453,17 @@ function loadoutRects(player: Character, w: number, h: number): SlotRect[] {
   const wx = w - SLOT_MARGIN - SLOT_W; // weapon-column left edge
   const rects: SlotRect[] = [];
 
-  const weapons: SlotKind[] = ["primary", "secondary"];
-  const stackH = SLOT_H * weapons.length + SLOT_GAP * (weapons.length - 1);
-  let y = h - SLOT_MARGIN - stackH;
-  for (const kind of weapons) {
-    rects.push({ kind, x: wx, y, w: SLOT_W, h: SLOT_H });
-    y += SLOT_H + SLOT_GAP;
-  }
+  // Bottom-aligned column, top to bottom: primary (1), secondary (2), then a
+  // compact row holding melee (3) and utility (4) side-by-side at half width.
+  const halfW = (SLOT_W - SLOT_GAP) / 2;
+  const halfY = h - SLOT_MARGIN - HALF_H;
+  const secY = halfY - SLOT_GAP - SLOT_H;
+  const priY = secY - SLOT_GAP - SLOT_H;
+
+  rects.push({ kind: "primary", x: wx, y: priY, w: SLOT_W, h: SLOT_H });
+  rects.push({ kind: "secondary", x: wx, y: secY, w: SLOT_W, h: SLOT_H });
+  rects.push({ kind: "melee", x: wx, y: halfY, w: halfW, h: HALF_H });
+  rects.push({ kind: "utility", x: wx + halfW + SLOT_GAP, y: halfY, w: halfW, h: HALF_H });
 
   if (player.armor) {
     rects.push({
@@ -459,15 +478,102 @@ function loadoutRects(player: Character, w: number, h: number): SlotRect[] {
 }
 
 function drawLoadout(ctx: CanvasRenderingContext2D, player: Character, w: number, h: number): void {
+  const eq = player.equippedSlot;
   for (const r of loadoutRects(player, w, h)) {
     if (r.kind === "armor") {
       drawArmorSlot(ctx, r.x, r.y, r.w, player.armor!);
-    } else {
+    } else if (r.kind === "primary" || r.kind === "secondary") {
       const gun = player.slots[r.kind];
       const key = r.kind === "primary" ? "1" : "2";
-      drawLoadoutSlot(ctx, r.x, r.y, key, gun, gun !== null && gun === player.gun);
+      drawLoadoutSlot(ctx, r.x, r.y, key, gun, eq === r.kind);
+    } else if (r.kind === "melee") {
+      drawMeleeSlot(ctx, r.x, r.y, r.w, r.h, eq === "hand");
+    } else {
+      drawUtilitySlot(ctx, r.x, r.y, r.w, r.h, player, eq === "utility");
     }
   }
+}
+
+/** Shared chrome for a compact (half-size) slot: backdrop, equipped outline, and
+ *  the hotkey badge in the top-left. Returns nothing — the caller fills content. */
+function drawCompactSlotChrome(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  key: string,
+  equipped: boolean,
+): void {
+  fillSquircle(ctx, x, y, w, h, 8, SQUIRCLE_BG);
+  if (equipped) {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.roundRect(x + 1, y + 1, w - 2, h - 2, 8);
+    ctx.stroke();
+  }
+  ctx.save();
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+  ctx.font = uiFont("bold 13px");
+  ctx.fillStyle = equipped ? "#ffffff" : "rgba(255, 255, 255, 0.55)";
+  ctx.fillText(key, x + 8, y + 6);
+  ctx.restore();
+}
+
+/** Draw a fitted icon centered in a box (longest side = `maxPx`). */
+function drawIconCentered(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  cx: number,
+  cy: number,
+  maxPx: number,
+): void {
+  const k = maxPx / Math.max(img.naturalWidth, img.naturalHeight);
+  const iw = img.naturalWidth * k;
+  const ih = img.naturalHeight * k;
+  ctx.drawImage(img, cx - iw / 2, cy - ih / 2, iw, ih);
+}
+
+/** Slot 3 — melee (the fists). Icon + hotkey; no name/count (there's one melee). */
+function drawMeleeSlot(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  equipped: boolean,
+): void {
+  drawCompactSlotChrome(ctx, x, y, w, h, "3", equipped);
+  const img = assetImage("fists.svg");
+  if (img) drawIconCentered(ctx, img, x + w / 2, y + h / 2 + 4, h * 0.6);
+}
+
+/** Slot 4 — utility belt. The selected item's icon, hotkey, and a carry count. */
+function drawUtilitySlot(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  player: Character,
+  equipped: boolean,
+): void {
+  drawCompactSlotChrome(ctx, x, y, w, h, "4", equipped);
+  const spec = player.currentUtility;
+  if (!spec) return;
+  const img = utilityIcon(spec);
+  if (img) drawIconCentered(ctx, img, x + w / 2, y + h / 2 + 4, h * 0.6);
+
+  // Carry count, bottom-right.
+  ctx.save();
+  ctx.textBaseline = "bottom";
+  ctx.textAlign = "right";
+  ctx.font = uiFont("bold 14px");
+  ctx.fillStyle = equipped ? "#ffffff" : "rgba(255, 255, 255, 0.8)";
+  ctx.fillText(`x${player.currentUtilityCount}`, x + w - 8, y + h - 6);
+  ctx.restore();
 }
 
 /**

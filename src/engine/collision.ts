@@ -70,6 +70,35 @@ export function resolveCircleVsBox(pos: Vec2, r: number, o: Obstacle): Vec2 {
   return fromLocal(vec(lp.x, b.maxy + r), o);
 }
 
+/** Outward unit normal from the nearest surface of box `o` toward `pos`, plus
+ *  the distance from `pos` to that surface. This is the *true* surface normal at
+ *  `pos` (pointing away from the closest feature — a face or a corner vertex), so
+ *  sliding perpendicular to it follows the box's rounded outline and rounds
+ *  convex corners cleanly. When `pos` is inside the box, dist is 0 and the normal
+ *  is the shallowest-axis escape. Computed in the box's local frame, mapped back. */
+export function boxSurfaceNormal(pos: Vec2, o: Box): { n: Vec2; dist: number } {
+  const lp = toLocal(pos, o);
+  const b = boxAabb(o);
+  const cx = Math.max(b.minx, Math.min(lp.x, b.maxx));
+  const cy = Math.max(b.miny, Math.min(lp.y, b.maxy));
+  const dx = lp.x - cx;
+  const dy = lp.y - cy;
+  const d2 = dx * dx + dy * dy;
+  if (d2 > 1e-9) {
+    const d = Math.sqrt(d2);
+    const ln = vec(dx / d, dy / d); // local-frame outward normal (toward the corner/edge)
+    return { n: o.angle ? rotate(ln, o.angle) : ln, dist: d };
+  }
+  // Center is inside the box: escape along the shallowest axis.
+  const left = lp.x - b.minx;
+  const right = b.maxx - lp.x;
+  const top = lp.y - b.miny;
+  const bottom = b.maxy - lp.y;
+  const m = Math.min(left, right, top, bottom);
+  const ln = m === left ? vec(-1, 0) : m === right ? vec(1, 0) : m === top ? vec(0, -1) : vec(0, 1);
+  return { n: o.angle ? rotate(ln, o.angle) : ln, dist: 0 };
+}
+
 /** Push a circle out of another circle if overlapping. Returns the corrected center. */
 export function resolveCircleVsCircle(pos: Vec2, r: number, other: Vec2, otherR: number): Vec2 {
   const dx = pos.x - other.x;

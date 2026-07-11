@@ -12,16 +12,17 @@
  * nav graph are untouched by a reset, so the player object is reused (revived,
  * never replaced) and every reference main.ts holds to it stays valid.
  */
-import { Character, type Loadout } from "./entities/actor.ts";
+import { Character, USE_SPEED_MUL, type Loadout } from "./entities/actor.ts";
 import * as Armors from "./entities/armor.ts";
 import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
-import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./engine/collision.ts";
+import { startingUtilities } from "./entities/consumable.ts";
+import { boxSurfaceNormal, circleIntersectsBox, hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./engine/collision.ts";
 import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
 import { isDown, mouse, moveAxis, pointer } from "./engine/input.ts";
-import { ArmorItem, GunItem, separateItems, type GroundItem } from "./entities/item.ts";
+import { ArmorItem, GunItem, separateItems, UtilityItem, type GroundItem } from "./entities/item.ts";
 import {
   ARMOR_SPECS,
   DEFAULT_PLAYER_PRIMARY,
@@ -35,11 +36,34 @@ import { profiler } from "./engine/profiler.ts";
 import { Robot, type AiContext } from "./ai/robot.ts";
 import type { TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
-import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { add, dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ZOOM_EASE = 0.12;
+const MOVE_MARCH = 4; // px between swept-collision samples along one tick's move
+
+/** Clip velocity `v` so it points into none of the `normals` (each an outward
+ *  unit surface normal): repeatedly remove any into-surface component until it
+ *  satisfies all of them or a few passes give up. With one plane this is a plain
+ *  slide; with two opposing planes (a gap's two jambs) a perpendicular motion is
+ *  untouched — it threads through; with two converging planes (a wedge) it
+ *  collapses toward zero — it stops. */
+function clipToPlanes(v: Vec2, normals: readonly Vec2[]): Vec2 {
+  let r = v;
+  for (let pass = 0; pass < 4; pass++) {
+    let clean = true;
+    for (const n of normals) {
+      const into = r.x * n.x + r.y * n.y;
+      if (into < -1e-6) {
+        r = vec(r.x - into * n.x, r.y - into * n.y);
+        clean = false;
+      }
+    }
+    if (clean) break;
+  }
+  return r;
+}
 
 /** The gun for a player slot: "none" = empty, omitted/unknown = the default. */
 function slotGun(key: string | undefined, fallback: string): Gun | undefined {
@@ -69,6 +93,7 @@ export class Game implements GameCtx {
   private rmbDown = false;
   private eDown = false;
   private qDown = false;
+  private fourDown = false;
   private jDown = false;
   private kDown = false;
   private enterDown = false;
@@ -108,6 +133,7 @@ export class Game implements GameCtx {
       primary: slotGun(spawn?.primary, DEFAULT_PLAYER_PRIMARY),
       secondary: slotGun(spawn?.secondary, DEFAULT_PLAYER_SECONDARY),
       hand: new Gun(Guns.UNARMED),
+      utilities: startingUtilities(),
     };
   }
 
@@ -172,6 +198,7 @@ export class Game implements GameCtx {
         primary: loadout.primary ? slotGun(loadout.primary, DEFAULT_PLAYER_PRIMARY) : undefined,
         secondary: loadout.secondary ? slotGun(loadout.secondary, DEFAULT_PLAYER_SECONDARY) : undefined,
         hand: new Gun(Guns.UNARMED),
+        utilities: startingUtilities(),
       };
       armorKey = loadout.armor;
     } else {
@@ -181,6 +208,7 @@ export class Game implements GameCtx {
         primary: clone(this.player.slots.primary),
         secondary: clone(this.player.slots.secondary),
         hand: new Gun(Guns.UNARMED),
+        utilities: startingUtilities(),
       };
       armorKey = this.level.playerSpawn[0]?.armor;
     }
@@ -218,11 +246,19 @@ export class Game implements GameCtx {
     return Math.max(0.3, abs ?? this.player.gun.spec.zoom + delta);
   }
 
-  /** Push `c` out of walls, and (unless `vsChars` is false) out of other
-   *  characters. The player is resolved with `vsChars=false` so bots never shove
-   *  it — bots yield to the player instead, on their own per-tick resolve pass
-   *  (which always runs), so walking into a bot pushes the bot, not the player. */
+  /** Resolve `c`'s movement this tick as a swept collide-and-slide, then clean up
+   *  any residual overlap with a gentle push-out. Because the sweep runs from the
+   *  pre-move (wall-clear) position `c.pos - c.vel` and stops/slides at the first
+   *  contact, a body can never pass THROUGH a wall or another body — at any speed
+   *  or across a stair z-flip. `vsChars=false` (the player) collides only with
+   *  walls: it plows through bots (which yield on their own resolve pass) and is
+   *  never shoved by them. */
   private resolveCollisions(c: Character, vsChars = true): void {
+    const from = sub(c.pos, c.vel);
+    c.pos = this.slide(from, c.vel, c, vsChars);
+
+    // Residual push-out (no-op when already clear): separates resting crowds and
+    // frees anything left embedded by a spawn / shove / stair edge.
     let pos = c.pos;
     for (let i = 0; i < 2; i++) {
       for (const o of this.world.obstacles) {
@@ -237,6 +273,121 @@ export class Game implements GameCtx {
       }
     }
     c.pos = pos;
+  }
+
+  /** Collide-and-slide from `from` along `v`: sweep toward the target; when a
+   *  surface stops it short, take the *true* outward normal at the point of
+   *  contact and project the untravelled remainder onto its tangent (drop only
+   *  the into-surface component), then sweep again. Because the normal is the
+   *  real surface normal at the body's own position — a face's, or a corner
+   *  vertex's — the tangent hugs the box's rounded outline, so it slides along
+   *  slanted walls AND rounds convex corners instead of catching on them. A few
+   *  iterations resolve corners (concave ones dead-end and stop). */
+  private slide(from: Vec2, v: Vec2, mover: Character, vsChars: boolean): Vec2 {
+    let pos = from;
+    let rem = v;
+    for (let iter = 0; iter < 4; iter++) {
+      if (Math.abs(rem.x) < 1e-6 && Math.abs(rem.y) < 1e-6) break;
+      const target = add(pos, rem);
+      const hit = this.sweep(pos, target, mover, vsChars);
+      const advanced = hit.x !== pos.x || hit.y !== pos.y;
+      pos = hit;
+      if (hit.x === target.x && hit.y === target.y) break; // reached target, unobstructed
+      const normals = this.contactNormals(pos, mover, vsChars);
+      if (normals.length === 0) break;
+      // Clip the remainder against EVERY contact at once, so threading a gap
+      // between two corners keeps the through-component (each jamb cancels the
+      // wobble toward the other) while a real wedge collapses it to a stop.
+      const clipped = clipToPlanes(sub(target, hit), normals);
+      const progressed = clipped.x * rem.x + clipped.y * rem.y; // still heading roughly forward?
+      rem = clipped;
+      if (!advanced && progressed < 1e-6) break; // wedged: no motion this pass, none left
+    }
+    return pos;
+  }
+
+  /** Every outward surface normal in contact range of `at` — walls (the real
+   *  closest-feature normal from `boxSurfaceNormal`, so it follows rounded
+   *  corners at any orientation) and, for bodies, the centre-line normal. `at`
+   *  is the last clear point, so the surface that stopped the sweep sits about a
+   *  march step past it; search out to r + one step to include it. Multiple
+   *  entries mean a multi-contact spot (a doorway's two jambs, a corner+face). */
+  private contactNormals(at: Vec2, mover: Character, vsChars: boolean): Vec2[] {
+    const range = BODY_RADIUS + MOVE_MARCH + 1e-3;
+    const normals: Vec2[] = [];
+    for (const o of this.world.obstacles) {
+      if (o.z !== mover.z) continue;
+      const s = boxSurfaceNormal(at, o);
+      if (s.dist < range) normals.push(s.n);
+    }
+    if (vsChars) {
+      for (const other of this.characters) {
+        if (other === mover || other.z !== mover.z || other.hp <= 0) continue;
+        const dx = at.x - other.pos.x;
+        const dy = at.y - other.pos.y;
+        const d = Math.hypot(dx, dy);
+        if (d > 1e-6 && d - BODY_RADIUS < range) normals.push(vec(dx / d, dy / d));
+      }
+    }
+    return normals;
+  }
+
+  /** Advance `mover`'s body from `from` toward `to`, returning the furthest point
+   *  along the segment that's clear (sampled every MOVE_MARCH px, so it can't
+   *  skip past a thin obstacle). Stops flush against the first contact. */
+  private sweep(from: Vec2, to: Vec2, mover: Character, vsChars: boolean): Vec2 {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / MOVE_MARCH));
+    let last = from;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const p = vec(from.x + dx * t, from.y + dy * t);
+      if (this.solidAt(p, from, mover, vsChars)) return last;
+      last = p;
+    }
+    return last;
+  }
+
+  /** Is `p` blocked for `mover`? A wall (its inflated body overlaps one) blocks
+   *  outright; another body blocks only when `p` is inside it AND closer to it
+   *  than `from` was — so resting contact and tangential slides pass (crowds
+   *  don't lock up) but you can't drive into or tunnel through another body. */
+  private solidAt(p: Vec2, from: Vec2, mover: Character, vsChars: boolean): boolean {
+    const z = mover.z;
+    const grid = this.world.grid;
+    if (grid) {
+      if (grid.solidCircle(p, BODY_RADIUS, z)) return true;
+    } else {
+      for (const o of this.world.obstacles) {
+        if (o.z === z && circleIntersectsBox(p, BODY_RADIUS, o)) return true;
+      }
+    }
+    if (vsChars) {
+      const diam2 = (2 * BODY_RADIUS) ** 2;
+      for (const other of this.characters) {
+        if (other === mover || other.z !== z || other.hp <= 0) continue;
+        const ox = p.x - other.pos.x;
+        const oy = p.y - other.pos.y;
+        const d2 = ox * ox + oy * oy;
+        if (d2 >= diam2) continue; // not overlapping this body
+        const fx = from.x - other.pos.x;
+        const fy = from.y - other.pos.y;
+        if (d2 < fx * fx + fy * fy) return true; // moving deeper into it
+      }
+    }
+    return false;
+  }
+
+  /** Flip `c`'s z at any stair midpoint it's standing on. Called right after a
+   *  character moves and before it resolves collisions, so it always resolves
+   *  against the level it actually ended up on — crossing the midpoint used to
+   *  resolve against the OLD level, then snap (or clip through a wall) next tick. */
+  private applyStairZ(c: Character): void {
+    for (const s of this.world.stairs) {
+      const z = stairZ(s, c.pos);
+      if (z !== null) c.z = z;
+    }
   }
 
   /** Nearest ground item on the player's level, within reach and line of sight. */
@@ -270,6 +421,12 @@ export class Game implements GameCtx {
     } else if (item instanceof ArmorItem) {
       const prev = this.player.equipArmor(item.armor);
       if (prev) this.world.items.push(new ArmorItem(here(), prev, this.tossVel(), this.player.z));
+    } else if (item instanceof UtilityItem) {
+      // Take what fits (capped at the spec's maxCarry); leave any remainder on
+      // the ground so a full belt doesn't silently swallow the pile.
+      const took = this.player.addUtility(item.spec, item.count);
+      item.count -= took;
+      if (item.count > 0) this.world.items.push(item); // re-add the leftover stack
     }
     this.interactable = null;
   }
@@ -285,6 +442,11 @@ export class Game implements GameCtx {
     if (kind === "armor") {
       const a = this.player.dropArmor();
       if (a) this.world.items.push(new ArmorItem(at, a, this.tossVel(), this.player.z));
+    } else if (kind === "utility") {
+      const spec = this.player.dropCurrentUtility();
+      if (spec) this.world.items.push(new UtilityItem(at, spec, 1, this.tossVel(), this.player.z));
+    } else if (kind === "melee") {
+      // Fists — nothing to drop.
     } else {
       const g = this.player.dropSlot(kind);
       if (g) this.world.items.push(new GunItem(at, g, this.tossVel(), this.player.z));
@@ -316,6 +478,12 @@ export class Game implements GameCtx {
         const ai = new ArmorItem(vec(c.pos.x, c.pos.y), a, vel, c.z);
         ai.lifetime = itemTtl;
         this.world.items.push(ai);
+      }
+      for (const u of c.dropUtilities()) {
+        const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
+        const ui = new UtilityItem(vec(c.pos.x, c.pos.y), u.spec, u.count, vel, c.z);
+        ui.lifetime = itemTtl;
+        this.world.items.push(ui);
       }
       const body = Body.fromCharacter(c);
       body.lifetime = bodyTtl;
@@ -359,13 +527,27 @@ export class Game implements GameCtx {
       if (isDown("3")) this.player.equip("hand");
       if (isDown("r")) this.player.reload();
 
+      // Slot 4: equip the belt from another slot; press again on it to cycle to
+      // the next carried utility (so a player can hold several kinds).
+      if (isDown("4")) {
+        if (!this.fourDown) {
+          if (this.player.equippedSlot === "utility") this.player.cycleUtility();
+          else this.player.equipUtility();
+        }
+        this.fourDown = true;
+      } else this.fourDown = false;
+
       if (isDown("e")) {
         if (!this.eDown && this.interactable) this.pickUp(this.interactable);
         this.eDown = true;
       } else this.eDown = false;
 
       if (isDown("q")) {
-        if (!this.qDown) this.dropEquippedWeapon();
+        if (!this.qDown) {
+          // Drop what's in hand: the held utility, or else the equipped weapon.
+          if (this.player.holdingUtility) this.dropFromHud("utility");
+          else this.dropEquippedWeapon();
+        }
         this.qDown = true;
       } else this.qDown = false;
 
@@ -393,16 +575,10 @@ export class Game implements GameCtx {
       this.player.forward = this.aimForward();
       let speedMult = this.player.gun.spec.speed;
       if (this.player.armor) speedMult *= this.player.armor.spec.speed;
+      if (this.player.usingUtility) speedMult *= USE_SPEED_MUL; // slowed mid-heal
       this.player.move(moveAxis(), speedMult);
-      this.resolveCollisions(this.player, false); // walls block the player; bots yield to it
-    }
-
-    // Stair transitions: crossing a staircase's midpoint flips your level.
-    for (const c of this.characters) {
-      for (const s of this.world.stairs) {
-        const z = stairZ(s, c.pos);
-        if (z !== null) c.z = z;
-      }
+      this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
+      this.resolveCollisions(this.player, false); // ...so it's against the level it ends on
     }
 
     profiler.begin("surfaces");
@@ -410,11 +586,21 @@ export class Game implements GameCtx {
     profiler.end("surfaces");
 
     for (const c of this.characters) c.tickWeapon();
+    // Belt/status upkeep (heal-use timer, regen). Runs before bullets resolve, so
+    // a regen tick can't revive someone the same tick a lethal shot lands.
+    for (const c of this.characters) c.tickStatus();
 
-    const f = this.player.gun.spec.fire;
-    if (canControl && f) {
-      const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
-      if (wantFire) this.player.fire(this.world);
+    if (canControl) {
+      if (this.player.holdingUtility) {
+        // Click begins using the selected healing item (not a punch/shot).
+        if (pointer.down && !this.prevDown) this.player.startUse();
+      } else {
+        const f = this.player.gun.spec.fire;
+        if (f) {
+          const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
+          if (wantFire) this.player.fire(this.world);
+        }
+      }
     }
     this.prevDown = pointer.down;
 
@@ -427,7 +613,9 @@ export class Game implements GameCtx {
 
     profiler.begin("collide");
     for (const c of this.characters) {
-      if (c !== this.player) this.resolveCollisions(c);
+      if (c === this.player) continue;
+      this.applyStairZ(c); // flip z after this tick's move, before resolving (see applyStairZ)
+      this.resolveCollisions(c);
     }
     profiler.end("collide");
 

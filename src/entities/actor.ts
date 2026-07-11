@@ -1,10 +1,11 @@
 import type { Armor } from "./armor.ts";
 import type { TeamId } from "./team.ts";
 import { drawCharacter, type Skin } from "./character.ts";
+import type { UtilitySpec, UtilityStack } from "./consumable.ts";
 import { Gun } from "./gun.ts";
-import type { ArmorPen, GunSpec } from "./guns.ts";
-import { gunIcon } from "./item.ts";
-import { add, angleOf, deg2rad, len, scale, vec, type Vec2 } from "../engine/vec.ts";
+import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.ts";
+import { gunIcon, utilityIcon } from "./item.ts";
+import { add, angleOf, deg2rad, len, mid, perp, scale, vec, type Vec2 } from "../engine/vec.ts";
 import type { Hittable, World } from "../world/world.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
@@ -22,11 +23,23 @@ const FRICTION = 0.80; // velocity retained per tick
 const maxSpeedFor = (spec: GunSpec): number => (ACCEL * spec.speed) / (1 - FRICTION);
 
 export type SlotName = "primary" | "secondary" | "hand";
+/** What can be held: a weapon slot, or the utility belt (slot 4). */
+export type EquipSlot = SlotName | "utility";
+
+/** Multiplier on move speed while a utility use is in progress (like reloading,
+ *  but heavier — you're patching yourself up). Applied by the session (game.ts). */
+export const USE_SPEED_MUL = 0.6;
+
+/** Longest-side size (world px) of a utility icon held in hand. Separate from the
+ *  ground-item size so held items can read bigger — tune here. */
+const UTILITY_HELD_SIZE = 50;
 
 export interface Loadout {
   primary?: Gun;
   secondary?: Gun;
   hand: Gun; // always present (fists / melee); the fallback slot
+  /** Belt/slot-4 consumables the character spawns holding (copied on spawn). */
+  utilities?: UtilityStack[];
 }
 
 /**
@@ -60,7 +73,23 @@ export class Character {
   armor: Armor | null = null;
 
   readonly slots: Record<SlotName, Gun | null>;
-  private equipped: SlotName;
+  private equipped: EquipSlot;
+
+  /** The belt: utility consumables carried (slot 4), and which one is selected.
+   *  Distinct kinds only — each stack is one spec with a count (see consumable.ts). */
+  utilities: UtilityStack[] = [];
+  utilityIndex = 0;
+
+  /** Utility-use timer (a timed action like reloading): ticks left, its total,
+   *  and the spec being used (whose effect lands when the timer hits 0). */
+  useTicks = 0;
+  private useTotal = 0;
+  private usingSpec: UtilitySpec | null = null;
+
+  /** Regen status effect (syringe): heals `regenRate` HP per tick while
+   *  `regenTicks` remain. Set/refreshed by applyRegen; does not stack. */
+  regenTicks = 0;
+  regenRate = 0;
 
   constructor(pos: Vec2, skin: Skin, loadout: Loadout) {
     this.pos = pos;
@@ -70,6 +99,7 @@ export class Character {
       secondary: loadout.secondary ?? null,
       hand: loadout.hand,
     };
+    this.utilities = (loadout.utilities ?? []).map((u) => ({ spec: u.spec, count: u.count }));
     this.equipped = loadout.primary ? "primary" : loadout.secondary ? "secondary" : "hand";
   }
 
@@ -91,13 +121,51 @@ export class Character {
     this.slots.primary = loadout.primary ?? null;
     this.slots.secondary = loadout.secondary ?? null;
     this.slots.hand = loadout.hand;
+    this.utilities = (loadout.utilities ?? []).map((u) => ({ spec: u.spec, count: u.count }));
+    this.utilityIndex = 0;
+    this.cancelUse();
+    this.regenTicks = 0;
+    this.regenRate = 0;
     this.equipped = loadout.primary ? "primary" : loadout.secondary ? "secondary" : "hand";
     this.gun.resetDraw();
   }
 
-  /** The currently held gun (never null: the hand slot is always filled). */
+  /** The currently held gun (never null: the hand slot is always filled). While
+   *  the utility belt is equipped there's no gun, so this falls back to the fists
+   *  (used for movement speed / camera zoom / hand rendering). */
   get gun(): Gun {
+    if (this.equipped === "utility") return this.slots.hand!;
     return this.slots[this.equipped] ?? this.slots.hand!;
+  }
+
+  /** Which slot is currently held (for the HUD's slot highlight + input). */
+  get equippedSlot(): EquipSlot {
+    return this.equipped;
+  }
+
+  /** True while the utility belt (slot 4) is held — click uses, doesn't fire. */
+  get holdingUtility(): boolean {
+    return this.equipped === "utility";
+  }
+
+  /** The selected belt item (slot 4), or null if the belt is empty. */
+  get currentUtility(): UtilitySpec | null {
+    return this.utilities[this.utilityIndex]?.spec ?? null;
+  }
+
+  /** How many of the selected belt item are carried. */
+  get currentUtilityCount(): number {
+    return this.utilities[this.utilityIndex]?.count ?? 0;
+  }
+
+  /** True while a utility use is in progress (drives the timer bar + move slow). */
+  get usingUtility(): boolean {
+    return this.useTicks > 0;
+  }
+
+  /** Use progress in [0, 1] (0 just started, 1 done). 0 when not using. */
+  get useProgress(): number {
+    return this.useTotal > 0 ? 1 - this.useTicks / this.useTotal : 0;
   }
 
   /** Current movement speed (world px/tick). */
@@ -105,15 +173,110 @@ export class Character {
     return len(this.vel);
   }
 
-  /** Switch to a slot. No-op if that slot is empty; resets spray and cancels any reload. */
-  equip(slot: SlotName): void {
-    if (slot === this.equipped || this.slots[slot] === null) return;
-    const old = this.slots[this.equipped];
+  /** Switch to a slot. No-op if it's empty (a gun slot with no gun, or the utility
+   *  belt with nothing on it); resets spray, cancels any reload, and aborts a
+   *  utility use in progress. */
+  equip(slot: EquipSlot): void {
+    if (slot === this.equipped) return;
+    if (slot === "utility") {
+      if (this.utilities.length === 0) return;
+    } else if (this.slots[slot] === null) {
+      return;
+    }
+    const old = this.equipped === "utility" ? null : this.slots[this.equipped];
     old?.resetRecoil();
     old?.cancelReload(); // switching weapons aborts a reload in progress
+    this.cancelUse(); // ...and aborts a healing use in progress
     this.equipped = slot;
     // this.gun.resetRecoil();
-    this.gun.resetDraw();
+    if (slot !== "utility") this.gun.resetDraw();
+  }
+
+  /** Equip the utility belt (slot 4). No-op if nothing is carried. */
+  equipUtility(): void {
+    this.equip("utility");
+  }
+
+  /** Advance to the next carried utility, wrapping. Cancels a use in progress
+   *  (the item under the cursor changed). No-op with fewer than two kinds. */
+  cycleUtility(): void {
+    if (this.utilities.length === 0) return;
+    this.utilityIndex = (this.utilityIndex + 1) % this.utilities.length;
+    this.cancelUse();
+  }
+
+  /** Begin using the selected utility. No-op unless the belt is held, something
+   *  is selected, and no use is already running. */
+  startUse(): void {
+    if (this.equipped !== "utility" || this.useTicks > 0) return;
+    const cur = this.utilities[this.utilityIndex];
+    if (!cur) return;
+    this.usingSpec = cur.spec;
+    this.useTotal = cur.spec.useTime;
+    this.useTicks = cur.spec.useTime;
+  }
+
+  /** Abort a use in progress without consuming the item. */
+  cancelUse(): void {
+    this.useTicks = 0;
+    this.useTotal = 0;
+    this.usingSpec = null;
+  }
+
+  /** Set/refresh a regen status: heal `rate` HP per tick for `ticks`. Reapplying
+   *  refreshes the duration at the new rate but does NOT add to it (no stacking). */
+  applyRegen(rate: number, ticks: number): void {
+    this.regenRate = rate;
+    this.regenTicks = ticks;
+  }
+
+  /** Add up to `n` of a utility spec to the belt (capped at its maxCarry).
+   *  Returns how many were actually taken (0 if already full). */
+  addUtility(spec: UtilitySpec, n = 1): number {
+    const stack = this.utilities.find((u) => u.spec === spec);
+    const have = stack?.count ?? 0;
+    const take = Math.max(0, Math.min(n, spec.maxCarry - have));
+    if (take === 0) return 0;
+    if (stack) stack.count += take;
+    else this.utilities.push({ spec, count: take });
+    return take;
+  }
+
+  /** Drop one of the selected utility (HUD right-click), returning its spec, or
+   *  null if the belt is empty. */
+  dropCurrentUtility(): UtilitySpec | null {
+    const cur = this.utilities[this.utilityIndex];
+    if (!cur) return null;
+    const spec = cur.spec;
+    this.consumeUtility(spec);
+    return spec;
+  }
+
+  /** All carried utilities (for death drops), clearing the belt. */
+  dropUtilities(): UtilityStack[] {
+    const out = this.utilities.slice();
+    this.utilities = [];
+    this.utilityIndex = 0;
+    return out;
+  }
+
+  /** Remove one of `spec` from the belt; drop the stack when it empties, keeping
+   *  the selection valid and falling back to fists if the belt is now empty. */
+  private consumeUtility(spec: UtilitySpec): void {
+    const idx = this.utilities.findIndex((u) => u.spec === spec);
+    if (idx < 0) return;
+    this.utilities[idx].count -= 1;
+    if (this.utilities[idx].count > 0) return;
+    this.utilities.splice(idx, 1);
+    if (this.utilities.length === 0) {
+      this.utilityIndex = 0;
+      if (this.equipped === "utility") {
+        this.equipped = "hand"; // nothing left to hold — bring the fists up
+        this.gun.resetDraw();
+      }
+    } else if (this.utilityIndex >= this.utilities.length) {
+      this.utilityIndex = this.utilities.length - 1;
+    }
   }
 
   /**
@@ -139,7 +302,7 @@ export class Character {
    * world, or null if nothing droppable is equipped (fists can't be dropped).
    */
   dropEquipped(): Gun | null {
-    if (this.equipped === "hand") return null; // fists/melee aren't droppable
+    if (this.equipped === "hand" || this.equipped === "utility") return null; // not a droppable gun
     const g = this.slots[this.equipped];
     if (!g) return null;
     g.cancelReload();
@@ -215,6 +378,30 @@ export class Character {
     this.gun.tick();
   }
 
+  /** Per-tick belt/status upkeep: advance a utility use (landing its effect and
+   *  consuming it on completion) and tick down any regen. Runs for every
+   *  character each tick, before damage is resolved. */
+  tickStatus(): void {
+    if (this.useTicks > 0) {
+      this.useTicks -= 1;
+      if (this.useTicks === 0) this.finishUse();
+    }
+    if (this.regenTicks > 0) {
+      this.regenTicks -= 1;
+      this._heal(this.regenRate);
+    }
+  }
+
+  /** Land the finished use's effect and consume one from the belt. */
+  private finishUse(): void {
+    const spec = this.usingSpec;
+    this.usingSpec = null;
+    this.useTotal = 0;
+    if (!spec) return;
+    spec.apply(this);
+    this.consumeUtility(spec);
+  }
+
   /**
    * Fire if the equipped weapon can. Returns true if a shot went out. The caller
    * decides *when* to attempt (held trigger for auto, click edge for semi).
@@ -260,17 +447,58 @@ export class Character {
   draw(ctx: CanvasRenderingContext2D): void {
     this.drawSlung(ctx); // behind the body, so the torso covers its middle
     const gun = this.gun;
-    const { right, left } = gun.handPositions(this.pos, this.forward);
+    // While the belt is held there's no gun; the hands play the utility's own
+    // use animation (or hold the fists pose) instead of the gun's hand track.
+    const hands =
+      this.equipped === "utility" ? this.utilityHands() : gun.handPositions(this.pos, this.forward);
     drawCharacter(
       ctx,
       this.pos,
       this.forward,
-      right,
-      left,
+      hands.right,
+      hands.left,
       this.skin,
       () => gun.draw(ctx, this.pos, this.forward, this.skin.outline),
       this.armor,
     );
+    if (this.equipped === "utility") this.drawHeldUtility(ctx, hands);
+  }
+
+  /** Hand positions while holding the belt: the fists' rest grips, overridden by
+   *  the selected utility's `useAnim` keyframes while a use is in progress (same
+   *  keyframe machinery as a gun reload — see interpGrip). */
+  private utilityHands(): { right: Vec2; left: Vec2 } {
+    const side = perp(this.forward);
+    const gripAt = (g: GripLocal): Vec2 =>
+      add(this.pos, add(scale(this.forward, g.f), scale(side, g.l)));
+    const hand = this.slots.hand!;
+    let rg: GripLocal = hand.spec.rightGrip;
+    let lg: GripLocal = hand.spec.leftGrip;
+    const anim = this.currentUtility?.useAnim;
+    if (anim && this.useTicks > 0) {
+      const t = this.useTotal - this.useTicks; // elapsed ticks into the use
+      if (anim.rightPositions && anim.rightTimes) rg = interpGrip(anim.rightPositions, anim.rightTimes, t);
+      if (anim.leftPositions && anim.leftTimes) lg = interpGrip(anim.leftPositions, anim.leftTimes, t);
+    }
+    return { right: gripAt(rg), left: gripAt(lg) };
+  }
+
+  /** Draw the selected utility icon between the hands (which are already drawn by
+   *  the body pass), so it tracks the use animation and reads as "held." */
+  private drawHeldUtility(ctx: CanvasRenderingContext2D, hands: { right: Vec2; left: Vec2 }): void {
+    const spec = this.currentUtility;
+    if (!spec) return;
+    const img = utilityIcon(spec);
+    if (!img) return;
+    const c = mid(hands.right, hands.left);
+    const k = UTILITY_HELD_SIZE / Math.max(img.naturalWidth, img.naturalHeight);
+    const w = img.naturalWidth * k;
+    const h = img.naturalHeight * k;
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(angleOf(this.forward) + Math.PI / 2); // upright relative to aim
+    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    ctx.restore();
   }
 
   /**
