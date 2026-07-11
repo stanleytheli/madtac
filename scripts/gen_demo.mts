@@ -23,6 +23,7 @@ const state: LevelState = {
   ],
   playerSpawn: [{ pos: vec(0, 0), z: 0 }],
   spawnZones: [],
+  domPoints: [],
   meta: {},
 };
 
