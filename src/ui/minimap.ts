@@ -31,25 +31,24 @@ export function domDarken(hex: string): string {
 }
 
 /**
- * How to render a capture point from its owner + strength (see gamemodes/
- * domination.ts). Two regimes:
- *  - Owned by team T: ring & letter in T's color; a growing DARK-T arc = the
- *    strength [0,1] (just-taken shows no arc; fully locked-in fills the ring).
- *  - Gray (neutral): ring & letter gray; if a team is currently capturing, a
- *    growing REGULAR arc in that team's color = 1 - strength (progress toward
- *    taking it, so the flip-in reads before the color changes).
+ * How to render a capture point from its (team, progress ∈ [0,2]) — see
+ * gamemodes/domination.ts. Two regimes:
+ *  - progress ≥ 1 (owned): ring & letter in the team's color; a growing DARK arc
+ *    = progress − 1 (just-taken shows no arc; fully locked-in fills the ring).
+ *  - progress < 1 (gray): ring & letter gray; if being captured (progress > 0), a
+ *    growing REGULAR arc in the capturing team's color = progress, so the claim
+ *    reads before the point flips color.
  */
 export function domPointStyle(view: DomPointView): {
   ring: string;
   letter: string;
   arc: { color: string; frac: number } | null;
 } {
-  if (view.owner !== "gray") {
-    const col = TEAMS[view.owner]?.color ?? DOM_GRAY;
-    return { ring: col, letter: col, arc: { color: domDarken(col), frac: view.strength } };
+  const col = TEAMS[view.team]?.color ?? DOM_GRAY;
+  if (view.progress >= 1) {
+    return { ring: col, letter: col, arc: { color: domDarken(col), frac: Math.min(1, view.progress - 1) } };
   }
-  const capCol = view.capturing ? (TEAMS[view.capturing]?.color ?? null) : null;
-  return { ring: DOM_GRAY, letter: DOM_GRAY, arc: capCol ? { color: capCol, frac: 1 - view.strength } : null };
+  return { ring: DOM_GRAY, letter: DOM_GRAY, arc: view.progress > 0 ? { color: col, frac: view.progress } : null };
 }
 
 /** Ticks a recent-death X lingers on the minimap before it's pruned/faded. */

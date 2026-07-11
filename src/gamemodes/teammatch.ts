@@ -144,7 +144,7 @@ export abstract class TeamMatchMode implements Gamemode {
   abstract readonly label: string;
   // Respawns would otherwise bury the map in corpses and dropped gear, so both
   // clear on a timer (blinking out over their last second).
-  readonly bodyTtl = 360; // ~6s
+  readonly bodyTtl = 720; // ~12s
   readonly itemTtl = 600; // ~10s
 
   protected readonly cfg: TeamMatchConfig;

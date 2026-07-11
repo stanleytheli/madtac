@@ -14,8 +14,11 @@ export interface ObjectivePoint {
   pos: Vec2;
   z: number;
   radius: number;
+  /** Controlling team ("gray" if progress < 1) — objective AIs prefer un-held. */
   owner: string;
-  strength: number;
+  /** Progress in [0,2] (2 = fully locked in) — used to tell "ours but not yet
+   *  fully strengthened" (still worth standing on) from "done". */
+  progress: number;
 }
 
 /** Everything an AI gets to look at each tick. Built once per tick by main.ts

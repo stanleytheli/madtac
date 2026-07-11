@@ -1,19 +1,20 @@
 /**
  * Domination. Sides fight over fixed capture points (DomPoints authored in the
- * editor). Each point has an OWNER (a team, or "gray" when neutral) plus a
- * control STRENGTH in [0, 1] — a multi-team-ready model:
- *   - Held by team T: every T member on the point pushes strength up, every
- *     non-member pushes it down (net = members − others). At strength 0 the
- *     point neutralizes — it flips to gray at full strength (1).
- *   - Gray: the team with a STRICT plurality on the point drives strength down
- *     (rate = its lead over the runner-up); a tie makes no progress. At 0 that
- *     team takes the point, becoming its owner at strength 0 (then builds up).
- * Points start gray at strength 1.
+ * editor). Each point tracks a single "max-progress" team and its PROGRESS in
+ * [0, 2] — a multi-team-ready model with one moving part:
+ *   - [0, 1): gray (unowned) but being captured BY the max team — progress is
+ *     how far along that capture is.
+ *   - [1, 2]: captured by the max team and strengthening (2 = fully locked in).
+ * Every agent ON the max team raises progress; every agent NOT on it (any other
+ * team) lowers it — net = (on max) − (not on max), scaled by CAPTURE_RATE. When
+ * progress hits 0 the point is up for grabs: the strict-plurality team present
+ * (if any) becomes the new max team and starts climbing; with no plurality the
+ * max team is arbitrary and progress just sits at 0. Points start at 0.
  *
- * Every second, each point a team controls drains one ticket from the OTHER
- * team (own 2 of 3 points → the enemy bleeds 2/s while you bleed 1/s). A team
- * whose tickets hit 0 loses. Everything else (roster, spawns, respawns,
- * scoreboard) comes from TeamMatchMode.
+ * A point counts as CONTROLLED by its max team once progress ≥ 1. Every second,
+ * each controlled point drains one ticket from the OTHER team (own 2 of 3 points
+ * → the enemy bleeds 2/s while you bleed 1/s). A team whose tickets hit 0 loses.
+ * Everything else (roster, spawns, respawns, scoreboard) comes from TeamMatchMode.
  */
 import type { ObjectivePoint } from "../ai/robot.ts";
 import type { DomConfig, TeamConfig } from "../world/level.ts";
@@ -48,21 +49,40 @@ export function resolveDom(o?: DomOverrides): DomConfig {
   };
 }
 
-/** Per-tick strength change one net agent applies (0.01 → a lone capper takes a
- *  gray point, or flips a fully-held one, in ~1.7s; faster with a bigger lead). */
+/** Per-tick progress change one net agent applies (progress spans [0,2], so at
+ *  0.0025 a lone capper takes a point in ~6.7s and locks it fully in ~13s). */
 const CAPTURE_RATE = 0.0025;
 
-const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
+const clamp02 = (n: number): number => Math.max(0, Math.min(2, n));
 
-/** Live control state of one capture point. */
+/** Live control state of one capture point: the leading ("max progress") team and
+ *  its progress in [0,2] — gray-being-captured on [0,1), owned/strengthening on
+ *  [1,2]. The team is meaningless while progress is 0 (arbitrary until a plurality
+ *  claims it); rendering shows plain gray there. */
 interface DomState {
-  owner: TeamId | "gray";
-  strength: number;
-  /** For a gray point, the team currently capturing it (rendering only). */
-  capturing: TeamId | null;
+  maxTeam: TeamId;
+  progress: number;
 }
 
-const neutral = (): DomState => ({ owner: "gray", strength: 1, capturing: null });
+const neutral = (): DomState => ({ maxTeam: "blue", progress: 0 });
+
+/** The team with STRICTLY more agents present than any other, or null (a tie for
+ *  the lead, or nobody present). */
+function strictPlurality(counts: Map<TeamId, number>): TeamId | null {
+  let top: TeamId | null = null;
+  let topN = 0;
+  let secondN = 0;
+  for (const [team, n] of counts) {
+    if (n > topN) {
+      secondN = topN;
+      topN = n;
+      top = team;
+    } else if (n > secondN) {
+      secondN = n;
+    }
+  }
+  return top && topN > secondN ? top : null;
+}
 
 export class DominationMode extends TeamMatchMode {
   readonly id = "domination";
@@ -97,13 +117,15 @@ export class DominationMode extends TeamMatchMode {
       this.capture(this.states[i], pts[i], ctx);
     }
 
-    // Every second, each controlled point drains a ticket from the other team.
+    // Every second, each controlled point (progress ≥ 1) drains a ticket from
+    // the other team.
     if (ctx.tick % 60 === 0) {
       let blueOwned = 0;
       let redOwned = 0;
       for (const st of this.states) {
-        if (st.owner === "blue") blueOwned += 1;
-        else if (st.owner === "red") redOwned += 1;
+        if (st.progress < 1) continue;
+        if (st.maxTeam === "blue") blueOwned += 1;
+        else if (st.maxTeam === "red") redOwned += 1;
       }
       this.tickets.red -= blueOwned;
       this.tickets.blue -= redOwned;
@@ -123,45 +145,17 @@ export class DominationMode extends TeamMatchMode {
       total++;
     }
 
-    if (st.owner !== "gray") {
-      // Held: the owner's members strengthen it, everyone else weakens it.
-      const support = counts.get(st.owner) ?? 0;
-      const net = support - (total - support);
-      st.capturing = null;
-      if (net !== 0) {
-        st.strength = clamp01(st.strength + net * CAPTURE_RATE);
-        if (st.strength <= 0) {
-          st.owner = "gray"; // neutralized — resets to fully gray
-          st.strength = 1;
-        }
-      }
-      return;
+    // Up for grabs at rock bottom: whoever holds a strict plurality claims the
+    // lead and starts climbing. No plurality → the lead stays put (arbitrary).
+    if (st.progress <= 0) {
+      const claimant = strictPlurality(counts);
+      if (claimant) st.maxTeam = claimant;
     }
 
-    // Gray: the strict-plurality team drives strength down and takes it at 0.
-    let topTeam: TeamId | null = null;
-    let topCount = 0;
-    let secondCount = 0;
-    for (const [team, n] of counts) {
-      if (n > topCount) {
-        secondCount = topCount;
-        topCount = n;
-        topTeam = team;
-      } else if (n > secondCount) {
-        secondCount = n;
-      }
-    }
-    const lead = topCount - secondCount; // strict majority ⇒ lead > 0
-    if (topTeam && lead > 0) {
-      st.capturing = topTeam;
-      st.strength = clamp01(st.strength - lead * CAPTURE_RATE);
-      if (st.strength <= 0) {
-        st.owner = topTeam; // taken — starts owned but unlocked
-        st.strength = 0;
-      }
-    } else {
-      st.capturing = null; // no majority: no progress
-    }
+    // The max team pushes progress up; everyone else pushes it down.
+    const onMax = counts.get(st.maxTeam) ?? 0;
+    const net = onMax - (total - onMax);
+    if (net !== 0) st.progress = clamp02(st.progress + net * CAPTURE_RATE);
   }
 
   protected override teamScores(): TeamScore[] {
@@ -179,12 +173,14 @@ export class DominationMode extends TeamMatchMode {
     return this.tickets.blue <= this.tickets.red;
   }
 
-  /** Feed the capture points to objective-seeking bots (DominationOracle). */
+  /** Feed the capture points to objective-seeking bots (DominationOracle). Owner
+   *  is the max team once controlled (progress ≥ 1), else "gray". */
   objectives(ctx: GameCtx): ObjectivePoint[] {
     const pts = ctx.level.domPoints;
     return pts.map((p, i) => {
       const st = this.states[i] ?? neutral();
-      return { pos: p.pos, z: p.z, radius: p.radius, owner: st.owner, strength: st.strength };
+      const owner = st.progress >= 1 ? st.maxTeam : "gray";
+      return { pos: p.pos, z: p.z, radius: p.radius, owner, progress: st.progress };
     });
   }
 
@@ -193,15 +189,7 @@ export class DominationMode extends TeamMatchMode {
     return {
       points: pts.map((p, i) => {
         const st = this.states[i] ?? neutral();
-        return {
-          name: p.name,
-          pos: p.pos,
-          z: p.z,
-          radius: p.radius,
-          owner: st.owner,
-          strength: st.strength,
-          capturing: st.capturing,
-        };
+        return { name: p.name, pos: p.pos, z: p.z, radius: p.radius, team: st.maxTeam, progress: st.progress };
       }),
     };
   }

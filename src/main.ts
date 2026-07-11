@@ -389,7 +389,7 @@ function drawDomPoint(view: DomPointView): void {
   const style = domPointStyle(view);
   const start = -Math.PI / 2; // 12 o'clock
   ctx.save();
-  ctx.lineWidth = 5;
+  ctx.lineWidth = 10;
   // Base ring: owner's color (no fill).
   ctx.globalAlpha = 0.5;
   ctx.strokeStyle = style.ring;

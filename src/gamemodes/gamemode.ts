@@ -74,20 +74,17 @@ export interface PlayerRow {
 }
 
 /** A domination capture point's live state, for rendering (in-world circle,
- *  minimap highlight). See gamemodes/domination.ts for the ownership model. */
+ *  minimap highlight). See gamemodes/domination.ts for the model. */
 export interface DomPointView {
   name: string;
   pos: Vec2;
   z: number;
   radius: number;
-  /** Controlling team, or "gray" when neutral. */
-  owner: TeamId | "gray";
-  /** Control strength [0,1]: how locked-in the owner is (for gray, how neutral —
-   *  1 = fully neutral, driven toward 0 as a team captures). */
-  strength: number;
-  /** For a gray point, the team currently capturing it (picks the arc color);
-   *  null when uncontested, and unused while owned. */
-  capturing: TeamId | null;
+  /** The leading ("max progress") team — the one capturing or holding the point.
+   *  Meaningless (arbitrary) while progress is 0; rendering shows plain gray. */
+  team: TeamId;
+  /** Progress in [0,2]: gray-being-captured on [0,1), owned/strengthening [1,2]. */
+  progress: number;
 }
 
 /** What a gamemode wants drawn on top of the normal HUD. */

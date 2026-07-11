@@ -67,7 +67,7 @@ export class DominationOracle extends TacOracle {
     let best: ObjectivePoint | null = null;
     let bestD = Infinity;
     for (const o of objs) {
-      if (o.owner === this.team && o.strength >= 1) continue; // already ours, locked
+      if (o.owner === this.team && o.progress >= 2) continue; // already ours, fully locked
       const d = dist(this.pos, o.pos);
       if (d < bestD) {
         bestD = d;

@@ -42,6 +42,7 @@ const DEFAULT_STANDOFF = 130; // stop closing once the chase is this near
 const ARRIVE_EPS = 8; // "at the node" slop, so it doesn't orbit a waypoint
 const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a moving goal
 const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this much cheaper (px)
+const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
 
@@ -227,6 +228,24 @@ export class Oracle extends Robot {
     if (this.waypoint < 0 || this.replanIn <= 0) {
       this.plan(nav, world, chase);
       this.replanIn = REPLAN_TICKS;
+    }
+    this.skipReachableHops(nav, world);
+  }
+
+  /** String-pull the committed route: while the hop AFTER the current waypoint
+   *  (toward the goal) is already reachable in a straight clear line from here,
+   *  skip the current waypoint and head for that hop instead — cutting the corner
+   *  rather than first detouring out to a node we can already see past. Bounded
+   *  per tick; runs forward only (toward the goal), so it can't oscillate. Stops
+   *  at the goal node, where the existing arrival/atGoalNode flow takes over. */
+  private skipReachableHops(nav: NavGraph, world: World): void {
+    if (this.atGoalNode || this.goal < 0) return;
+    for (let hop = 0; hop < MAX_SKIP && this.waypoint >= 0 && this.waypoint !== this.goal; hop++) {
+      const step = nav.route(this.waypoint, this.goal);
+      if (!step) return;
+      const next = nav.nodes[step.next];
+      if (!walkable(world, this.pos, this.z, next.pos, next.z)) return;
+      this.waypoint = step.next;
     }
   }
 
