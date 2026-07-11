@@ -4,8 +4,9 @@ import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
 import { worldAabb, type Box } from "./engine/collision.ts";
 import { Editor } from "./ui/editor.ts";
 import { Game } from "./game.ts";
-import { DEFAULT_MODE, GAMEMODES, type GamemodeHud } from "./gamemodes/gamemode.ts";
+import { DEFAULT_MODE, GAMEMODES, type DomPointView, type GamemodeHud } from "./gamemodes/gamemode.ts";
 import { resolveTdm, type TdmOverrides } from "./gamemodes/tdm.ts";
+import { resolveDom, type DomOverrides } from "./gamemodes/domination.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
 import { ARMOR_SPECS, GUN_SPECS, loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
@@ -15,7 +16,7 @@ import { drawParticles } from "./engine/particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
-import { Minimap } from "./ui/minimap.ts";
+import { domPointStyle, Minimap } from "./ui/minimap.ts";
 import { dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import {
   enclosureCap,
@@ -77,6 +78,19 @@ function numParam(key: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** Per-side troop/skill/equip overrides for `side` off the URL, or undefined
+ *  when none were given (shared by TDM and Domination — same param names). */
+function sideUrlOverrides(side: "blue" | "red"): Partial<TeamConfig> | undefined {
+  const s: Partial<TeamConfig> = {};
+  const troops = numParam(`${side}Troops`);
+  if (troops !== undefined) s.troops = troops;
+  const skill = numParam(`${side}Skill`);
+  if (skill !== undefined) s.skill = skill;
+  const equip = numParam(`${side}Equip`);
+  if (equip !== undefined) s.equip = equip;
+  return Object.keys(s).length > 0 ? s : undefined;
+}
+
 /** TDM parameter overrides read off the URL, e.g.
  *  ?mode=tdm&killLimit=10&respawnDelay=90&blueTroops=2&redSkill=1&redEquip=4 */
 function tdmUrlOverrides(): TdmOverrides {
@@ -85,28 +99,47 @@ function tdmUrlOverrides(): TdmOverrides {
   if (kl !== undefined) o.killLimit = kl;
   const rd = numParam("respawnDelay");
   if (rd !== undefined) o.respawnDelay = rd;
-  for (const side of ["blue", "red"] as const) {
-    const s: Partial<TeamConfig> = {};
-    const troops = numParam(`${side}Troops`);
-    if (troops !== undefined) s.troops = troops;
-    const skill = numParam(`${side}Skill`);
-    if (skill !== undefined) s.skill = skill;
-    const equip = numParam(`${side}Equip`);
-    if (equip !== undefined) s.equip = equip;
-    if (Object.keys(s).length > 0) o[side] = s;
-  }
+  const blue = sideUrlOverrides("blue");
+  if (blue) o.blue = blue;
+  const red = sideUrlOverrides("red");
+  if (red) o.red = red;
   return o;
 }
 
-// Effective meta for the gamemode: the level's meta with the chosen mode and,
-// for TDM, its parameters merged with any URL overrides (URL wins). This stays
-// runtime-only — the loaded level (and what the editor would save) is untouched.
+/** Domination parameter overrides read off the URL, e.g.
+ *  ?mode=domination&scoreLimit=150&respawnDelay=90&blueTroops=3&redSkill=1&redEquip=4 */
+function domUrlOverrides(): DomOverrides {
+  const o: DomOverrides = {};
+  const sl = numParam("scoreLimit");
+  if (sl !== undefined) o.scoreLimit = sl;
+  const rd = numParam("respawnDelay");
+  if (rd !== undefined) o.respawnDelay = rd;
+  const blue = sideUrlOverrides("blue");
+  if (blue) o.blue = blue;
+  const red = sideUrlOverrides("red");
+  if (red) o.red = red;
+  return o;
+}
+
+// Effective meta for the gamemode: the level's meta with the chosen mode and, for
+// the team modes, their parameters merged with any URL overrides (URL wins). This
+// stays runtime-only — the loaded level (and what the editor would save) is
+// untouched.
 const meta: LevelMeta = { ...loaded.meta, mode: modeId };
 if (modeId === "tdm") {
   const u = tdmUrlOverrides();
   const base = loaded.meta.tdm;
   meta.tdm = resolveTdm({
     killLimit: u.killLimit ?? base?.killLimit,
+    respawnDelay: u.respawnDelay ?? base?.respawnDelay,
+    blue: { ...base?.blue, ...u.blue },
+    red: { ...base?.red, ...u.red },
+  });
+} else if (modeId === "domination") {
+  const u = domUrlOverrides();
+  const base = loaded.meta.domination;
+  meta.domination = resolveDom({
+    scoreLimit: u.scoreLimit ?? base?.scoreLimit,
     respawnDelay: u.respawnDelay ?? base?.respawnDelay,
     blue: { ...base?.blue, ...u.blue },
     red: { ...base?.red, ...u.red },
@@ -344,6 +377,42 @@ function drawObstacle(o: Obstacle): void {
   ctx.restore();
 }
 
+/**
+ * A domination capture point on the ground: an unfilled circular border in the
+ * owner's color (gray when neutral), with capture/strengthen progress stroked as
+ * an arc from 12 o'clock, plus the point's name centered in the owner's color
+ * (see domPointStyle for the color/arc scheme). Drawn in the world transform, on
+ * the ground under the units.
+ */
+function drawDomPoint(view: DomPointView): void {
+  const { pos, radius, name } = view;
+  const style = domPointStyle(view);
+  const start = -Math.PI / 2; // 12 o'clock
+  ctx.save();
+  ctx.lineWidth = 5;
+  // Base ring: owner's color (no fill).
+  ctx.globalAlpha = 0.5;
+  ctx.strokeStyle = style.ring;
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, radius, 0, Math.PI * 2);
+  ctx.stroke();
+  // Progress arc on top, from 12 o'clock.
+  if (style.arc && style.arc.frac > 0) {
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = style.arc.color;
+    ctx.beginPath();
+    ctx.arc(pos.x, pos.y, radius, start, start + Math.PI * 2 * style.arc.frac);
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 0.9;
+  ctx.fillStyle = style.letter;
+  ctx.font = `bold ${Math.max(12, Math.round(radius * 0.7))}px system-ui, sans-serif`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(name, pos.x, pos.y);
+  ctx.restore();
+}
+
 /** "#rrggbb" -> "r,g,b" for building rgba() strings with a chosen alpha. */
 function rgbTriple(hex: string): string {
   const h = hex.replace("#", "");
@@ -549,6 +618,10 @@ function render(): void {
   const pointInView = (p: Vec2, r: number): boolean =>
     p.x + r >= vminx && p.x - r <= vmaxx && p.y + r >= vminy && p.y - r <= vmaxy;
 
+  // The active gamemode's HUD data, computed once and reused for the in-world
+  // overlay (domination points), the minimap, and the HUD panel.
+  const gh: GamemodeHud | null = editor ? null : game!.gamemode.hud(game!);
+
   // Painter's order by level, lowest first: higher floors composite over lower
   // ones, so walking under a balcony puts it over your head for free.
   profiler.begin("render.levels");
@@ -561,7 +634,6 @@ function render(): void {
     for (const s of world.stairs) {
       if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01 && rectInView(s)) drawStairs(s);
     }
-
     const drawObjects = (): void =>
       profiler.measure("render.draw", () => {
         // An obstacle's optional visibleFrom/invisible are purely cosmetic
@@ -577,6 +649,13 @@ function render(): void {
         drawBullets(z);
         drawParticles(ctx, world.particles, z);
       });
+
+    // Domination points render last for this level — on top of everything at
+    // this z, and unmasked (an objective marker is always visible), so nothing
+    // on the same floor hides them while higher floors still composite over.
+    const drawDomPoints = (): void => {
+      if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
+    };
 
     // At and above the enclosure cap the world is hidden, except through the
     // stairwell shafts that pierce it — so from inside a bunker you still see
@@ -595,6 +674,7 @@ function render(): void {
         drawObjects();
         ctx.restore();
       }
+      drawDomPoints();
       continue;
     }
 
@@ -603,6 +683,7 @@ function render(): void {
     if (m.visibleInf) {
       // A visible infinite floor (the ground) backs the whole level: no masking.
       drawObjects();
+      drawDomPoints();
       continue;
     }
 
@@ -630,6 +711,8 @@ function render(): void {
       drawObjects();
       ctx.restore();
     }
+
+    drawDomPoints();
   }
 
   profiler.end("render.levels");
@@ -640,7 +723,6 @@ function render(): void {
   ctx.restore();
 
   if (!editor) {
-    const gh = game!.gamemode.hud(game!);
     profiler.begin("render.hud");
     drawHud(ctx, {
       w,

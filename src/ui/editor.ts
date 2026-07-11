@@ -17,6 +17,7 @@ import { BODY_RADIUS } from "../entities/character.ts";
 import { pointInBox } from "../engine/collision.ts";
 import { GAMEMODES } from "../gamemodes/gamemode.ts";
 import { DEFAULT_TDM } from "../gamemodes/tdm.ts";
+import { DEFAULT_DOM } from "../gamemodes/domination.ts";
 import { isDown, mouse, moveAxis } from "../engine/input.ts";
 import {
   ENTITY_DEFS,
@@ -24,13 +25,16 @@ import {
   entityFromJSON,
   entityToJSON,
   serializeLevel,
+  type DomConfig,
   type EntityDef,
   type FieldDef,
   type LevelState,
   type TdmConfig,
+  type TeamConfig,
 } from "../world/level.ts";
 import { LEVELS } from "../world/levels.ts";
 import { TEAMS } from "../entities/team.ts";
+import { DOM_GRAY } from "./minimap.ts";
 import { MOVE_RADIUS, nodeEdge } from "../world/nav.ts";
 import { add, angleOf, deg2rad, dist, norm, rad2deg, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import {
@@ -55,6 +59,14 @@ const defaultTdm = (): TdmConfig => ({
   ...DEFAULT_TDM,
   blue: { ...DEFAULT_TDM.blue },
   red: { ...DEFAULT_TDM.red },
+});
+
+/** A fresh Domination config for when a level first switches to Domination in the
+ *  editor — a deep clone of the gamemode's own defaults (never share the object). */
+const defaultDom = (): DomConfig => ({
+  ...DEFAULT_DOM,
+  blue: { ...DEFAULT_DOM.blue },
+  red: { ...DEFAULT_DOM.red },
 });
 
 type Drag =
@@ -546,6 +558,21 @@ export class Editor {
       ctx.restore();
     }
 
+    // Domination points: the gray circular border at the capture radius, so the
+    // authored footprint is visible (play draws the same ring with the live
+    // capture progress stroked over it). The name comes from the marker pass.
+    for (const p of this.state.domPoints) {
+      const onLevel = p.z === this.player.z;
+      ctx.save();
+      ctx.globalAlpha = onLevel ? 0.8 : 0.3;
+      ctx.strokeStyle = DOM_GRAY;
+      ctx.lineWidth = Math.max(4, p.radius * 0.09);
+      ctx.beginPath();
+      ctx.arc(p.pos.x, p.pos.y, p.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     // hideWhenIn regions of the selected floor (or of a selected region's
     // parent): plain rectangle borders with their trigger z labeled.
     const rf =
@@ -915,18 +942,36 @@ export class Editor {
     return row;
   }
 
-  /** (Re)build the mode-specific parameter inputs under the mode picker. */
+  /** (Re)build the mode-specific parameter inputs under the mode picker. Both
+   *  team modes share the per-side troop/skill/equip block; they differ only in
+   *  their one top-level ticket field (kill limit vs score limit). */
   private renderMatchFields(): void {
     this.matchFields.replaceChildren();
-    if (this.state.meta.mode !== "tdm") return;
+    const mode = this.state.meta.mode;
+    if (mode === "tdm") {
+      const t = (this.state.meta.tdm ??= defaultTdm());
+      this.matchFields.append(
+        this.matchNumRow("kill limit", () => t.killLimit, (v) => (t.killLimit = Math.max(1, Math.round(v))), { min: 1, step: 1 }),
+        this.matchNumRow("respawn delay", () => t.respawnDelay, (v) => (t.respawnDelay = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
+      );
+      this.appendTeamFields(t);
+    } else if (mode === "domination") {
+      const d = (this.state.meta.domination ??= defaultDom());
+      this.matchFields.append(
+        this.matchNumRow("score limit", () => d.scoreLimit, (v) => (d.scoreLimit = Math.max(1, Math.round(v))), { min: 1, step: 1 }),
+        this.matchNumRow("respawn delay", () => d.respawnDelay, (v) => (d.respawnDelay = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
+      );
+      this.appendTeamFields(d);
+    } else {
+      return;
+    }
+    for (const child of Array.from(this.matchFields.children)) (child as HTMLElement).style.flexShrink = "0";
+  }
 
-    const t = (this.state.meta.tdm ??= defaultTdm());
-    this.matchFields.append(
-      this.matchNumRow("kill limit", () => t.killLimit, (v) => (t.killLimit = Math.max(1, Math.round(v))), { min: 1, step: 1 }),
-      this.matchNumRow("respawn delay", () => t.respawnDelay, (v) => (t.respawnDelay = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
-    );
+  /** The blue/red troop/skill/equip inputs shared by the team gamemodes. */
+  private appendTeamFields(cfg: { blue: TeamConfig; red: TeamConfig }): void {
     for (const side of ["blue", "red"] as const) {
-      const c = t[side];
+      const c = cfg[side];
       this.matchFields.append(this.header(`${side} team`));
       this.matchFields.append(
         this.matchNumRow("troops", () => c.troops, (v) => (c.troops = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
@@ -934,7 +979,6 @@ export class Editor {
         this.matchNumRow("equip 0-4", () => c.equip, (v) => (c.equip = Math.max(0, Math.min(4, Math.round(v)))), { min: 0, step: 1 }),
       );
     }
-    for (const child of Array.from(this.matchFields.children)) (child as HTMLElement).style.flexShrink = "0";
   }
 
   private setTool(def: EntityDef | null): void {

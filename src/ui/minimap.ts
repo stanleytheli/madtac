@@ -15,6 +15,42 @@ import { rectCorners, type Poly } from "../engine/poly.ts";
 import { areHostile, TEAMS } from "../entities/team.ts";
 import { vec, type Vec2 } from "../engine/vec.ts";
 import type { World } from "../world/world.ts";
+import type { DomPointView } from "../gamemodes/gamemode.ts";
+
+/** Neutral (unowned) domination-point color, shared by the minimap + in-world. */
+export const DOM_GRAY = "#9aa0a6";
+
+/** A darker shade of a "#rrggbb" color — the "owned & strengthening" arc. */
+export function domDarken(hex: string): string {
+  const h = hex.replace("#", "");
+  const ch = (i: number) =>
+    Math.round(parseInt(h.slice(i, i + 2), 16) * 0.5)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${ch(0)}${ch(2)}${ch(4)}`;
+}
+
+/**
+ * How to render a capture point from its owner + strength (see gamemodes/
+ * domination.ts). Two regimes:
+ *  - Owned by team T: ring & letter in T's color; a growing DARK-T arc = the
+ *    strength [0,1] (just-taken shows no arc; fully locked-in fills the ring).
+ *  - Gray (neutral): ring & letter gray; if a team is currently capturing, a
+ *    growing REGULAR arc in that team's color = 1 - strength (progress toward
+ *    taking it, so the flip-in reads before the color changes).
+ */
+export function domPointStyle(view: DomPointView): {
+  ring: string;
+  letter: string;
+  arc: { color: string; frac: number } | null;
+} {
+  if (view.owner !== "gray") {
+    const col = TEAMS[view.owner]?.color ?? DOM_GRAY;
+    return { ring: col, letter: col, arc: { color: domDarken(col), frac: view.strength } };
+  }
+  const capCol = view.capturing ? (TEAMS[view.capturing]?.color ?? null) : null;
+  return { ring: DOM_GRAY, letter: DOM_GRAY, arc: capCol ? { color: capCol, frac: 1 - view.strength } : null };
+}
 
 /** Ticks a recent-death X lingers on the minimap before it's pruned/faded. */
 export const MINIMAP_DEATH_TTL = 600; // ~10s
@@ -119,6 +155,7 @@ export class Minimap {
     chars: readonly Character[],
     deaths: readonly DeathMark[],
     player: Character,
+    points: readonly DomPointView[] = [],
   ): void {
     const px = this.px;
     const friendly = TEAMS[player.team]?.color ?? "#4a9de0";
@@ -146,6 +183,23 @@ export class Minimap {
       }
       ctx.closePath();
       ctx.fill();
+    }
+
+    // Domination points: the name on a control-colored highlight (blue/red/gray).
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.font = "bold 10px system-ui, sans-serif";
+    for (const pt of points) {
+      const p = this.toWidget(pt.pos, x0, y0);
+      const tw = ctx.measureText(pt.name).width;
+      const w = tw + 7;
+      const h = 13;
+      ctx.fillStyle = domPointStyle(pt).ring;
+      ctx.beginPath();
+      ctx.roundRect(p.x - w / 2, p.y - h / 2, w, h, 3);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.fillText(pt.name, p.x, p.y + 0.5);
     }
 
     // Recent friendly deaths: X's, fading over their last quarter of life.

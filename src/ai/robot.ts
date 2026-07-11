@@ -8,6 +8,16 @@ import { areHostile, type TeamId } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, type World } from "../world/world.ts";
 
+/** A gamemode objective an AI can be steered toward (a domination capture point):
+ *  its location + who controls it ("gray" = neutral) so AIs prefer un-held ones. */
+export interface ObjectivePoint {
+  pos: Vec2;
+  z: number;
+  radius: number;
+  owner: string;
+  strength: number;
+}
+
 /** Everything an AI gets to look at each tick. Built once per tick by main.ts
  *  and shared by every thinking character. */
 export interface AiContext {
@@ -17,6 +27,9 @@ export interface AiContext {
   nav: NavGraph | null;
   /** The current sim tick — AIs use it to stagger their planning (see stagger). */
   tick: number;
+  /** Gamemode objectives (domination points), or undefined for modes without
+   *  them; objective-seeking AIs (DominationOracle) steer toward these. */
+  objectives?: readonly ObjectivePoint[];
 }
 
 /** Flat gray placeholder enemy. */

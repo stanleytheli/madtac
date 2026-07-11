@@ -314,7 +314,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   let gamemodeInset = 0;
   if (o.minimap && o.characters) {
     const px = o.minimap.px;
-    o.minimap.draw(ctx, MINIMAP_MARGIN, h - MINIMAP_MARGIN - px, o.characters, o.deaths ?? [], player);
+    o.minimap.draw(ctx, MINIMAP_MARGIN, h - MINIMAP_MARGIN - px, o.characters, o.deaths ?? [], player, o.gamemode?.points);
     gamemodeInset = px + MINIMAP_MARGIN;
   }
 

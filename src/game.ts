@@ -556,7 +556,13 @@ export class Game implements GameCtx {
     this.prevDown = pointer.down;
 
     profiler.begin("ai");
-    const ai: AiContext = { world: this.world, characters: this.characters, nav: this.nav, tick: this.tick };
+    const ai: AiContext = {
+      world: this.world,
+      characters: this.characters,
+      nav: this.nav,
+      tick: this.tick,
+      objectives: this.gamemode.objectives?.(this),
+    };
     for (const c of this.characters) {
       if (c instanceof Robot && c.hp > 0) c.think(ai);
     }

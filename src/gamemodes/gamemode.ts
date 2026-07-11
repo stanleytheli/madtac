@@ -9,6 +9,7 @@
  * picks it at load.
  */
 import type { Character } from "../entities/actor.ts";
+import type { ObjectivePoint } from "../ai/robot.ts";
 import type { Body } from "../entities/body.ts";
 import type { LevelMeta, LevelState } from "../world/level.ts";
 import type { NavGraph } from "../world/nav.ts";
@@ -17,6 +18,7 @@ import type { Vec2 } from "../engine/vec.ts";
 import type { World } from "../world/world.ts";
 import { SandboxMode } from "./sandbox.ts";
 import { TeamDeathmatchMode } from "./tdm.ts";
+import { DominationMode } from "./domination.ts";
 
 /** What a gamemode reads and drives, provided by the Game session. */
 export interface GameCtx {
@@ -71,6 +73,23 @@ export interface PlayerRow {
   isPlayer: boolean;
 }
 
+/** A domination capture point's live state, for rendering (in-world circle,
+ *  minimap highlight). See gamemodes/domination.ts for the ownership model. */
+export interface DomPointView {
+  name: string;
+  pos: Vec2;
+  z: number;
+  radius: number;
+  /** Controlling team, or "gray" when neutral. */
+  owner: TeamId | "gray";
+  /** Control strength [0,1]: how locked-in the owner is (for gray, how neutral —
+   *  1 = fully neutral, driven toward 0 as a team captures). */
+  strength: number;
+  /** For a gray point, the team currently capturing it (picks the arc color);
+   *  null when uncontested, and unused while owned. */
+  capturing: TeamId | null;
+}
+
 /** What a gamemode wants drawn on top of the normal HUD. */
 export interface GamemodeHud {
   name: string;
@@ -87,6 +106,9 @@ export interface GamemodeHud {
   choosingLoadout?: boolean;
   /** The player's current chosen kit, to populate that dropdown. */
   loadout?: PlayerLoadout;
+  /** Domination capture points to render (in-world + minimap); undefined for
+   *  modes without them. */
+  points?: DomPointView[];
 }
 
 export interface Gamemode {
@@ -108,12 +130,16 @@ export interface Gamemode {
   /** Set the player's chosen kit for their next life (respawn-screen dropdown).
    *  Only modes with a customizable respawn (TDM) implement this. */
   setPlayerLoadout?(loadout: PlayerLoadout): void;
+  /** The objectives to feed objective-seeking AIs this tick (domination points),
+   *  or undefined for modes without them. */
+  objectives?(ctx: GameCtx): ObjectivePoint[];
 }
 
 /** Every mode, keyed by the id levels put in `meta.mode`. */
 export const GAMEMODES: Record<string, (meta: LevelMeta) => Gamemode> = {
   sandbox: () => new SandboxMode(),
   tdm: (meta) => new TeamDeathmatchMode(meta.tdm),
+  domination: (meta) => new DominationMode(meta.domination),
 };
 
 /** Used when a level names no mode (and for unknown ids). */

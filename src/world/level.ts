@@ -85,6 +85,18 @@ export interface SpawnZone {
   team: string;
 }
 
+/** A Domination capture point: a circle on the ground a team holds by standing
+ *  on it. Authored geometry only (pos/z/radius/name); the live control score is
+ *  the gamemode's (see gamemodes/domination.ts). */
+export interface DomPoint {
+  pos: Vec2;
+  z: number;
+  /** Capture-circle radius (world px). */
+  radius: number;
+  /** Display label, e.g. "A"/"B"/"C". */
+  name: string;
+}
+
 /** Per-side Team Deathmatch settings. `troops` = AI bots on that side (the
  *  player is an extra combatant on blue). `skill` ∈ [0,1] maps to reaction
  *  time / burst bravery / strafe exploration; `equip` is an equipment tier. */
@@ -103,11 +115,22 @@ export interface TdmConfig {
   red: TeamConfig;
 }
 
+/** Domination settings (see gamemodes/domination.ts). */
+export interface DomConfig {
+  /** Starting tickets per team; a team that hits 0 loses (the bar's length). */
+  scoreLimit: number;
+  /** Ticks before a downed slot respawns from its team's zones. */
+  respawnDelay: number;
+  blue: TeamConfig;
+  red: TeamConfig;
+}
+
 /** Top-level, non-entity level configuration. `mode` keys the gamemode registry
  *  (omitted = the default sandbox); mode-specific config hangs off it. */
 export interface LevelMeta {
   mode?: string;
   tdm?: TdmConfig;
+  domination?: DomConfig;
   /** World-space side length the bottom-left minimap covers (square, centered on
    *  the map's bounds). Omitted/0 = auto-fit to the level's obstacle+floor extent
    *  (see ui/minimap.ts). */
@@ -123,6 +146,8 @@ export interface LevelState {
   /** Gamemode spawn zones (see SpawnZone). Not part of the world — they never
    *  collide and are invisible in-game, read only by gamemodes + the editor. */
   spawnZones: SpawnZone[];
+  /** Domination capture points (see DomPoint), read by the domination gamemode. */
+  domPoints: DomPoint[];
   /** Top-level match configuration (gamemode + its settings). */
   meta: LevelMeta;
 }
@@ -426,6 +451,21 @@ export const ENTITY_DEFS: EntityDef[] = [
     zOf: (e) => e.z,
   },
   {
+    kind: "dompoint",
+    label: "Domination point",
+    shape: "point",
+    fields: [
+      zField,
+      prop("name", "text"),
+      prop("radius", "number"),
+    ],
+    list: (s) => s.domPoints,
+    match: () => true,
+    create: (pos, z): DomPoint => ({ pos, z, radius: 150, name: "A" }),
+    zOf: (e) => e.z,
+    marker: (e: DomPoint) => ({ color: "#c8c8c8", label: e.name || "?" }),
+  },
+  {
     kind: "wall",
     label: "Wall",
     shape: "rect",
@@ -593,6 +633,7 @@ export function applyLevel(state: LevelState, text: string): void {
   state.spawns.length = 0;
   state.playerSpawn.length = 0;
   state.spawnZones.length = 0;
+  state.domPoints.length = 0;
   state.meta = doc.meta && typeof doc.meta === "object" ? doc.meta : {};
 
   for (const raw of ents) {
@@ -632,6 +673,7 @@ export function loadLevel(text: string): LevelState {
     spawns: [],
     playerSpawn: [],
     spawnZones: [],
+    domPoints: [],
     meta: {},
   };
   applyLevel(state, text);

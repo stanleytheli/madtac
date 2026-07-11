@@ -160,6 +160,16 @@ const FRIENDLY_MARGIN = BODY_RADIUS * 2;
  *  a teammate out of your firing lane is CROWD_DIST's job (below). */
 const SEPARATE_RADIUS = BODY_RADIUS * 4; // ~150px
 const SEPARATE_PUSH = 4.0; // max away-nudge per tick (px), ≈ moveSpeed
+/** Unstick: radial separation can't break a HEAD-ON block, and a single sidestep
+ *  can't break a colinear CHAIN (the middle body is walled by mates both ways) —
+ *  both freeze two/three mates converging on a shared spot, facing through each
+ *  other. So a sprinting bot that makes no headway (< STUCK_EPS px/tick) for
+ *  STUCK_LIMIT ticks with a mate jammed within STUCK_RADIUS escapes perpendicular
+ *  to its travel; a per-agent side (sideBias) fans a stack out both ways rather
+ *  than shuffling it along as one. */
+const STUCK_RADIUS = BODY_RADIUS * 2.4; // ~72px — a mate essentially touching
+const STUCK_EPS = 0.6; // px/tick below which "no progress"
+const STUCK_LIMIT = 24; // ticks of no progress (~0.4s) before escaping
 /** Anti-flag (`blockingMate`/`sidestep`): while approaching with the gun out, if
  *  a teammate is within CROWD_DIST ahead and within CROWD_MARGIN of the travel/
  *  aim line (the same downrange test as the friendly-fire lane check), veer
@@ -311,6 +321,12 @@ export class TacOracle extends Oracle {
   private dodging = false;
   private dodgeDir: 1 | -1 = 1;
   private dodgeIn = 0;
+  /** Unstick bookkeeping: position last tick, how long we've made no headway,
+   *  and which way to peel out of a jam (alternating per spawn so a stack splits). */
+  private lastTickPos: Vec2 | null = null;
+  private stuckTicks = 0;
+  private static biasCounter = 0;
+  private readonly sideBias: 1 | -1 = TacOracle.biasCounter++ % 2 === 0 ? 1 : -1;
 
   constructor(pos: Vec2, options: TacOracleOptions = {}) {
     super(pos, {
@@ -334,11 +350,11 @@ export class TacOracle extends Oracle {
     // Out of sight, the last engaged enemy stays the concern (cover is scored
     // against them, the chase heads back at them) until memory lapses.
     const chase = target ?? this.focus ?? this.bestChase(ai);
-    // Contact metrics, minimised over ALL hostiles. In an active fight (we can
-    // see the chase) we're exposed and close, so both are ~0 — skip the full
-    // scan; only pay for it when out of contact (approaching / running / healing),
-    // which is exactly when RUN/HEAL care.
-    if (chase && chase.z === this.z && this.canSee(ai.world, chase)) {
+    // Contact metrics, minimised over ALL hostiles. In an active fight (in visual
+    // contact with the chased enemy) we're exposed and close, so both are ~0 —
+    // skip the full scan; only pay for it when out of contact (approaching /
+    // running / healing), which is exactly when RUN/HEAL care.
+    if (chase && this.inContact(ai, chase)) {
       this.visDist = 0;
       this.enemyVisDist = 0;
       this.threat = chase;
@@ -365,14 +381,6 @@ export class TacOracle extends Oracle {
     this.updatePosture(); // may override the combat mode with RUN / HEAL
     if (!chase) return;
 
-    // RUN: holstered, sprint to contact over the graph (no strafing/cover).
-    // Crowd separation (postMove) keeps a charging squad from bunching.
-    if (this.mode === "run") {
-      this.strafeTarget = null;
-      this.navChase(ai, chase, target);
-      return;
-    }
-
     // Heavy-penalty guns are fired from a stand: while actively mid-burst
     // (would fire now or is between semi-auto clicks), hold position and let
     // strafes/approaches happen between bursts. vel is already zeroed.
@@ -394,9 +402,12 @@ export class TacOracle extends Oracle {
     } else if (target && dist(this.pos, target.pos) <= this.engageRange) {
       this.strafeMove(ai, target);
     } else {
-      // Out of sight (or too far to trade): graph-chase into range — but veer
-      // out of a teammate's firing lane first, so we don't march in behind (and
-      // flag) them. General spacing is postMove's job; this is lane-specific.
+      // Approach: graph-chase into range (SHOOT out of sight / too far to trade)
+      // or sprint to the objective (RUN) — one path, differing only in speed
+      // (stepSpeed) and facing (facesTravel), both keyed off the mode. Veer out
+      // of a teammate's lane first so we don't march in behind (and flag) them,
+      // or wedge front-to-front converging on the same spot. General spacing is
+      // postMove's job; this is path-specific.
       this.strafeTarget = null;
       const blocker = this.blockingMate(ai, chase);
       if (blocker) this.sidestep(ai, chase, blocker);
@@ -413,13 +424,6 @@ export class TacOracle extends Oracle {
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     this.updateMode(target ?? this.focus);
     this.updatePosture(); // keep the posture (and heal use) live between plans
-    // RUN: keep sprinting the committed graph chase (coastStep runs at the
-    // boosted stepSpeed while mode === "run").
-    if (this.mode === "run") {
-      this.strafeTarget = null;
-      this.coastStep(ai);
-      return;
-    }
     // HEAL: follow the committed retreat/cover spot, or hold — never coast toward
     // the enemy (that's the opposite of taking cover to heal).
     if (this.mode === "heal") {
@@ -758,7 +762,15 @@ export class TacOracle extends Oracle {
    *  the graph — route distance to the node that sees them — instead of raw
    *  straight-line distance (which happily picks someone behind a wall on
    *  another floor). Cached: routes are table lookups but nearestInSight isn't. */
-  private bestChase(ai: AiContext): Character | null {
+  /** Are we in visual contact with `chase` (an enemy) right now — i.e. actively
+   *  fighting, so the contact metrics are ~0 and the scan can be skipped? Kept
+   *  overridable so an objective-seeking subclass can exempt a non-enemy chase
+   *  (a domination point marker) from being mistaken for a live fight. */
+  protected inContact(ai: AiContext, chase: Character): boolean {
+    return chase.z === this.z && this.canSee(ai.world, chase);
+  }
+
+  protected bestChase(ai: AiContext): Character | null {
     this.chaseEvalIn -= 1;
     if (this.chaseCache && this.chaseCache.hp > 0 && this.chaseEvalIn > 0) return this.chaseCache;
     this.chaseEvalIn = CHASE_EVAL_TICKS;
@@ -921,6 +933,44 @@ export class TacOracle extends Oracle {
    *  never induces a spin. Enemies are excluded so it doesn't sap aggression.
    *  Skips the push into a wall. */
   protected override postMove(ai: AiContext): void {
+    // Progress since last tick (post-collision), for the unstick below.
+    const moved = this.lastTickPos ? dist(this.pos, this.lastTickPos) : 99;
+    this.lastTickPos = vec(this.pos.x, this.pos.y);
+
+    // Unstick a bot wedged against a teammate (head-on, or a colinear chain the
+    // radial push and a single sidestep can't break) while moving with no enemy
+    // in play — the objective approach, sprinting or not. Not in a fight (a live
+    // target or a remembered one it's holding cover on) and not healing, where
+    // standing still is the point. After STUCK_LIMIT ticks of no headway with a
+    // mate touching, peel out perpendicular to travel — a stronger, directed
+    // break than the radial push below, which returns early so it wins this tick.
+    const approaching = !this.lastTarget && !this.focus && this.mode !== "heal";
+    if (approaching) {
+      let jammed = false;
+      for (const o of ai.characters) {
+        if (o === this || o.hp <= 0 || o.z !== this.z || areHostile(this.team, o.team)) continue;
+        if (dist(this.pos, o.pos) < STUCK_RADIUS) {
+          jammed = true;
+          break;
+        }
+      }
+      this.stuckTicks = jammed && moved < STUCK_EPS ? this.stuckTicks + 1 : 0;
+      if (this.stuckTicks >= STUCK_LIMIT && jammed) {
+        const travel = vec(Math.cos(this.aimAngle), Math.sin(this.aimAngle));
+        for (const s of [this.sideBias, -this.sideBias]) {
+          const step = add(this.pos, scale(perp(travel), s * this.moveSpeed));
+          if (walkable(ai.world, this.pos, this.z, step, this.z)) {
+            this.vel = sub(step, this.pos);
+            this.pos = step;
+            this.stuckTicks = 0;
+            return;
+          }
+        }
+      }
+    } else {
+      this.stuckTicks = 0;
+    }
+
     const R = SEPARATE_RADIUS;
     let sx = 0;
     let sy = 0;

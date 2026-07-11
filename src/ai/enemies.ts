@@ -18,6 +18,7 @@ import { Oracle } from "./oracle.ts";
 import { ELITE_ROBOT_SKIN, Robot, type RobotOptions } from "./robot.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
 import { TacOracle, type TacOracleOptions } from "./tacoracle.ts";
+import { DominationOracle } from "./domoracle.ts";
 import { TEAMS, type TeamId } from "../entities/team.ts";
 import { vec, type Vec2 } from "../engine/vec.ts";
 
@@ -87,9 +88,12 @@ export interface TroopOptions {
   /** Belt consumables to carry — bots don't use them, but they drop on death so
    *  healing items circulate on the map. */
   utilities?: UtilityStack[];
+  /** Which soldier AI to build: the plain TacOracle (default) or the
+   *  objective-seeking DominationOracle. */
+  ai?: "tacoracle" | "domination";
 }
 
-/** Build a TacOracle soldier for a gamemode (TDM). Bypasses the authored-spawn
+/** Build a soldier for a gamemode (TDM/Domination). Bypasses the authored-spawn
  *  data path so modes can pass the full skill knobs, not just the level fields. */
 export function makeTroop(pos: Vec2, o: TroopOptions): Robot {
   const opts: TacOracleOptions = {
@@ -102,7 +106,9 @@ export function makeTroop(pos: Vec2, o: TroopOptions): Robot {
   };
   if (o.gun && GUN_SPECS[o.gun]) opts.gun = GUN_SPECS[o.gun];
   if (o.skin && SKINS[o.skin]) opts.skin = SKINS[o.skin];
-  const r = new TacOracle(vec(pos.x, pos.y), opts);
+  const r = o.ai === "domination"
+    ? new DominationOracle(vec(pos.x, pos.y), opts)
+    : new TacOracle(vec(pos.x, pos.y), opts);
   if (o.armor && ARMOR_SPECS[o.armor]) r.equipArmor(new Armor(ARMOR_SPECS[o.armor]));
   if (o.utilities) for (const u of o.utilities) r.addUtility(u.spec, u.count);
   return r;
