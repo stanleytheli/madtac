@@ -652,6 +652,7 @@ function render(): void {
         }
         for (const b of bodies) if (b.z === z && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
         for (const it of world.items) if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx);
+        if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
         for (const c of characters) if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx);
         drawBullets(z);
         drawParticles(ctx, world.particles, z);
@@ -660,9 +661,9 @@ function render(): void {
     // Domination points render last for this level — on top of everything at
     // this z, and unmasked (an objective marker is always visible), so nothing
     // on the same floor hides them while higher floors still composite over.
-    const drawDomPoints = (): void => {
-      if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
-    };
+    // const drawDomPoints = (): void => {
+    //  if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
+    // };
 
     // At and above the enclosure cap the world is hidden, except through the
     // stairwell shafts that pierce it — so from inside a bunker you still see
@@ -681,7 +682,6 @@ function render(): void {
         drawObjects();
         ctx.restore();
       }
-      drawDomPoints();
       continue;
     }
 
@@ -690,7 +690,6 @@ function render(): void {
     if (m.visibleInf) {
       // A visible infinite floor (the ground) backs the whole level: no masking.
       drawObjects();
-      drawDomPoints();
       continue;
     }
 
@@ -718,8 +717,6 @@ function render(): void {
       drawObjects();
       ctx.restore();
     }
-
-    drawDomPoints();
   }
 
   profiler.end("render.levels");
