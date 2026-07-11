@@ -309,6 +309,32 @@ export class ObstacleGrid {
     return false;
   }
 
+  /** Call `cb` once for each SOLID obstacle on level `z` (fences included) whose
+   *  cell the circle at (`p`, `r`) touches, deduped across the up-to-4 cells.
+   *  The push-out analog of solidCircle: lets a caller resolve a body out of just
+   *  its nearby walls instead of scanning every obstacle. */
+  eachNear(p: Vec2, r: number, z: number, cb: (o: Obstacle) => void): void {
+    const layer = this.layers.get(z);
+    if (!layer) return;
+    const cell = this.cell;
+    const cx0 = Math.floor((p.x - r) / cell);
+    const cx1 = Math.floor((p.x + r) / cell);
+    const cy0 = Math.floor((p.y - r) / cell);
+    const cy1 = Math.floor((p.y + r) / cell);
+    const q = ++this.query;
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) {
+        const bucket = layer.get(cellKey(cx, cy));
+        if (!bucket) continue;
+        for (const idx of bucket) {
+          if (this.stamp[idx] === q) continue;
+          this.stamp[idx] = q;
+          cb(this.all[idx]);
+        }
+      }
+    }
+  }
+
   /** Does any obstacle on level `z` block the segment a->b? */
   blocked(a: Vec2, b: Vec2, z: number): boolean {
     const layer = this.layers.get(z);

@@ -17,7 +17,7 @@ import * as Armors from "./entities/armor.ts";
 import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
 import { startingUtilities } from "./entities/consumable.ts";
-import { boxSurfaceNormal, circleIntersectsBox, hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox } from "./engine/collision.ts";
+import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox } from "./engine/collision.ts";
 import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
@@ -36,36 +36,14 @@ import { profiler } from "./engine/profiler.ts";
 import { Robot, type AiContext } from "./ai/robot.ts";
 import type { TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
-import { add, dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ZOOM_EASE = 0.12;
-const MOVE_MARCH = 4; // px between swept-collision samples along one tick's move
-// Symmetric body separation (see separateCharacters).
+// Body/wall separation (see separateCharacters / resolveWalls).
 const SEP_ITERS = 4; // relaxation passes per tick (crowd stability)
-
-/** Clip velocity `v` so it points into none of the `normals` (each an outward
- *  unit surface normal): repeatedly remove any into-surface component until it
- *  satisfies all of them or a few passes give up. With one plane this is a plain
- *  slide; with two opposing planes (a gap's two jambs) a perpendicular motion is
- *  untouched — it threads through; with two converging planes (a wedge) it
- *  collapses toward zero — it stops. */
-function clipToPlanes(v: Vec2, normals: readonly Vec2[]): Vec2 {
-  let r = v;
-  for (let pass = 0; pass < 4; pass++) {
-    let clean = true;
-    for (const n of normals) {
-      const into = r.x * n.x + r.y * n.y;
-      if (into < -1e-6) {
-        r = vec(r.x - into * n.x, r.y - into * n.y);
-        clean = false;
-      }
-    }
-    if (clean) break;
-  }
-  return r;
-}
+const WALL_PASSES = 3; // push-out passes so a body in a corner (two walls) settles
 
 /** The gun for a player slot: "none" = empty, omitted/unknown = the default. */
 function slotGun(key: string | undefined, fallback: string): Gun | undefined {
@@ -248,112 +226,45 @@ export class Game implements GameCtx {
     return Math.max(0.3, abs ?? this.player.gun.spec.zoom + delta);
   }
 
-  /** Resolve `c`'s movement this tick as a swept collide-and-slide against WALLS,
-   *  then a residual wall push-out. The sweep runs from the pre-move (wall-clear)
-   *  position `c.pos - c.vel` and stops/slides at the first wall, so a body can
-   *  never pass THROUGH a wall at any speed or across a stair z-flip. Body-vs-body
-   *  is NOT handled here — it's a separate, symmetric pass (see separateCharacters)
-   *  so every agent is treated equally instead of movers yielding to whoever
-   *  resolves first. */
+  /** Resolve `c` against WALLS: it has already moved this tick (pos += vel), so
+   *  just push it out of any wall it now overlaps. No sweep is needed — at the
+   *  game's body speeds (max ~7.5 px/tick, far below the 60px body diameter) a
+   *  body can't jump across a wall in one tick, and pushing out along the wall's
+   *  nearest feature slides the body along it for free. Body-vs-body is the
+   *  separate squishy pass (see separateCharacters). */
   private resolveCollisions(c: Character): void {
-    const from = sub(c.pos, c.vel);
-    c.pos = this.slide(from, c.vel, c);
-
-    // Residual wall push-out (no-op when already clear): frees anything left
-    // embedded by a spawn / shove / stair edge.
-    let pos = c.pos;
-    for (let i = 0; i < 2; i++) {
-      for (const o of this.world.obstacles) {
-        if (o.z !== c.z) continue;
-        pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
-      }
-    }
-    c.pos = pos;
+    c.pos = this.resolveWalls(c.pos, c.z);
   }
 
-  /** Collide-and-slide from `from` along `v` against walls: sweep toward the
-   *  target; when a wall stops it short, take the *true* outward normal at the
-   *  point of contact and project the untravelled remainder onto its tangent
-   *  (drop only the into-surface component), then sweep again. Because the normal
-   *  is the real surface normal at the body's own position — a face's, or a corner
-   *  vertex's — the tangent hugs the box's rounded outline, so it slides along
-   *  slanted walls AND rounds convex corners instead of catching on them. A few
-   *  iterations resolve corners (concave ones dead-end and stop). */
-  private slide(from: Vec2, v: Vec2, mover: Character): Vec2 {
-    let pos = from;
-    let rem = v;
-    for (let iter = 0; iter < 4; iter++) {
-      if (Math.abs(rem.x) < 1e-6 && Math.abs(rem.y) < 1e-6) break;
-      const target = add(pos, rem);
-      const hit = this.sweep(pos, target, mover);
-      const advanced = hit.x !== pos.x || hit.y !== pos.y;
-      pos = hit;
-      if (hit.x === target.x && hit.y === target.y) break; // reached target, unobstructed
-      const normals = this.contactNormals(pos, mover);
-      if (normals.length === 0) break;
-      // Clip the remainder against EVERY contact at once, so threading a gap
-      // between two corners keeps the through-component (each jamb cancels the
-      // wobble toward the other) while a real wedge collapses it to a stop.
-      const clipped = clipToPlanes(sub(target, hit), normals);
-      const progressed = clipped.x * rem.x + clipped.y * rem.y; // still heading roughly forward?
-      rem = clipped;
-      if (!advanced && progressed < 1e-6) break; // wedged: no motion this pass, none left
+  /** Push a body at `pos` out of every wall it overlaps on level `z`, a few
+   *  passes so a corner between two walls settles (each push-out can nudge it
+   *  into the neighbour). Uses the grid to touch only nearby obstacles. */
+  private resolveWalls(pos: Vec2, z: number): Vec2 {
+    const grid = this.world.grid;
+    for (let i = 0; i < WALL_PASSES; i++) {
+      if (grid) {
+        grid.eachNear(pos, BODY_RADIUS, z, (o) => {
+          pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+        });
+      } else {
+        for (const o of this.world.obstacles) {
+          if (o.z === z) pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+        }
+      }
     }
     return pos;
   }
 
-  /** Every outward wall-surface normal in contact range of `at` (the real
-   *  closest-feature normal from `boxSurfaceNormal`, so it follows rounded
-   *  corners at any orientation). `at` is the last clear point, so the wall that
-   *  stopped the sweep sits about a march step past it; search out to r + one
-   *  step to include it. Multiple entries mean a multi-contact spot (a doorway's
-   *  two jambs, a corner+face). */
-  private contactNormals(at: Vec2, mover: Character): Vec2[] {
-    const range = BODY_RADIUS + MOVE_MARCH + 1e-3;
-    const normals: Vec2[] = [];
-    for (const o of this.world.obstacles) {
-      if (o.z !== mover.z) continue;
-      const s = boxSurfaceNormal(at, o);
-      if (s.dist < range) normals.push(s.n);
-    }
-    return normals;
-  }
-
-  /** Advance `mover`'s body from `from` toward `to`, returning the furthest point
-   *  along the segment that's clear of walls (sampled every MOVE_MARCH px, so it
-   *  can't skip past a thin wall). Stops flush against the first contact. */
-  private sweep(from: Vec2, to: Vec2, mover: Character): Vec2 {
-    const dx = to.x - from.x;
-    const dy = to.y - from.y;
-    const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / MOVE_MARCH));
-    let last = from;
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const p = vec(from.x + dx * t, from.y + dy * t);
-      if (this.solidAt(p, mover)) return last;
-      last = p;
-    }
-    return last;
-  }
-
-  /** Is `p` blocked by a wall for `mover` (its inflated body overlaps one)? */
-  private solidAt(p: Vec2, mover: Character): boolean {
-    const z = mover.z;
-    const grid = this.world.grid;
-    if (grid) return grid.solidCircle(p, BODY_RADIUS, z);
-    for (const o of this.world.obstacles) {
-      if (o.z === z && circleIntersectsBox(p, BODY_RADIUS, o)) return true;
-    }
-    return false;
-  }
-
-  /** Push every overlapping pair of live characters apart, EQUALLY — each gives
-   *  way half the penetration along their centre line — then re-project everyone
-   *  out of walls (walls are immovable). Order-independent and symmetric, so no
-   *  agent has priority: a mover and the body it walks into both yield, and
-   *  crowds part and flow instead of one jamming behind another. Iterated a few
-   *  times so a squeezed cluster eases apart. Per-tick movement is far below a
-   *  body diameter, so nothing tunnels through a body between ticks. */
+  /** Squishy bodies: push every overlapping pair of live characters apart,
+   *  EQUALLY — each gives way half the penetration along their centre line — then
+   *  re-project everyone out of walls (walls are immovable, so a body squeezed
+   *  between a wall and another body ends against the wall). Order-independent and
+   *  symmetric by construction: no agent has priority, a mover and the body it
+   *  walks into both yield, and crowds part instead of one jamming behind another.
+   *  Iterated a few times so a squeezed cluster eases apart. Per-tick movement is
+   *  far below a body diameter, so nothing tunnels through a body between ticks.
+   *  This IS the whole body-collision model — the wall side is a plain push-out
+   *  (resolveWalls); together they replaced the swept surface-normal system. */
   private separateCharacters(): void {
     const cs = this.characters.filter((c) => c.hp > 0);
     const diam = 2 * BODY_RADIUS;
@@ -397,17 +308,10 @@ export class Game implements GameCtx {
           b.pos = vec(b.pos.x + nx * half, b.pos.y + ny * half);
         }
       }
-      // Walls win: re-project everyone out of obstacles after the split so a
-      // shove can't leave a body inside a wall (a body squeezed between a wall
-      // and another body ends against the wall, slightly overlapping the body —
-      // the least-bad spot, not a freeze).
-      for (const c of cs) {
-        let pos = c.pos;
-        for (const o of this.world.obstacles) {
-          if (o.z === c.z) pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
-        }
-        c.pos = pos;
-      }
+      // Walls win: re-project everyone out of walls after the split so a shove
+      // can't leave a body inside a wall (a body squeezed between a wall and
+      // another body ends against the wall — the least-bad spot, not a freeze).
+      for (const c of cs) c.pos = this.resolveWalls(c.pos, c.z);
     }
   }
 
