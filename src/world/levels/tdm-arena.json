@@ -1,5 +1,5 @@
 { "version": 1,
-  "meta": {"mode":"tdm","tdm":{"killLimit":15,"respawnDelay":150,"blue":{"troops":3,"skill":0.6,"equip":"standard"},"red":{"troops":3,"skill":0.6,"equip":"standard"}}},
+  "meta": {"mode":"tdm","tdm":{"killLimit":15,"respawnDelay":150,"blue":{"troops":3,"skill":0.6,"equip":"medium"},"red":{"troops":3,"skill":0.6,"equip":"medium"}}},
   "entities": [
   {"kind":"spawn","x":-100,"y":420,"z":0,"primary":"M16","secondary":"M9","armor":"ARMOR_L2","skin":"BLUE_SKIN"},
   {"kind":"spawnzone","x":-100,"y":400,"w":760,"h":150,"z":0,"team":"blue"},

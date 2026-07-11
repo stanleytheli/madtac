@@ -48,7 +48,7 @@ const EQUIP: { name: string; primaries: string[]; secondaries: string[]; armors:
  *  vocabulary. Single source of truth (tracks the table above). */
 export const EQUIP_NAMES: readonly string[] = EQUIP.map((t) => t.name);
 /** The tier a config falls back to when none is set. */
-export const DEFAULT_EQUIP = "standard";
+export const DEFAULT_EQUIP = "medium";
 
 /** The tier for a name, falling back to DEFAULT_EQUIP (then the first tier). */
 function equipTier(name: string): (typeof EQUIP)[number] {
