@@ -199,6 +199,10 @@ export class Robot extends Character {
       this.coast(ai);
     }
 
+    // Continuous steering applied every tick on top of the planned move (e.g.
+    // crowd separation), so it runs regardless of which movement branch ran.
+    this.postMove(ai);
+
     // Aim & fire run EVERY tick (not just plan ticks). Planning only picks the
     // *desired* heading (aimAngle); the actual heading eases toward it here, so
     // turning stays smooth at 60 Hz regardless of stagger — no thinking, just
@@ -265,6 +269,10 @@ export class Robot extends Character {
   /** Between plan ticks: cheap continuation of the last plan. The base Robot is
    *  stationary so there's nothing to do; movers override this to keep walking. */
   protected coast(_ai: AiContext): void {}
+
+  /** Called every tick after act/coast, before aiming — for continuous steering
+   *  applied on top of the planned move (crowd separation, etc.). No-op by default. */
+  protected postMove(_ai: AiContext): void {}
 
   /** An isotropic 2D Gaussian offset with stddev `aimSigma` (Box–Muller). */
   private sampleAimError(): Vec2 {

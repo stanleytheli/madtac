@@ -151,13 +151,25 @@ const CHASE_EVAL_TICKS = 30;
  *  spray several degrees off the aim line, so grazing a friend's silhouette
  *  with the center line isn't good enough. */
 const FRIENDLY_MARGIN = BODY_RADIUS * 2;
-/** Anti-conga: how far ahead to look for a tailgated teammate while routing, and
- *  how close to the travel line counts as "in front". Keep CROWD_MARGIN around one
- *  body DIAMETER — wider (e.g. 3·BR) flags mates merely abreast (already spread,
- *  not tailgating) as blockers, so a whole clump avoids at once. sidestep now
- *  veers forward rather than stalling, so the exact values aren't load-bearing. */
-const CROWD_DIST = BODY_RADIUS * 3;
-const CROWD_MARGIN = BODY_RADIUS * 2;
+/** Boids-style separation (`avoidCrowding`): a bot drifts away from nearby
+ *  TEAMMATES (not enemies — else it'd refuse to close for a kill) within this
+ *  range every tick, so a squad stays spread instead of bunching/stacking. This
+ *  is the OMNIDIRECTIONAL spacing force — purely position-relative so it can't
+ *  spin (unlike a fixed-handedness slip). But it's radial, so a conga line just
+ *  spreads ALONG its own axis (a mate stays dead ahead, only farther) — clearing
+ *  a teammate out of your firing lane is CROWD_DIST's job (below). */
+const SEPARATE_RADIUS = BODY_RADIUS * 4; // ~150px
+const SEPARATE_PUSH = 4.0; // max away-nudge per tick (px), ≈ moveSpeed
+/** Anti-flag (`blockingMate`/`sidestep`): while approaching with the gun out, if
+ *  a teammate is within CROWD_DIST ahead and within CROWD_MARGIN of the travel/
+ *  aim line (the same downrange test as the friendly-fire lane check), veer
+ *  laterally out instead of marching behind them — so they don't flag each other
+ *  and can both shoot. CROWD_DIST reaches past SEPARATE_RADIUS, or separation
+ *  would just park the mate ahead just out of detection. CROWD_MARGIN matches
+ *  FRIENDLY_MARGIN (the flag half-width) so it fires only for a genuine in-lane
+ *  mate, not one merely abreast. */
+const CROWD_DIST = BODY_RADIUS * 6; // ~180px, > SEPARATE_RADIUS
+const CROWD_MARGIN = BODY_RADIUS * 2; // = FRIENDLY_MARGIN
 
 // --- RUN / HEAL postures (distance-until-visibility driven) ------------------
 /** "Distance until visibility": the nav-route distance to the nearest spot that
@@ -354,11 +366,10 @@ export class TacOracle extends Oracle {
     if (!chase) return;
 
     // RUN: holstered, sprint to contact over the graph (no strafing/cover).
+    // Crowd separation (postMove) keeps a charging squad from bunching.
     if (this.mode === "run") {
       this.strafeTarget = null;
-      const blocker = this.blockingMate(ai, chase);
-      if (blocker) this.sidestep(ai, chase, blocker);
-      else this.navChase(ai, chase, target);
+      this.navChase(ai, chase, target);
       return;
     }
 
@@ -383,8 +394,9 @@ export class TacOracle extends Oracle {
     } else if (target && dist(this.pos, target.pos) <= this.engageRange) {
       this.strafeMove(ai, target);
     } else {
-      // Out of sight (or too far to trade): Oracle graph-chase into range —
-      // but peel aside first if tailgating a squadmate (breaks conga lines).
+      // Out of sight (or too far to trade): graph-chase into range — but veer
+      // out of a teammate's firing lane first, so we don't march in behind (and
+      // flag) them. General spacing is postMove's job; this is lane-specific.
       this.strafeTarget = null;
       const blocker = this.blockingMate(ai, chase);
       if (blocker) this.sidestep(ai, chase, blocker);
@@ -405,10 +417,7 @@ export class TacOracle extends Oracle {
     // boosted stepSpeed while mode === "run").
     if (this.mode === "run") {
       this.strafeTarget = null;
-      const chase = target ?? this.focus;
-      const blocker = chase ? this.blockingMate(ai, chase) : null;
-      if (chase && blocker) this.sidestep(ai, chase, blocker);
-      else this.coastStep(ai);
+      this.coastStep(ai);
       return;
     }
     // HEAL: follow the committed retreat/cover spot, or hold — never coast toward
@@ -432,7 +441,7 @@ export class TacOracle extends Oracle {
       this.stepToward(this.strafeTarget);
       return;
     }
-    // Keep spacing between plan ticks too: peel aside if tailgating.
+    // Keep clearing a teammate's firing lane between plan ticks too.
     const chase = target ?? this.focus;
     const blocker = chase ? this.blockingMate(ai, chase) : null;
     if (chase && blocker) this.sidestep(ai, chase, blocker);
@@ -853,9 +862,11 @@ export class TacOracle extends Oracle {
     return dist(this.pos, opponent.pos) > 1e-3 ? perp(norm(toOpp)) : vec(1, 0);
   }
 
-  /** The nearest squadmate directly ahead on the way to `chase` (within a short
-   *  lookahead of the travel line), or null. Reuses the anti-friendly-fire lane
-   *  test so followers don't tailgate into conga lines while routing. */
+  /** The nearest teammate downrange in our travel/aim lane toward `chase` (within
+   *  CROWD_DIST ahead, CROWD_MARGIN of the line), or null — i.e. someone we'd be
+   *  flagging (and marching behind) if we kept going straight. Reuses the
+   *  anti-friendly-fire lane test so "in the lane" means the same thing here as
+   *  for holding fire. */
   private blockingMate(ai: AiContext, chase: Character): Character | null {
     const to = sub(chase.pos, this.pos);
     const len = Math.hypot(to.x, to.y);
@@ -874,26 +885,23 @@ export class TacOracle extends Oracle {
     return best;
   }
 
-  /** One tick around `blocker` instead of tailgating it toward `chase`: veer
-   *  diagonally to the open side while STILL advancing, so a crowd fans forward
-   *  past each other rather than milling sideways in place (a pure-lateral step
-   *  makes zero progress, and with a wide CROWD_MARGIN a whole clump would shuffle
-   *  sideways forever). Tries the open-side diagonal first, then a shallower veer,
-   *  then the other side, then pure lateral for a genuinely tight spot; walls are
-   *  the only thing that can veto a direction (bodies aren't in `walkable`). */
+  /** One tick veering off `blocker`'s side instead of marching straight into its
+   *  back (which would flag it): a diagonal that still advances toward `chase`,
+   *  falling back to a shallower veer / the other side / pure lateral as walls
+   *  allow. Clears our firing lane so both can shoot. */
   private sidestep(ai: AiContext, chase: Character, blocker: Character): void {
     const to = sub(chase.pos, this.pos);
     const dir = dist(this.pos, chase.pos) > 1e-3 ? norm(to) : vec(1, 0);
     const side = perp(dir);
     const rel = sub(blocker.pos, this.pos);
-    const away = dir.x * rel.y - dir.y * rel.x > 0 ? -1 : 1; // the open side
+    const away = dir.x * rel.y - dir.y * rel.x > 0 ? -1 : 1; // step off the blocker's side
     const openL = scale(side, away);
     const openR = scale(side, -away);
     const dirs = [
-      add(dir, openL), // 45° to the open side: fan out AND keep advancing
+      add(dir, openL), // 45° to the open side: clear the lane AND keep advancing
       add(scale(dir, 2), openL), // shallower veer (more forward) if that's walled
-      add(dir, openR), // fan to the other side instead
-      openL, // pure lateral: a genuinely tight spot with no room to advance
+      add(dir, openR), // veer the other way instead
+      openL, // pure lateral: a tight spot with no room to advance
       openR,
     ];
     for (const d of dirs) {
@@ -904,6 +912,37 @@ export class TacOracle extends Oracle {
         return;
       }
     }
+  }
+
+  /** Boids-style separation, applied every tick on top of the planned move: drift
+   *  away from every nearby TEAMMATE (same z) within SEPARATE_RADIUS, weighted by
+   *  closeness, capped at SEPARATE_PUSH/tick. Keeps a squad spread — and because
+   *  the push is purely away from actual neighbours (not a fixed handedness), it
+   *  never induces a spin. Enemies are excluded so it doesn't sap aggression.
+   *  Skips the push into a wall. */
+  protected override postMove(ai: AiContext): void {
+    const R = SEPARATE_RADIUS;
+    let sx = 0;
+    let sy = 0;
+    for (const o of ai.characters) {
+      if (o === this || o.hp <= 0 || o.z !== this.z || areHostile(this.team, o.team)) continue;
+      const dx = this.pos.x - o.pos.x;
+      const dy = this.pos.y - o.pos.y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= R * R || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2);
+      const w = (R - d) / R; // 1 when overlapping, → 0 at the edge of the range
+      sx += (dx / d) * w;
+      sy += (dy / d) * w;
+    }
+    const m = Math.hypot(sx, sy);
+    if (m < 1e-6) return;
+    const push = SEPARATE_PUSH * Math.min(1, m); // gentle; saturates when crowded
+    const step = vec((sx / m) * push, (sy / m) * push);
+    const dest = add(this.pos, step);
+    if (!walkable(ai.world, this.pos, this.z, dest, this.z)) return; // don't shove into a wall
+    this.vel = add(this.vel, step);
+    this.pos = dest;
   }
 
   /** The lateral spots to consider — here (always cands[0]) plus offsets to
