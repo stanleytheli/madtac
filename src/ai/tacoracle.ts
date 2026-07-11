@@ -151,25 +151,6 @@ const CHASE_EVAL_TICKS = 30;
  *  spray several degrees off the aim line, so grazing a friend's silhouette
  *  with the center line isn't good enough. */
 const FRIENDLY_MARGIN = BODY_RADIUS * 2;
-/** Boids-style separation (`avoidCrowding`): a bot drifts away from nearby
- *  TEAMMATES (not enemies — else it'd refuse to close for a kill) within this
- *  range every tick, so a squad stays spread instead of bunching/stacking. This
- *  is the OMNIDIRECTIONAL spacing force — purely position-relative so it can't
- *  spin (unlike a fixed-handedness slip). But it's radial, so a conga line just
- *  spreads ALONG its own axis (a mate stays dead ahead, only farther) — clearing
- *  a teammate out of your firing lane is CROWD_DIST's job (below). */
-const SEPARATE_RADIUS = BODY_RADIUS * 4; // ~150px
-const SEPARATE_PUSH = 4.0; // max away-nudge per tick (px), ≈ moveSpeed
-/** Unstick: radial separation can't break a HEAD-ON block, and a single sidestep
- *  can't break a colinear CHAIN (the middle body is walled by mates both ways) —
- *  both freeze two/three mates converging on a shared spot, facing through each
- *  other. So a sprinting bot that makes no headway (< STUCK_EPS px/tick) for
- *  STUCK_LIMIT ticks with a mate jammed within STUCK_RADIUS escapes perpendicular
- *  to its travel; a per-agent side (sideBias) fans a stack out both ways rather
- *  than shuffling it along as one. */
-const STUCK_RADIUS = BODY_RADIUS * 2.4; // ~72px — a mate essentially touching
-const STUCK_EPS = 0.6; // px/tick below which "no progress"
-const STUCK_LIMIT = 24; // ticks of no progress (~0.4s) before escaping
 /** Anti-flag (`blockingMate`/`sidestep`): while approaching with the gun out, if
  *  a teammate is within CROWD_DIST ahead and within CROWD_MARGIN of the travel/
  *  aim line (the same downrange test as the friendly-fire lane check), veer
@@ -321,12 +302,6 @@ export class TacOracle extends Oracle {
   private dodging = false;
   private dodgeDir: 1 | -1 = 1;
   private dodgeIn = 0;
-  /** Unstick bookkeeping: position last tick, how long we've made no headway,
-   *  and which way to peel out of a jam (alternating per spawn so a stack splits). */
-  private lastTickPos: Vec2 | null = null;
-  private stuckTicks = 0;
-  private static biasCounter = 0;
-  private readonly sideBias: 1 | -1 = TacOracle.biasCounter++ % 2 === 0 ? 1 : -1;
 
   constructor(pos: Vec2, options: TacOracleOptions = {}) {
     super(pos, {
@@ -410,8 +385,9 @@ export class TacOracle extends Oracle {
       // postMove's job; this is path-specific.
       this.strafeTarget = null;
       const blocker = this.blockingMate(ai, chase);
-      if (blocker) this.sidestep(ai, chase, blocker);
-      else this.navChase(ai, chase, target);
+      // Veer around a mate in the lane if there's room; if boxed in, drive
+      // straight and let the squishy body collision phase us through.
+      if (!blocker || !this.sidestep(ai, chase, blocker)) this.navChase(ai, chase, target);
     }
   }
 
@@ -445,11 +421,11 @@ export class TacOracle extends Oracle {
       this.stepToward(this.strafeTarget);
       return;
     }
-    // Keep clearing a teammate's firing lane between plan ticks too.
+    // Keep clearing a teammate's firing lane between plan ticks too (drive
+    // straight if boxed — squishy collision phases through rather than freezing).
     const chase = target ?? this.focus;
     const blocker = chase ? this.blockingMate(ai, chase) : null;
-    if (chase && blocker) this.sidestep(ai, chase, blocker);
-    else this.coastStep(ai); // continue the committed graph chase
+    if (!chase || !blocker || !this.sidestep(ai, chase, blocker)) this.coastStep(ai);
   }
 
   /** Burst / reload bookkeeping -> which mode this tick is fought in, with
@@ -900,8 +876,10 @@ export class TacOracle extends Oracle {
   /** One tick veering off `blocker`'s side instead of marching straight into its
    *  back (which would flag it): a diagonal that still advances toward `chase`,
    *  falling back to a shallower veer / the other side / pure lateral as walls
-   *  allow. Clears our firing lane so both can shoot. */
-  private sidestep(ai: AiContext, chase: Character, blocker: Character): void {
+   *  allow. Clears our firing lane so both can shoot. Returns whether it found an
+   *  opening; if not, the caller drives straight (and the squishy body collision
+   *  lets it phase through the mate rather than freeze against it). */
+  private sidestep(ai: AiContext, chase: Character, blocker: Character): boolean {
     const to = sub(chase.pos, this.pos);
     const dir = dist(this.pos, chase.pos) > 1e-3 ? norm(to) : vec(1, 0);
     const side = perp(dir);
@@ -921,78 +899,10 @@ export class TacOracle extends Oracle {
       if (walkable(ai.world, this.pos, this.z, step, this.z)) {
         this.vel = sub(step, this.pos);
         this.pos = step;
-        return;
+        return true;
       }
     }
-  }
-
-  /** Boids-style separation, applied every tick on top of the planned move: drift
-   *  away from every nearby TEAMMATE (same z) within SEPARATE_RADIUS, weighted by
-   *  closeness, capped at SEPARATE_PUSH/tick. Keeps a squad spread — and because
-   *  the push is purely away from actual neighbours (not a fixed handedness), it
-   *  never induces a spin. Enemies are excluded so it doesn't sap aggression.
-   *  Skips the push into a wall. */
-  protected override postMove(ai: AiContext): void {
-    // Progress since last tick (post-collision), for the unstick below.
-    const moved = this.lastTickPos ? dist(this.pos, this.lastTickPos) : 99;
-    this.lastTickPos = vec(this.pos.x, this.pos.y);
-
-    // Unstick a bot wedged against a teammate (head-on, or a colinear chain the
-    // radial push and a single sidestep can't break) while moving with no enemy
-    // in play — the objective approach, sprinting or not. Not in a fight (a live
-    // target or a remembered one it's holding cover on) and not healing, where
-    // standing still is the point. After STUCK_LIMIT ticks of no headway with a
-    // mate touching, peel out perpendicular to travel — a stronger, directed
-    // break than the radial push below, which returns early so it wins this tick.
-    const approaching = !this.lastTarget && !this.focus && this.mode !== "heal";
-    if (approaching) {
-      let jammed = false;
-      for (const o of ai.characters) {
-        if (o === this || o.hp <= 0 || o.z !== this.z || areHostile(this.team, o.team)) continue;
-        if (dist(this.pos, o.pos) < STUCK_RADIUS) {
-          jammed = true;
-          break;
-        }
-      }
-      this.stuckTicks = jammed && moved < STUCK_EPS ? this.stuckTicks + 1 : 0;
-      if (this.stuckTicks >= STUCK_LIMIT && jammed) {
-        const travel = vec(Math.cos(this.aimAngle), Math.sin(this.aimAngle));
-        for (const s of [this.sideBias, -this.sideBias]) {
-          const step = add(this.pos, scale(perp(travel), s * this.moveSpeed));
-          if (walkable(ai.world, this.pos, this.z, step, this.z)) {
-            this.vel = sub(step, this.pos);
-            this.pos = step;
-            this.stuckTicks = 0;
-            return;
-          }
-        }
-      }
-    } else {
-      this.stuckTicks = 0;
-    }
-
-    const R = SEPARATE_RADIUS;
-    let sx = 0;
-    let sy = 0;
-    for (const o of ai.characters) {
-      if (o === this || o.hp <= 0 || o.z !== this.z || areHostile(this.team, o.team)) continue;
-      const dx = this.pos.x - o.pos.x;
-      const dy = this.pos.y - o.pos.y;
-      const d2 = dx * dx + dy * dy;
-      if (d2 >= R * R || d2 < 1e-6) continue;
-      const d = Math.sqrt(d2);
-      const w = (R - d) / R; // 1 when overlapping, → 0 at the edge of the range
-      sx += (dx / d) * w;
-      sy += (dy / d) * w;
-    }
-    const m = Math.hypot(sx, sy);
-    if (m < 1e-6) return;
-    const push = SEPARATE_PUSH * Math.min(1, m); // gentle; saturates when crowded
-    const step = vec((sx / m) * push, (sy / m) * push);
-    const dest = add(this.pos, step);
-    if (!walkable(ai.world, this.pos, this.z, dest, this.z)) return; // don't shove into a wall
-    this.vel = add(this.vel, step);
-    this.pos = dest;
+    return false; // boxed in — no lateral opening
   }
 
   /** The lateral spots to consider — here (always cands[0]) plus offsets to

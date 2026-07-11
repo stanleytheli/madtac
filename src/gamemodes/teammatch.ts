@@ -43,6 +43,10 @@ const EQUIP: { primaries: string[]; secondaries: string[]; armors: string[]; bot
   { primaries: ["M249", "AK47", "M16"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
 ];
 
+/** Highest valid equipment tier (0-based) — the single source of truth for
+ *  clamping equip inputs (editor / URL) so it tracks the table above. */
+export const MAX_EQUIP = EQUIP.length - 1;
+
 /** Callsign pool. Shuffled once per match then handed out in order, so names are
  *  unique until the pool is exhausted (then good-faith numbered duplicates). */
 const NAMES = [

@@ -48,6 +48,13 @@ export class DominationOracle extends TacOracle {
     return super.inContact(ai, chase);
   }
 
+  /** Walk right onto the capture point — no combat standoff for the objective
+   *  marker, so the bot ends up inside the radius instead of stopping ~gun-range
+   *  short and hovering just off the node. */
+  protected override standoffFor(chase: Character): number {
+    return chase === this.objMarker ? 0 : super.standoffFor(chase);
+  }
+
   /** Out-of-combat destination: the nearest capture point that still needs work.
    *  If enemies are contesting that point, hunt them down (plain TacOracle);
    *  otherwise walk onto the point to capture it. Everything owned outright →

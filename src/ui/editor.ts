@@ -18,6 +18,7 @@ import { pointInBox } from "../engine/collision.ts";
 import { GAMEMODES } from "../gamemodes/gamemode.ts";
 import { DEFAULT_TDM } from "../gamemodes/tdm.ts";
 import { DEFAULT_DOM } from "../gamemodes/domination.ts";
+import { MAX_EQUIP } from "../gamemodes/teammatch.ts";
 import { isDown, mouse, moveAxis } from "../engine/input.ts";
 import {
   ENTITY_DEFS,
@@ -976,7 +977,7 @@ export class Editor {
       this.matchFields.append(
         this.matchNumRow("troops", () => c.troops, (v) => (c.troops = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
         this.matchNumRow("skill 0-1", () => c.skill, (v) => (c.skill = Math.max(0, Math.min(1, v))), { min: 0, step: 0.1 }),
-        this.matchNumRow("equip 0-4", () => c.equip, (v) => (c.equip = Math.max(0, Math.min(4, Math.round(v)))), { min: 0, step: 1 }),
+        this.matchNumRow(`equip 0-${MAX_EQUIP}`, () => c.equip, (v) => (c.equip = Math.max(0, Math.min(MAX_EQUIP, Math.round(v)))), { min: 0, step: 1 }),
       );
     }
   }

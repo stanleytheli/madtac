@@ -43,7 +43,12 @@ import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ZOOM_EASE = 0.12;
 // Body/wall separation (see separateCharacters / resolveWalls).
-const SEP_ITERS = 4; // relaxation passes per tick (crowd stability)
+// One small squishy nudge per tick between touching bodies — LESS than a
+// determined mutual push (2×moveSpeed ≈ 4.8/tick, more sprinting), so two bodies
+// set on the same spot sink in and clip through instead of hard-locking; a
+// casual one-sided bump (≈2.4/tick) still gets eased apart. This softness is the
+// whole point: it's what lets a mutual wedge resolve.
+const SQUISH_DELTA = 2.0; // max centre-line separation applied per tick (px)
 const WALL_PASSES = 3; // push-out passes so a body in a corner (two walls) settles
 
 /** The gun for a player slot: "none" = empty, omitted/unknown = the default. */
@@ -267,58 +272,57 @@ export class Game implements GameCtx {
    *  between a wall and another body ends against the wall). Order-independent and
    *  symmetric by construction: no agent has priority, a mover and the body it
    *  walks into both yield, and crowds part instead of one jamming behind another.
-   *  Iterated a few times so a squeezed cluster eases apart. Per-tick movement is
-   *  far below a body diameter, so nothing tunnels through a body between ticks.
-   *  This IS the whole body-collision model — the wall side is a plain push-out
-   *  (resolveWalls); together they replaced the swept surface-normal system. */
+   *  SQUISHY: one small nudge per tick, NOT the full penetration and NOT iterated
+   *  — two bodies driven together harder than SQUISH_DELTA/tick sink in and clip
+   *  through rather than hard-locking (the fix for the mutual-wedge freeze: there
+   *  is no longer a rigid wall for two determined agents to jam against). A casual
+   *  one-sided bump is below the delta, so it still eases apart and doesn't clip.
+   *  Per-tick movement is far below a body diameter, so nothing tunnels between
+   *  ticks. This IS the whole body-collision model — the wall side is a plain
+   *  push-out (resolveWalls); together they replaced the swept normal system. */
   private separateCharacters(): void {
     const cs = this.characters.filter((c) => c.hp > 0);
     const diam = 2 * BODY_RADIUS;
     const diam2 = diam * diam;
-    for (let iter = 0; iter < SEP_ITERS; iter++) {
-      for (let i = 0; i < cs.length; i++) {
-        const a = cs[i];
-        for (let j = i + 1; j < cs.length; j++) {
-          const b = cs[j];
-          if (a.z !== b.z) continue;
-          const dx = b.pos.x - a.pos.x;
-          const dy = b.pos.y - a.pos.y;
-          const d2 = dx * dx + dy * dy;
-          if (d2 >= diam2) continue; // not overlapping
-          let nx: number;
-          let ny: number;
-          let overlap: number;
-          if (d2 < 1e-6) {
-            // Exactly coincident: shove apart along a deterministic axis so the
-            // split is stable (no NaN, no random jitter).
-            const a2 = (i + 1) * 2.399;
-            nx = Math.cos(a2);
-            ny = Math.sin(a2);
-            overlap = diam;
-          } else {
-            const d = Math.sqrt(d2);
-            nx = dx / d;
-            ny = dy / d;
-            overlap = diam - d;
-          }
-          // Split the penetration equally along the centre line. PURELY radial —
-          // no tangential component. A tangential ("slip") term was tried to let
-          // head-on collisions veer past instead of stalling, but a fixed
-          // handedness applied every tick of contact integrates into a spin:
-          // two bodies driving at a common point (a cluster, or mutual chase)
-          // orbited each other in circles. Radial-only can't rotate. Offset
-          // collisions still slide (the normal carries a lateral component); only
-          // exact head-on stalls, which is rare and the AI steering handles.
-          const half = overlap * 0.5;
-          a.pos = vec(a.pos.x - nx * half, a.pos.y - ny * half);
-          b.pos = vec(b.pos.x + nx * half, b.pos.y + ny * half);
+    for (let i = 0; i < cs.length; i++) {
+      const a = cs[i];
+      for (let j = i + 1; j < cs.length; j++) {
+        const b = cs[j];
+        if (a.z !== b.z) continue;
+        const dx = b.pos.x - a.pos.x;
+        const dy = b.pos.y - a.pos.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= diam2) continue; // not touching
+        let nx: number;
+        let ny: number;
+        let overlap: number;
+        if (d2 < 1e-6) {
+          // Exactly coincident: ease apart along a deterministic axis so the
+          // split is stable (no NaN, no random jitter).
+          const a2 = (i + 1) * 2.399;
+          nx = Math.cos(a2);
+          ny = Math.sin(a2);
+          overlap = diam;
+        } else {
+          const d = Math.sqrt(d2);
+          nx = dx / d;
+          ny = dy / d;
+          overlap = diam - d;
         }
+        // A single small correction along the centre line, capped at the actual
+        // overlap so it never opens a gap past touching. PURELY radial — no
+        // tangential component: a fixed-handedness slip integrates into an orbit
+        // (two bodies driving at a common point circled each other), so radial
+        // only. Offset contacts still slide (the normal carries a lateral part).
+        const half = Math.min(SQUISH_DELTA, overlap) * 0.5;
+        a.pos = vec(a.pos.x - nx * half, a.pos.y - ny * half);
+        b.pos = vec(b.pos.x + nx * half, b.pos.y + ny * half);
       }
-      // Walls win: re-project everyone out of walls after the split so a shove
-      // can't leave a body inside a wall (a body squeezed between a wall and
-      // another body ends against the wall — the least-bad spot, not a freeze).
-      for (const c of cs) c.pos = this.resolveWalls(c.pos, c.z);
     }
+    // Walls win: re-project everyone out of walls after the nudge so a shove
+    // can't leave a body inside a wall (a body squeezed between a wall and
+    // another body ends against the wall — the least-bad spot, not a freeze).
+    for (const c of cs) c.pos = this.resolveWalls(c.pos, c.z);
   }
 
   /** Flip `c`'s z at any stair midpoint it's standing on. Called right after a

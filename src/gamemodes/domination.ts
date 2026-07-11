@@ -50,7 +50,7 @@ export function resolveDom(o?: DomOverrides): DomConfig {
 
 /** Per-tick strength change one net agent applies (0.01 → a lone capper takes a
  *  gray point, or flips a fully-held one, in ~1.7s; faster with a bigger lead). */
-const CAPTURE_RATE = 0.01;
+const CAPTURE_RATE = 0.0025;
 
 const clamp01 = (n: number): number => Math.max(0, Math.min(1, n));
 

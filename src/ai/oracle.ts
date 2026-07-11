@@ -97,6 +97,14 @@ export class Oracle extends Robot {
     return false;
   }
 
+  /** How close the beeline closes on `chase` before holding — gun range for a
+   *  combat target (so a shooter stops at fighting distance). Overridable so an
+   *  objective-seeker can walk right onto its destination (a capture point)
+   *  instead of stopping short and hovering just off it. */
+  protected standoffFor(_chase: Character): number {
+    return this.standoff;
+  }
+
   /** Cheap between-plan movement: take one more step toward the destination the
    *  last plan already committed to (the beeline target when at the goal node,
    *  else the committed waypoint) — no path query, no line-of-sight work. */
@@ -105,8 +113,8 @@ export class Oracle extends Robot {
     const nav = ai.nav;
     let dest: Vec2 | null = null;
     let direct = false;
+    const chase = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     if (this.atGoalNode) {
-      const chase = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
       if (chase) {
         direct = true;
         dest = chase.pos;
@@ -115,7 +123,7 @@ export class Oracle extends Robot {
       dest = nav.nodes[this.waypoint].pos;
     }
     if (!dest) return;
-    if (direct && dist(this.pos, dest) <= this.standoff) return;
+    if (direct && chase && dist(this.pos, dest) <= this.standoffFor(chase)) return;
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
     const next = add(this.pos, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)));
@@ -147,7 +155,7 @@ export class Oracle extends Robot {
       dest = target.pos;
     }
     if (!dest) return;
-    if (direct && dist(this.pos, chase.pos) <= this.standoff) return;
+    if (direct && dist(this.pos, chase.pos) <= this.standoffFor(chase)) return;
 
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
