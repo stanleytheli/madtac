@@ -27,6 +27,25 @@
  *    any reload is done. A good cover spot breaks its own sight line, so
  *    walking back out to re-engage falls out of the Oracle graph-chase
  *    naturally: an emergent peek cycle.
+ *  - RUN mode: when contact is far off — min over all hostiles of our reach to
+ *    see them AND their reach to see us (the soonest a fight could start) exceeds
+ *    RUN_DISTANCE — it
+ *    holsters to the fists and sprints there at RUN_SPEED_MUL x speed, re-arming
+ *    (draw time and all) once it closes in. Committed a priori: that distance must
+ *    hold for RUN_COMMIT_TICKS before it starts, so a peeking opponent (who keeps
+ *    resetting the dwell) never gets it to holster.
+ *  - HEAL mode: a committed heal — hurt (< HEAL_HP) and safe, a soldier carrying
+ *    meds backs away to grow its safety, then holds cover burning healing items
+ *    back-to-back. "Safe" is the ENEMY's distance-until-visibility to US —
+ *    minimised over ALL hostiles (the soonest anyone could see us), the same pass
+ *    that finds our own min reach for RUN (contactScan): it stays long while we're
+ *    tucked behind cover, so a peeking opponent doesn't flip the heal like our own
+ *    visDist would. While healing it retreats from the nearest threat until that
+ *    reach hits HEAL_SEEK_DISTANCE, then just holds cover. Enter at
+ *    HEAL_SAFE_DISTANCE (held for HEAL_COMMIT_TICKS — an a-priori dwell, so a
+ *    dip-and-recover in that reach keeps resetting it and never turtles), drop the
+ *    item and re-arm at HEAL_ALARM_DISTANCE (or once topped off / out of items).
+ *    Entry is committed; the abort stays instant (safety).
  *  - Targeting is cost-based, not distance-based: among visible hostiles it
  *    locks the one it could shoot *soonest* — the walk to the nearest strafe
  *    point with a clear friendly-free lane (selectTarget/shootCost) — and when
@@ -133,9 +152,51 @@ const CHASE_EVAL_TICKS = 30;
  *  with the center line isn't good enough. */
 const FRIENDLY_MARGIN = BODY_RADIUS * 2;
 /** Anti-conga: how far ahead to look for a tailgated teammate while routing, and
- *  how close to the travel line counts as "in front". */
-const CROWD_DIST = BODY_RADIUS * 2.2;
-const CROWD_MARGIN = BODY_RADIUS * 1.3;
+ *  how close to the travel line counts as "in front". Keep CROWD_MARGIN around one
+ *  body DIAMETER — wider (e.g. 3·BR) flags mates merely abreast (already spread,
+ *  not tailgating) as blockers, so a whole clump avoids at once. sidestep now
+ *  veers forward rather than stalling, so the exact values aren't load-bearing. */
+const CROWD_DIST = BODY_RADIUS * 3;
+const CROWD_MARGIN = BODY_RADIUS * 2;
+
+// --- RUN / HEAL postures (distance-until-visibility driven) ------------------
+/** "Distance until visibility": the nav-route distance to the nearest spot that
+ *  can see the quarry (0 while it's already in sight). It gates the two
+ *  out-of-contact postures below. */
+/** Sprint speed (fists out) as a multiple of the normal move speed. */
+const RUN_SPEED_MUL = 1.4;
+/** Distance-until-visibility above which to holster and sprint to contact. */
+const RUN_DISTANCE = 1000;
+/** Contact must stay this far off for this long (ticks, ~1.5s) before RUN is
+ *  committed — an a-priori dwell, not a reactive lockout. A peeking opponent
+ *  whipsaws the distance, so the dwell keeps resetting and never commits: the
+ *  bot only holsters to sprint once the enemy has truly stayed away a beat. */
+const RUN_COMMIT_TICKS = 90;
+/** Below this HP, look for a safe moment to heal. */
+const HEAL_HP = 75;
+/** Distance-until-visibility needed to START healing (a safe buffer). */
+const HEAL_SAFE_DISTANCE = 700;
+/** While healing, keep backing off to grow the enemy's reach-to-us up to this —
+ *  a "reasonable" safe cushion. Past it, just hold cover and use items (don't
+ *  keep fleeing across the map). */
+const HEAL_SEEK_DISTANCE = 1200;
+/** How many nearest hostiles (by straight-line) the contact scan routes over.
+ *  The min distance-until-visibility is dominated by the closest enemies, so a
+ *  small K keeps the O(nodes) nav scans bounded regardless of the roster size. */
+const CONTACT_SCAN_K = 3;
+/** Recompute the (expensive, nav-scan-heavy) contact scan only this often;
+ *  distance-until-visibility drifts slowly, so it's cached between. */
+const CONTACT_EVAL_TICKS = 15;
+/** Distance-until-visibility at which an in-progress heal is aborted and the
+ *  weapon comes back out (the enemy is getting close). Below HEAL_SAFE_DISTANCE
+ *  so the two thresholds hysteresis instead of chattering. */
+const HEAL_ALARM_DISTANCE = 400;
+/** The enemy's reach must stay past HEAL_SAFE_DISTANCE for this long (ticks, ~1.5s)
+ *  before a heal is committed — an a-priori dwell. The abort stays instant
+ *  (safety); this only gates entry, so a reach that dips-and-recovers (peeking,
+ *  or the route metric snapping across nav nodes) keeps resetting the dwell and
+ *  never turtles, instead of a lockout that expires and re-triggers. */
+const HEAL_COMMIT_TICKS = 90;
 
 /** Is teammate `mate` downrange of a shot from `from` at `to` — in front of the
  *  muzzle (not behind it) and within `margin` of the line? Unlike a capsule test
@@ -187,7 +248,32 @@ export class TacOracle extends Oracle {
   private readonly engageRange: number;
   private readonly semiAutoDelay: number;
   private readonly strafeOffsets: number[];
-  private mode: "shoot" | "cover" = "shoot";
+  /** Gun-readiness mode from updateMode (shoot when the burst/reload is ready,
+   *  else cover). The acting posture (`mode`) equals this in combat, but RUN and
+   *  HEAL override it (see updatePosture). */
+  private combatMode: "shoot" | "cover" = "shoot";
+  /** The posture actually fought this tick: normal combat (shoot/cover), RUN
+   *  (holstered sprint to contact), or HEAL (a committed heal — moves exactly
+   *  like cover, but stays put using items instead of re-engaging). */
+  private mode: "shoot" | "cover" | "run" | "heal" = "shoot";
+  /** OUR distance-until-visibility to the quarry (route to a spot that sees it),
+   *  refreshed each plan tick; drives RUN. */
+  private visDist = Infinity;
+  /** The ENEMY's distance-until-visibility to US, minimised over ALL hostiles
+   *  (the soonest ANYONE could see us) — what gates healing: it stays long while
+   *  we're tucked in cover, whereas our own visDist snaps to 0 the instant they
+   *  peek a lane we can see. */
+  private enemyVisDist = Infinity;
+  /** The hostile that owns `enemyVisDist` (can see us soonest) — the one a heal
+   *  retreat backs away from. Null when out of the scan. */
+  private threat: Character | null = null;
+  /** Ticks until the (expensive) contact scan is recomputed (else cached). */
+  private contactEvalIn = 0;
+  /** Consecutive ticks the RUN entry condition has held (a-priori dwell — RUN is
+   *  committed only once this reaches RUN_COMMIT_TICKS; resets the moment it fails). */
+  private runDwell = 0;
+  /** Consecutive ticks the HEAL entry condition has held (see HEAL_COMMIT_TICKS). */
+  private healDwell = 0;
   /** Latched when the envelope crosses burstLimit; cleared when the pattern resets. */
   private burstDone = false;
   /** Reaction-time gating of gun readiness (ready = pattern reset + not
@@ -233,11 +319,48 @@ export class TacOracle extends Oracle {
     if (this.focus && (this.focus.hp <= 0 || this.ticksSinceTarget > FOCUS_MEMORY)) {
       this.focus = null;
     }
-    this.updateMode(target ?? this.focus);
     // Out of sight, the last engaged enemy stays the concern (cover is scored
     // against them, the chase heads back at them) until memory lapses.
     const chase = target ?? this.focus ?? this.bestChase(ai);
+    // Contact metrics, minimised over ALL hostiles. In an active fight (we can
+    // see the chase) we're exposed and close, so both are ~0 — skip the full
+    // scan; only pay for it when out of contact (approaching / running / healing),
+    // which is exactly when RUN/HEAL care.
+    if (chase && chase.z === this.z && this.canSee(ai.world, chase)) {
+      this.visDist = 0;
+      this.enemyVisDist = 0;
+      this.threat = chase;
+      this.contactEvalIn = 0; // recompute the moment we lose sight
+    } else if (chase) {
+      // The scan is nav-scan-heavy; cache it (distance-until-visibility drifts
+      // slowly). A fresh entry into the scan branch (contactEvalIn reset to 0
+      // whenever we were seeing the chase) recomputes immediately.
+      this.contactEvalIn -= 1;
+      if (this.contactEvalIn <= 0) {
+        const scan = this.contactScan(ai);
+        this.visDist = scan.myMin;
+        this.enemyVisDist = scan.enemyMin;
+        this.threat = scan.threat ?? chase;
+        this.contactEvalIn = CONTACT_EVAL_TICKS;
+      }
+    } else {
+      this.visDist = Infinity;
+      this.enemyVisDist = Infinity;
+      this.threat = null;
+      this.contactEvalIn = 0;
+    }
+    this.updateMode(target ?? this.focus);
+    this.updatePosture(); // may override the combat mode with RUN / HEAL
     if (!chase) return;
+
+    // RUN: holstered, sprint to contact over the graph (no strafing/cover).
+    if (this.mode === "run") {
+      this.strafeTarget = null;
+      const blocker = this.blockingMate(ai, chase);
+      if (blocker) this.sidestep(ai, chase, blocker);
+      else this.navChase(ai, chase, target);
+      return;
+    }
 
     // Heavy-penalty guns are fired from a stand: while actively mid-burst
     // (would fire now or is between semi-auto clicks), hold position and let
@@ -253,7 +376,9 @@ export class TacOracle extends Oracle {
       return;
     }
 
-    if (this.mode === "cover") {
+    if (this.mode === "heal") {
+      this.healMove(ai, chase); // back off to grow the enemy's reach, then hold cover
+    } else if (this.mode === "cover") {
       this.coverMove(ai, chase);
     } else if (target && dist(this.pos, target.pos) <= this.engageRange) {
       this.strafeMove(ai, target);
@@ -275,6 +400,23 @@ export class TacOracle extends Oracle {
     this.vel = vec(0, 0);
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     this.updateMode(target ?? this.focus);
+    this.updatePosture(); // keep the posture (and heal use) live between plans
+    // RUN: keep sprinting the committed graph chase (coastStep runs at the
+    // boosted stepSpeed while mode === "run").
+    if (this.mode === "run") {
+      this.strafeTarget = null;
+      const chase = target ?? this.focus;
+      const blocker = chase ? this.blockingMate(ai, chase) : null;
+      if (chase && blocker) this.sidestep(ai, chase, blocker);
+      else this.coastStep(ai);
+      return;
+    }
+    // HEAL: follow the committed retreat/cover spot, or hold — never coast toward
+    // the enemy (that's the opposite of taking cover to heal).
+    if (this.mode === "heal") {
+      if (this.strafeTarget) this.stepToward(this.strafeTarget);
+      return;
+    }
     // Mirror act's stand-to-shoot hold so a heavy gunner doesn't creep mid-burst.
     if (
       target &&
@@ -325,12 +467,200 @@ export class TacOracle extends Oracle {
     if (this.reactIn >= 0 && --this.reactIn < 0) {
       this.fireOk = this.lastReady;
       const mode = this.lastReady ? "shoot" : "cover";
-      if (mode !== this.mode) {
-        this.mode = mode;
+      if (mode !== this.combatMode) {
+        this.combatMode = mode;
         this.strafeTarget = null; // the two modes want opposite spots
         this.evalIn = 0;
       }
     }
+  }
+
+  /** Resolve the acting posture from the combat mode, HP, and
+   *  distance-until-visibility, and keep the held slot in step with it:
+   *   - HEAL (cover + use items): hurt (< HEAL_HP), carrying a healing item,
+   *     and safely far (>= HEAL_SAFE_DISTANCE). Aborts — re-arming — the moment
+   *     the enemy could see us within HEAL_ALARM_DISTANCE, we top off, or we run
+   *     out of items.
+   *   - RUN (holstered sprint): no heal wanted, but contact is far off
+   *     (>= RUN_DISTANCE).
+   *   - otherwise the combat mode (shoot / cover). */
+  private updatePosture(): void {
+    // Entry conditions, and how long each has held continuously (a-priori dwell):
+    // the distance must stay safe for the commit period before we hand over to
+    // RUN / HEAL, so a peeker whipsawing the distance keeps resetting the dwell
+    // and never triggers either — no reactive lockout needed.
+    const fightDist = Math.min(this.visDist, this.enemyVisDist); // soonest a fight can start
+    const runSafe = fightDist >= RUN_DISTANCE;
+    const healSafe = this.hp < HEAL_HP && this.canHeal() && this.enemyVisDist >= HEAL_SAFE_DISTANCE;
+    this.runDwell = runSafe ? this.runDwell + 1 : 0;
+    this.healDwell = healSafe ? this.healDwell + 1 : 0;
+
+    // HEAL is a committed mode: enter only after the dwell, exit instantly on the
+    // alarm (safety) / topped off / out of items. The 700>400 gap is the stay
+    // hysteresis; the dwell is the entry commitment.
+    const healing =
+      this.mode === "heal"
+        ? this.enemyVisDist >= HEAL_ALARM_DISTANCE && this.hp < this.maxHp && this.canHeal()
+        : healSafe && this.healDwell >= HEAL_COMMIT_TICKS;
+
+    // RUN: stay while still safe; enter only after the dwell.
+    const wantRun = !healing && runSafe && (this.mode === "run" || this.runDwell >= RUN_COMMIT_TICKS);
+    const mode: "shoot" | "cover" | "run" | "heal" = healing ? "heal" : wantRun ? "run" : this.combatMode;
+
+    if (mode !== this.mode) {
+      if (this.mode === "heal") this.cancelUse(); // leaving a heal drops a half-finished use
+      this.mode = mode;
+      this.strafeTarget = null;
+      this.evalIn = 0;
+    }
+    this.applyPostureSlot();
+  }
+
+  /** Hold the slot the posture wants: the healing item (and keep using it) while
+   *  healing, the fists while running, else the weapon. equip() is a no-op when
+   *  already on the slot, so this is cheap to call every tick. */
+  private applyPostureSlot(): void {
+    if (this.mode === "heal") {
+      this.equipUtility();
+      if (!this.usingUtility) this.startUse(); // chain items until healed / out
+    } else if (this.mode === "run") {
+      this.equip("hand"); // holster: fists out for the sprint
+    } else {
+      this.equipWeapon();
+    }
+  }
+
+  /** Re-equip the best available weapon (primary, else secondary, else fists). */
+  private equipWeapon(): void {
+    if (this.slots.primary) this.equip("primary");
+    else if (this.slots.secondary) this.equip("secondary");
+    else this.equip("hand");
+  }
+
+  /** Carrying at least one (healing) utility to use. */
+  private canHeal(): boolean {
+    return this.utilities.length > 0;
+  }
+
+  /** HEAL movement: while the threat could still reach us within
+   *  HEAL_SEEK_DISTANCE, back away to grow that reach; once past it, just hold
+   *  cover (hug the least-exposed spot / dodge) and keep burning items. The
+   *  retreat commits a spot as `strafeTarget` so coast follows it between plans. */
+  private healMove(ai: AiContext, chase: Character): void {
+    const threat = this.threat ?? chase;
+    if (this.enemyVisDist >= HEAL_SEEK_DISTANCE) {
+      this.coverMove(ai, threat); // safe enough — hold cover, don't flee further
+      return;
+    }
+    this.evalIn -= 1;
+    if (this.strafeTarget && dist(this.pos, this.strafeTarget) <= ARRIVE) this.strafeTarget = null;
+    if (!this.strafeTarget || this.evalIn <= 0) {
+      this.evalIn = EVAL_TICKS;
+      this.strafeTarget = this.retreatSpot(ai, threat);
+    }
+    if (this.strafeTarget) this.stepToward(this.strafeTarget);
+  }
+
+  /** A walkable lookahead point that backs away from `threat`, preferring one
+   *  that breaks its line of sight (so the retreat genuinely grows the threat's
+   *  reach-to-us instead of wandering into an open lane). Null if walled in. */
+  private retreatSpot(ai: AiContext, threat: Character): Vec2 | null {
+    const LOOK = 90;
+    const away = dist(this.pos, threat.pos) > 1e-3 ? norm(sub(this.pos, threat.pos)) : vec(1, 0);
+    const side = perp(away);
+    const dirs = [
+      away,
+      norm(add(away, scale(side, 0.6))),
+      norm(add(away, scale(side, -0.6))),
+      side,
+      scale(side, -1),
+    ];
+    let fallback: Vec2 | null = null;
+    for (const d of dirs) {
+      const pt = add(this.pos, scale(d, LOOK));
+      if (!walkable(ai.world, this.pos, this.z, pt, this.z)) continue;
+      fallback = fallback ?? pt;
+      if (!losClear(ai.world, pt, threat.pos, this.z)) return pt; // hidden: best retreat
+    }
+    return fallback; // nothing hidden reachable — take the most open-but-walkable back-step
+  }
+
+  /** Sprint while running; normal speed otherwise. */
+  protected override stepSpeed(): number {
+    return this.mode === "run" ? this.moveSpeed * RUN_SPEED_MUL : this.moveSpeed;
+  }
+
+  /** Running faces straight ahead (gun down, no corner-clearing). */
+  protected override facesTravel(): boolean {
+    return this.mode === "run";
+  }
+
+  /** Distance-until-visibility: the nav-route distance a mover at (fromPos,
+   *  fromZ) must travel before it can see `tgt` — 0 if it already can, the walk
+   *  to the nearest node that sees `tgt` otherwise. `fromNode` (the mover's
+   *  nearest walkable node) and `tgtGoal` (nearest node that sees `tgt`) can be
+   *  passed precomputed to hoist those node scans out of a loop (see contactScan).
+   *  No graph / unreachable falls back to straight-line / Infinity. */
+  private routeUntilSight(
+    ai: AiContext,
+    fromPos: Vec2,
+    fromZ: number,
+    tgt: Character,
+    fromNode?: number,
+    tgtGoal?: number,
+  ): number {
+    if (fromZ === tgt.z && targetPoints(tgt).some((pt) => losClear(ai.world, fromPos, pt, fromZ))) {
+      return 0;
+    }
+    const nav = ai.nav;
+    if (!nav || nav.nodes.length === 0) return dist(fromPos, tgt.pos);
+    const curr = fromNode ?? nav.nearestWalkable(ai.world, fromPos, fromZ);
+    const goal = tgtGoal ?? nav.nearestInSight(ai.world, tgt.pos, tgt.z);
+    if (curr < 0 || goal < 0) return dist(fromPos, tgt.pos);
+    if (curr === goal) return dist(fromPos, nav.nodes[curr].pos);
+    const step = nav.route(curr, goal);
+    return step ? dist(fromPos, nav.nodes[curr].pos) + step.dist : Infinity;
+  }
+
+  /** Both contact metrics: `myMin` = the soonest WE could see anyone (drives RUN),
+   *  `enemyMin` = the soonest ANYONE could see US with `threat` the enemy that owns
+   *  it (gates HEAL, and the retreat backs away from `threat`).
+   *
+   *  Cost matters — a nav route needs two O(nodes) closest-node scans, so routing
+   *  every hostile every plan tick is an O(N·nodes) blowup. Both minima are
+   *  dominated by the CLOSEST enemies, so we route only the `CONTACT_SCAN_K`
+   *  nearest by straight-line distance (a cheap sort) and hoist our own two node
+   *  scans out of the loop — bounding the expensive scans to a constant. */
+  private contactScan(ai: AiContext): { myMin: number; enemyMin: number; threat: Character | null } {
+    const hostiles = this.hostiles(ai);
+    if (hostiles.length === 0) return { myMin: Infinity, enemyMin: Infinity, threat: null };
+    const near =
+      hostiles.length <= CONTACT_SCAN_K
+        ? hostiles
+        : hostiles
+            .map((h) => ({ h, d: dist(this.pos, h.pos) }))
+            .sort((a, b) => a.d - b.d)
+            .slice(0, CONTACT_SCAN_K)
+            .map((e) => e.h);
+
+    const nav = ai.nav;
+    const haveNav = !!nav && nav.nodes.length > 0;
+    const myNode = haveNav ? nav!.nearestWalkable(ai.world, this.pos, this.z) : -1;
+    const mySightGoal = haveNav ? nav!.nearestInSight(ai.world, this.pos, this.z) : -1;
+    let myMin = Infinity;
+    let enemyMin = Infinity;
+    let threat: Character | null = null;
+    for (const h of near) {
+      const my = this.routeUntilSight(ai, this.pos, this.z, h, myNode, undefined);
+      if (my < myMin) myMin = my;
+      const en = this.routeUntilSight(ai, h.pos, h.z, this, undefined, mySightGoal);
+      if (en < enemyMin) {
+        enemyMin = en;
+        threat = h;
+      }
+      if (myMin === 0 && enemyMin === 0) break; // can't drop lower
+    }
+    return { myMin, enemyMin, threat };
   }
 
   /** The angular width a body at range `d` subtends for burst discipline,
@@ -544,16 +874,30 @@ export class TacOracle extends Oracle {
     return best;
   }
 
-  /** One lateral tick around `blocker` (toward the side it isn't on) instead of
-   *  tailgating it toward `chase`. Falls back to the other side if walled in. */
+  /** One tick around `blocker` instead of tailgating it toward `chase`: veer
+   *  diagonally to the open side while STILL advancing, so a crowd fans forward
+   *  past each other rather than milling sideways in place (a pure-lateral step
+   *  makes zero progress, and with a wide CROWD_MARGIN a whole clump would shuffle
+   *  sideways forever). Tries the open-side diagonal first, then a shallower veer,
+   *  then the other side, then pure lateral for a genuinely tight spot; walls are
+   *  the only thing that can veto a direction (bodies aren't in `walkable`). */
   private sidestep(ai: AiContext, chase: Character, blocker: Character): void {
     const to = sub(chase.pos, this.pos);
     const dir = dist(this.pos, chase.pos) > 1e-3 ? norm(to) : vec(1, 0);
     const side = perp(dir);
     const rel = sub(blocker.pos, this.pos);
-    const away = dir.x * rel.y - dir.y * rel.x > 0 ? -1 : 1; // step off the blocker's side
-    for (const s of [away, -away]) {
-      const step = add(this.pos, scale(side, s * this.moveSpeed));
+    const away = dir.x * rel.y - dir.y * rel.x > 0 ? -1 : 1; // the open side
+    const openL = scale(side, away);
+    const openR = scale(side, -away);
+    const dirs = [
+      add(dir, openL), // 45° to the open side: fan out AND keep advancing
+      add(scale(dir, 2), openL), // shallower veer (more forward) if that's walled
+      add(dir, openR), // fan to the other side instead
+      openL, // pure lateral: a genuinely tight spot with no room to advance
+      openR,
+    ];
+    for (const d of dirs) {
+      const step = add(this.pos, scale(norm(d), this.moveSpeed));
       if (walkable(ai.world, this.pos, this.z, step, this.z)) {
         this.vel = sub(step, this.pos);
         this.pos = step;

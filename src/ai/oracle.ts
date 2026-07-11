@@ -84,6 +84,19 @@ export class Oracle extends Robot {
     this.coastStep(ai);
   }
 
+  /** Movement distance allowed this tick (world px). Overridable so subclasses
+   *  can sprint or crawl; the base Oracle always walks at its constant speed. */
+  protected stepSpeed(): number {
+    return this.moveSpeed;
+  }
+
+  /** When true, blind movement faces straight down its travel direction instead
+   *  of pre-aiming the next corner with lookahead. Off by default; a holstered
+   *  sprint wants it (not clearing corners — see TacOracle run mode). */
+  protected facesTravel(): boolean {
+    return false;
+  }
+
   /** Cheap between-plan movement: take one more step toward the destination the
    *  last plan already committed to (the beeline target when at the goal node,
    *  else the committed waypoint) — no path query, no line-of-sight work. */
@@ -105,7 +118,7 @@ export class Oracle extends Robot {
     if (direct && dist(this.pos, dest) <= this.standoff) return;
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const next = add(this.pos, scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d)));
+    const next = add(this.pos, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)));
     if (direct && zAt(ai.world, next, this.z) !== this.z) return; // beeline never flips z
     this.vel = sub(next, this.pos);
     this.pos = next;
@@ -139,7 +152,7 @@ export class Oracle extends Robot {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
     const dir = norm(sub(dest, this.pos));
-    const next = add(this.pos, scale(dir, Math.min(this.moveSpeed, d)));
+    const next = add(this.pos, scale(dir, Math.min(this.stepSpeed(), d)));
     // A direct step never crosses a stair midpoint: flipping z would drop the
     // target from sight and re-route — the rapid-flicker failure mode. Hold
     // the line and keep shooting; only waypoint legs change level.
@@ -153,7 +166,9 @@ export class Oracle extends Robot {
     // it: the muzzle clears the corner before the body does. Direct steps
     // (beeline / no graph) just face the walk.
     if (!target && this.ticksSinceTarget > AIM_HOLD_TICKS) {
-      const look = direct ? dest : this.lookahead(ai.nav, dest);
+      // A sprint faces where it's going (dest = the waypoint it's stepping to);
+      // otherwise pre-aim the corner ahead via lookahead.
+      const look = direct || this.facesTravel() ? dest : this.lookahead(ai.nav, dest);
       // Set the desired heading; think() eases the actual heading toward it.
       if (dist(look, this.pos) > 1e-3) this.aimAngle = angleOf(sub(look, this.pos));
     }

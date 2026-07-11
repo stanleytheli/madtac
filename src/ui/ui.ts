@@ -216,7 +216,7 @@ export class HealthBar {
     const p = clamp01(projFrac);
     if (p > f) {
       const projW = (width - pad * 2) * p;
-      fillSquircle(ctx, x + pad, y + pad, projW, innerH, innerR, "rgba(91, 214, 107, 0.65)");
+      fillSquircle(ctx, x + pad, y + pad, projW, innerH, innerR, "rgba(91, 214, 107, 0.2)");
     }
 
     const fillW = (width - pad * 2) * f;

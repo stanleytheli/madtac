@@ -59,11 +59,31 @@ export interface HandsAnimation {
   rightTimes?: number[]
 }
 
+/**
+ * Sample a keyframed hand track at elapsed time `t` (ticks). `times` is the
+ * ascending keyframe schedule and `positions` the matching local grips; returns
+ * the interpolated grip. Shared by gun reloads (see Gun.handPositions) and the
+ * utility-use animation (see Character), so both read from the same `reloadAnim`
+ * / `useAnim` shape. Clamps at both ends (holds the first/last pose off-range).
+ */
+export function interpGrip(positions: GripLocal[], times: number[], t: number): GripLocal {
+  let idx = times.length - 1;
+  for (let i = 1; i < times.length; i++) {
+    if (t <= times[i]) { idx = i; break; }
+  }
+  const span = times[idx] - times[idx - 1] || 1;
+  const p = Math.max(0, Math.min(1, (t - times[idx - 1]) / span));
+  const a = positions[idx - 1];
+  const b = positions[idx];
+  return { f: a.f + (b.f - a.f) * p, l: a.l + (b.l - a.l) * p };
+}
+
 export interface LinePart {
   p0: GripLocal,
   p1: GripLocal,
   color: string,
   width: number,
+  over: boolean,
 }
 
 export interface GunSpec {
@@ -92,6 +112,12 @@ export interface GunSpec {
   zoom: number;
   /** Movement speed multiplier while equipped (CSGO-style: heavier guns are slower). */
   speed: number;
+
+  /** Pellet count of shotgun */
+  shotgunPellets?: number;
+  /** Shotgun spread (stddev of normdist) in DEGREES */
+  shotgunSpread?: number;
+
   /** Firing behaviour. */
   fire?: FireSpec;
   /**
@@ -129,12 +155,13 @@ export interface GunSpec {
   movingFirstShotRecoilMax: number;
 }
 
-const DEFAULT_AP_MELEE = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
-const DEFAULT_AP_9MM =   { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
-const DEFAULT_AP_45ACP = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
-const DEFAULT_AP_556 =   { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
-const DEFAULT_AP_762 =   { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
-const DEFAULT_AP_50AE =  { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
+const DEFAULT_AP_MELEE     = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
+const DEFAULT_AP_12GA_BUCK = { l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.28 }
+const DEFAULT_AP_9MM       = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
+const DEFAULT_AP_45ACP     = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
+const DEFAULT_AP_556       = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
+const DEFAULT_AP_762       = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
+const DEFAULT_AP_50AE      = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
 
 export const M16: GunSpec = {
   name: "M-16",
@@ -242,6 +269,61 @@ export const AK47: GunSpec = {
   movingFirstShotRecoilMax: 8.0,
 };
 
+export const MP220: GunSpec = {
+  name: "MP220",
+  primary: true,
+  icon: "ak47", // TODO: ICON
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 65, l: -6 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 65, l : -6}, // 0
+                    { f : 20, l : -27}, // 40
+                    { f : 20, l : -27}, // 60
+                    { f : 65, l : -6}, // 100
+                    { f: 70, l: -12}, // 105
+                    { f: 70, l: -12}, // 115
+                    { f: 55, l: -12}, // 125
+                    { f: 55, l: -12}, // 130
+                    { f: 70, l: -12}, // 140
+                    { f : 65, l : -6}, // 150
+                    ],
+    leftTimes: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
+  },
+
+  barrel: { start: 35, end: 110, width: 11 },
+  color: "#53360b",
+  damage: 10,
+  armorPen: DEFAULT_AP_12GA_BUCK,
+  shotgunPellets: 9,
+  shotgunSpread: 2.5,
+  zoom: 1.9,
+  speed: 0.925,
+  fire: {
+    delay: 10,
+    bulletSpeed: 50,
+    bulletLife: 20,
+    auto: false,
+    spread: 0.025,
+    magSize: 2,
+    reserveMags: 10,
+    reloadTime: 150,
+    drawTime: 40,
+    tracerWidth: 3,
+    tracerLength: 150,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 14,
+  recoilRecovery: 2,
+  recoilCoef: 0.25,
+  recoilGain: 1.0,
+  recoilDelay: 3,
+  movePenalty: 3.5,
+  movingFirstShotRecoilMin: 19.0,
+  movingFirstShotRecoilMax: 23.0,
+};
+
+
 export const M249: GunSpec = {
   name: "M249",
   primary: true,
@@ -252,7 +334,7 @@ export const M249: GunSpec = {
   color: "#1f1f1f",
 
   otherParts: [
-    {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309"}
+    {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309", over: false}
   ],
 
   reloadAnim: {
@@ -395,8 +477,8 @@ export const USPS: GunSpec = {
   color: "#000000",
 
   otherParts: [
-    {p0: {f: 50, l: 0}, p1: {f: 90, l: 0}, width: 8, color: "#000000"},
-    {p0: {f: 85, l: 0}, p1: {f: 100, l: 0}, width: 4, color: "#000000"}
+    {p0: {f: 50, l: 0}, p1: {f: 90, l: 0}, width: 8, color: "#000000", over: false},
+    {p0: {f: 85, l: 0}, p1: {f: 100, l: 0}, width: 4, color: "#000000", over: false}
   ],
 
   damage: 22,

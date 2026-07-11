@@ -181,33 +181,36 @@ export class NavGraph {
    *  marched, body-inflated test, so it may sit up an adjacent staircase — or
    *  -1. This is "which node am I at" for AI path queries: sight isn't enough
    *  (a fence is see-through but solid, and a node peeking past a wall corner
-   *  can be visible yet unreachable). */
+   *  can be visible yet unreachable).
+   *
+   *  Visits nodes nearest-first and returns the first walkable one, so the
+   *  expensive body-march only runs on nodes closer than the answer — a far node
+   *  is tested only if every nearer node failed. */
   nearestWalkable(world: World, pos: Vec2, z: number): number {
-    let best = -1;
-    let bd = Infinity;
-    for (const nd of this.nodes) {
-      const d = dist(pos, nd.pos);
-      if (d >= bd) continue;
-      if (!walkable(world, pos, z, nd.pos, nd.z)) continue;
-      best = nd.id;
-      bd = d;
+    for (const nd of this.byDistance(pos, this.nodes)) {
+      if (walkable(world, pos, z, nd.pos, nd.z)) return nd.id;
     }
-    return best;
+    return -1;
   }
 
   /** The nearest node on `z` with clear line of sight to `pos`, or -1. This is
-   *  "which node counts as the target's position" for AI path queries. */
+   *  "which node counts as the target's position" for AI path queries. Like
+   *  nearestWalkable, it raycasts nodes nearest-first and stops at the first
+   *  visible one, so far nodes are never tested unless all nearer ones are hidden. */
   nearestInSight(world: World, pos: Vec2, z: number): number {
-    let best = -1;
-    let bd = Infinity;
-    for (const nd of this.nodes) {
-      if (nd.z !== z) continue;
-      const d = dist(pos, nd.pos);
-      if (d >= bd) continue;
-      if (!losClear(world, pos, nd.pos, z)) continue;
-      best = nd.id;
-      bd = d;
+    for (const nd of this.byDistance(pos, this.nodes.filter((n) => n.z === z))) {
+      if (losClear(world, pos, nd.pos, z)) return nd.id;
     }
-    return best;
+    return -1;
+  }
+
+  /** `nodes` ordered by straight-line distance to `pos` (ascending). The sort is
+   *  distance-only (no raycasts/marches), so it's cheap next to the LOS/walk
+   *  tests it lets the callers short-circuit. */
+  private byDistance(pos: Vec2, nodes: PathNode[]): PathNode[] {
+    return nodes
+      .map((nd) => ({ nd, d: dist(pos, nd.pos) }))
+      .sort((a, b) => a.d - b.d)
+      .map((e) => e.nd);
   }
 }

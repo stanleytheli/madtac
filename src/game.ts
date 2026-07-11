@@ -17,7 +17,7 @@ import * as Armors from "./entities/armor.ts";
 import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
 import { startingUtilities } from "./entities/consumable.ts";
-import { boxSurfaceNormal, circleIntersectsBox, hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsCircle } from "./engine/collision.ts";
+import { boxSurfaceNormal, circleIntersectsBox, hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox } from "./engine/collision.ts";
 import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
@@ -42,6 +42,8 @@ import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ZOOM_EASE = 0.12;
 const MOVE_MARCH = 4; // px between swept-collision samples along one tick's move
+// Symmetric body separation (see separateCharacters).
+const SEP_ITERS = 4; // relaxation passes per tick (crowd stability)
 
 /** Clip velocity `v` so it points into none of the `normals` (each an outward
  *  unit surface normal): repeatedly remove any into-surface component until it
@@ -246,54 +248,48 @@ export class Game implements GameCtx {
     return Math.max(0.3, abs ?? this.player.gun.spec.zoom + delta);
   }
 
-  /** Resolve `c`'s movement this tick as a swept collide-and-slide, then clean up
-   *  any residual overlap with a gentle push-out. Because the sweep runs from the
-   *  pre-move (wall-clear) position `c.pos - c.vel` and stops/slides at the first
-   *  contact, a body can never pass THROUGH a wall or another body — at any speed
-   *  or across a stair z-flip. `vsChars=false` (the player) collides only with
-   *  walls: it plows through bots (which yield on their own resolve pass) and is
-   *  never shoved by them. */
-  private resolveCollisions(c: Character, vsChars = true): void {
+  /** Resolve `c`'s movement this tick as a swept collide-and-slide against WALLS,
+   *  then a residual wall push-out. The sweep runs from the pre-move (wall-clear)
+   *  position `c.pos - c.vel` and stops/slides at the first wall, so a body can
+   *  never pass THROUGH a wall at any speed or across a stair z-flip. Body-vs-body
+   *  is NOT handled here — it's a separate, symmetric pass (see separateCharacters)
+   *  so every agent is treated equally instead of movers yielding to whoever
+   *  resolves first. */
+  private resolveCollisions(c: Character): void {
     const from = sub(c.pos, c.vel);
-    c.pos = this.slide(from, c.vel, c, vsChars);
+    c.pos = this.slide(from, c.vel, c);
 
-    // Residual push-out (no-op when already clear): separates resting crowds and
-    // frees anything left embedded by a spawn / shove / stair edge.
+    // Residual wall push-out (no-op when already clear): frees anything left
+    // embedded by a spawn / shove / stair edge.
     let pos = c.pos;
     for (let i = 0; i < 2; i++) {
       for (const o of this.world.obstacles) {
         if (o.z !== c.z) continue;
         pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
       }
-      if (vsChars) {
-        for (const other of this.characters) {
-          if (other === c || other.z !== c.z) continue;
-          pos = resolveCircleVsCircle(pos, BODY_RADIUS, other.pos, BODY_RADIUS);
-        }
-      }
     }
     c.pos = pos;
   }
 
-  /** Collide-and-slide from `from` along `v`: sweep toward the target; when a
-   *  surface stops it short, take the *true* outward normal at the point of
-   *  contact and project the untravelled remainder onto its tangent (drop only
-   *  the into-surface component), then sweep again. Because the normal is the
-   *  real surface normal at the body's own position — a face's, or a corner
+  /** Collide-and-slide from `from` along `v` against walls: sweep toward the
+   *  target; when a wall stops it short, take the *true* outward normal at the
+   *  point of contact and project the untravelled remainder onto its tangent
+   *  (drop only the into-surface component), then sweep again. Because the normal
+   *  is the real surface normal at the body's own position — a face's, or a corner
    *  vertex's — the tangent hugs the box's rounded outline, so it slides along
    *  slanted walls AND rounds convex corners instead of catching on them. A few
    *  iterations resolve corners (concave ones dead-end and stop). */
-  private slide(from: Vec2, v: Vec2, mover: Character, vsChars: boolean): Vec2 {
+  private slide(from: Vec2, v: Vec2, mover: Character): Vec2 {
     let pos = from;
     let rem = v;
     for (let iter = 0; iter < 4; iter++) {
       if (Math.abs(rem.x) < 1e-6 && Math.abs(rem.y) < 1e-6) break;
       const target = add(pos, rem);
-      const hit = this.sweep(pos, target, mover, vsChars);
+      const hit = this.sweep(pos, target, mover);
       const advanced = hit.x !== pos.x || hit.y !== pos.y;
       pos = hit;
       if (hit.x === target.x && hit.y === target.y) break; // reached target, unobstructed
-      const normals = this.contactNormals(pos, mover, vsChars);
+      const normals = this.contactNormals(pos, mover);
       if (normals.length === 0) break;
       // Clip the remainder against EVERY contact at once, so threading a gap
       // between two corners keeps the through-component (each jamb cancels the
@@ -306,13 +302,13 @@ export class Game implements GameCtx {
     return pos;
   }
 
-  /** Every outward surface normal in contact range of `at` — walls (the real
+  /** Every outward wall-surface normal in contact range of `at` (the real
    *  closest-feature normal from `boxSurfaceNormal`, so it follows rounded
-   *  corners at any orientation) and, for bodies, the centre-line normal. `at`
-   *  is the last clear point, so the surface that stopped the sweep sits about a
-   *  march step past it; search out to r + one step to include it. Multiple
-   *  entries mean a multi-contact spot (a doorway's two jambs, a corner+face). */
-  private contactNormals(at: Vec2, mover: Character, vsChars: boolean): Vec2[] {
+   *  corners at any orientation). `at` is the last clear point, so the wall that
+   *  stopped the sweep sits about a march step past it; search out to r + one
+   *  step to include it. Multiple entries mean a multi-contact spot (a doorway's
+   *  two jambs, a corner+face). */
+  private contactNormals(at: Vec2, mover: Character): Vec2[] {
     const range = BODY_RADIUS + MOVE_MARCH + 1e-3;
     const normals: Vec2[] = [];
     for (const o of this.world.obstacles) {
@@ -320,22 +316,13 @@ export class Game implements GameCtx {
       const s = boxSurfaceNormal(at, o);
       if (s.dist < range) normals.push(s.n);
     }
-    if (vsChars) {
-      for (const other of this.characters) {
-        if (other === mover || other.z !== mover.z || other.hp <= 0) continue;
-        const dx = at.x - other.pos.x;
-        const dy = at.y - other.pos.y;
-        const d = Math.hypot(dx, dy);
-        if (d > 1e-6 && d - BODY_RADIUS < range) normals.push(vec(dx / d, dy / d));
-      }
-    }
     return normals;
   }
 
   /** Advance `mover`'s body from `from` toward `to`, returning the furthest point
-   *  along the segment that's clear (sampled every MOVE_MARCH px, so it can't
-   *  skip past a thin obstacle). Stops flush against the first contact. */
-  private sweep(from: Vec2, to: Vec2, mover: Character, vsChars: boolean): Vec2 {
+   *  along the segment that's clear of walls (sampled every MOVE_MARCH px, so it
+   *  can't skip past a thin wall). Stops flush against the first contact. */
+  private sweep(from: Vec2, to: Vec2, mover: Character): Vec2 {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const steps = Math.max(1, Math.ceil(Math.hypot(dx, dy) / MOVE_MARCH));
@@ -343,40 +330,85 @@ export class Game implements GameCtx {
     for (let i = 1; i <= steps; i++) {
       const t = i / steps;
       const p = vec(from.x + dx * t, from.y + dy * t);
-      if (this.solidAt(p, from, mover, vsChars)) return last;
+      if (this.solidAt(p, mover)) return last;
       last = p;
     }
     return last;
   }
 
-  /** Is `p` blocked for `mover`? A wall (its inflated body overlaps one) blocks
-   *  outright; another body blocks only when `p` is inside it AND closer to it
-   *  than `from` was — so resting contact and tangential slides pass (crowds
-   *  don't lock up) but you can't drive into or tunnel through another body. */
-  private solidAt(p: Vec2, from: Vec2, mover: Character, vsChars: boolean): boolean {
+  /** Is `p` blocked by a wall for `mover` (its inflated body overlaps one)? */
+  private solidAt(p: Vec2, mover: Character): boolean {
     const z = mover.z;
     const grid = this.world.grid;
-    if (grid) {
-      if (grid.solidCircle(p, BODY_RADIUS, z)) return true;
-    } else {
-      for (const o of this.world.obstacles) {
-        if (o.z === z && circleIntersectsBox(p, BODY_RADIUS, o)) return true;
-      }
-    }
-    if (vsChars) {
-      const diam2 = (2 * BODY_RADIUS) ** 2;
-      for (const other of this.characters) {
-        if (other === mover || other.z !== z || other.hp <= 0) continue;
-        const ox = p.x - other.pos.x;
-        const oy = p.y - other.pos.y;
-        const d2 = ox * ox + oy * oy;
-        if (d2 >= diam2) continue; // not overlapping this body
-        const fx = from.x - other.pos.x;
-        const fy = from.y - other.pos.y;
-        if (d2 < fx * fx + fy * fy) return true; // moving deeper into it
-      }
+    if (grid) return grid.solidCircle(p, BODY_RADIUS, z);
+    for (const o of this.world.obstacles) {
+      if (o.z === z && circleIntersectsBox(p, BODY_RADIUS, o)) return true;
     }
     return false;
+  }
+
+  /** Push every overlapping pair of live characters apart, EQUALLY — each gives
+   *  way half the penetration along their centre line — then re-project everyone
+   *  out of walls (walls are immovable). Order-independent and symmetric, so no
+   *  agent has priority: a mover and the body it walks into both yield, and
+   *  crowds part and flow instead of one jamming behind another. Iterated a few
+   *  times so a squeezed cluster eases apart. Per-tick movement is far below a
+   *  body diameter, so nothing tunnels through a body between ticks. */
+  private separateCharacters(): void {
+    const cs = this.characters.filter((c) => c.hp > 0);
+    const diam = 2 * BODY_RADIUS;
+    const diam2 = diam * diam;
+    for (let iter = 0; iter < SEP_ITERS; iter++) {
+      for (let i = 0; i < cs.length; i++) {
+        const a = cs[i];
+        for (let j = i + 1; j < cs.length; j++) {
+          const b = cs[j];
+          if (a.z !== b.z) continue;
+          const dx = b.pos.x - a.pos.x;
+          const dy = b.pos.y - a.pos.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 >= diam2) continue; // not overlapping
+          let nx: number;
+          let ny: number;
+          let overlap: number;
+          if (d2 < 1e-6) {
+            // Exactly coincident: shove apart along a deterministic axis so the
+            // split is stable (no NaN, no random jitter).
+            const a2 = (i + 1) * 2.399;
+            nx = Math.cos(a2);
+            ny = Math.sin(a2);
+            overlap = diam;
+          } else {
+            const d = Math.sqrt(d2);
+            nx = dx / d;
+            ny = dy / d;
+            overlap = diam - d;
+          }
+          // Split the penetration equally along the centre line. PURELY radial —
+          // no tangential component. A tangential ("slip") term was tried to let
+          // head-on collisions veer past instead of stalling, but a fixed
+          // handedness applied every tick of contact integrates into a spin:
+          // two bodies driving at a common point (a cluster, or mutual chase)
+          // orbited each other in circles. Radial-only can't rotate. Offset
+          // collisions still slide (the normal carries a lateral component); only
+          // exact head-on stalls, which is rare and the AI steering handles.
+          const half = overlap * 0.5;
+          a.pos = vec(a.pos.x - nx * half, a.pos.y - ny * half);
+          b.pos = vec(b.pos.x + nx * half, b.pos.y + ny * half);
+        }
+      }
+      // Walls win: re-project everyone out of obstacles after the split so a
+      // shove can't leave a body inside a wall (a body squeezed between a wall
+      // and another body ends against the wall, slightly overlapping the body —
+      // the least-bad spot, not a freeze).
+      for (const c of cs) {
+        let pos = c.pos;
+        for (const o of this.world.obstacles) {
+          if (o.z === c.z) pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+        }
+        c.pos = pos;
+      }
+    }
   }
 
   /** Flip `c`'s z at any stair midpoint it's standing on. Called right after a
@@ -578,7 +610,7 @@ export class Game implements GameCtx {
       if (this.player.usingUtility) speedMult *= USE_SPEED_MUL; // slowed mid-heal
       this.player.move(moveAxis(), speedMult);
       this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
-      this.resolveCollisions(this.player, false); // ...so it's against the level it ends on
+      this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
     }
 
     profiler.begin("surfaces");
@@ -617,6 +649,9 @@ export class Game implements GameCtx {
       this.applyStairZ(c); // flip z after this tick's move, before resolving (see applyStairZ)
       this.resolveCollisions(c);
     }
+    // Body-vs-body last, as one symmetric pass over all characters — every agent
+    // treated equally (no resolve-order priority; the player included).
+    this.separateCharacters();
     profiler.end("collide");
 
     profiler.begin("bullets");

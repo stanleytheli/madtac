@@ -1,5 +1,5 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
-import type { GunSpec } from "./guns.ts";
+import { interpGrip, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { spawnBullet, type Hittable, type World } from "../world/world.ts";
 
@@ -25,6 +25,10 @@ function drawBar(
   ctx.roundRect(-dist(p0, p1) / 2, -r, dist(p0, p1), w, 0);
   ctx.fill();
   ctx.restore();
+}
+
+function sampleNormal(mu: number, sigma: number) {
+  return mu + sigma * Math.sqrt(-2 * Math.log(Math.max(1e-9, Math.random()))) * Math.cos(2 * Math.PI * Math.random());
 }
 
 /**
@@ -181,34 +185,11 @@ export class Gun {
 
     if (this.spec.reloadAnim && this.spec.fire !== undefined && this.reloadTicks > 0) {
       const t = this.spec.fire.reloadTime - this.reloadTicks
-      let anim = this.spec.reloadAnim
-
-      if (anim.leftPositions && anim.leftTimes) {
-        let times = anim.leftTimes
-        let idx = 1
-        for (let i = 1; i < times.length; i++) {
-          if (t <= times[i]) {
-            idx = i;
-            break;
-          }
-        }
-        const p = ( t - times[idx - 1] ) / ( times[idx] - times[idx - 1] )
-        left = scale(grip(anim.leftPositions[idx]), p)
-        left = add(left, scale(grip(anim.leftPositions[idx - 1]), 1 - p))
-      }
-      if (anim.rightPositions && anim.rightTimes) {
-        let times = anim.rightTimes
-        let idx = 1
-        for (let i = 1; i < times.length; i++) {
-          if (t <= times[i]) {
-            idx = i;
-            break;
-          }
-        }
-        const p = ( t - times[idx - 1] ) / ( times[idx] - times[idx - 1] )
-        right = scale(grip(anim.rightPositions[idx]), p)
-        right = add(right, scale(grip(anim.rightPositions[idx - 1]), 1 - p))
-      }
+      const anim = this.spec.reloadAnim
+      // grip() is affine, so interpolating the local grips then applying grip is
+      // identical to lerping the world-space hand positions.
+      if (anim.leftPositions && anim.leftTimes) left = grip(interpGrip(anim.leftPositions, anim.leftTimes, t))
+      if (anim.rightPositions && anim.rightTimes) right = grip(interpGrip(anim.rightPositions, anim.rightTimes, t))
     }
 
 
@@ -252,6 +233,9 @@ export class Gun {
 
     if (this.spec.otherParts !== undefined) {
       for (const line of this.spec.otherParts) {
+        if (line.over) {
+          continue;
+        }
         drawBar(ctx, grip(line.p0), grip(line.p1), line.width + outlineWidth * 2, outlineColor);
         drawBar(ctx, grip(line.p0), grip(line.p1), line.width, line.color)
       }
@@ -259,6 +243,18 @@ export class Gun {
 
     drawBar(ctx, p0, p1, b.width + outlineWidth * 2, outlineColor); // outline
     drawBar(ctx, p0, p1, b.width, this.spec.color); // fill
+
+
+    if (this.spec.otherParts !== undefined) {
+      for (const line of this.spec.otherParts) {
+        if (!line.over) {
+          continue;
+        }
+        drawBar(ctx, grip(line.p0), grip(line.p1), line.width + outlineWidth * 2, outlineColor);
+        drawBar(ctx, grip(line.p0), grip(line.p1), line.width, line.color)
+      }
+    }
+
 
   }
 
@@ -277,21 +273,43 @@ export class Gun {
     // Melee "bullets" are never drawn (the punch is the visual); guns hide the
     // bullet until it has cleared the muzzle.
     const renderAfter = this.spec.melee ? Infinity : muzzleLen + 50;
-    spawnBullet(
-      world,
-      origin,
-      dir,
-      f.bulletSpeed,
-      f.bulletLife,
-      renderAfter,
-      owner,
-      this.damage,
-      f.tracerWidth,
-      f.tracerLength,
-      f.tracerColor,
-      this.spec.armorPen,
-      owner.z, // the bullet lives on the shooter's level
-    );
+
+    if (this.spec.shotgunPellets == undefined || this.spec.shotgunSpread == undefined) {
+      spawnBullet(
+        world,
+        origin,
+        dir,
+        f.bulletSpeed,
+        f.bulletLife,
+        renderAfter,
+        owner,
+        this.damage,
+        f.tracerWidth,
+        f.tracerLength,
+        f.tracerColor,
+        this.spec.armorPen,
+        owner.z, // the bullet lives on the shooter's level
+      );
+    } else {
+      for (let i = 0; i < this.spec.shotgunPellets; i++) {
+        const pellet_dir = rotate(dir, sampleNormal(0, deg2rad(this.spec.shotgunSpread)))
+        spawnBullet(
+          world,
+          origin,
+          pellet_dir,
+          f.bulletSpeed,
+          f.bulletLife,
+          renderAfter,
+          owner,
+          this.damage,
+          f.tracerWidth,
+          f.tracerLength,
+          f.tracerColor,
+          this.spec.armorPen,
+          owner.z, // the bullet lives on the shooter's level
+        );
+      }
+    }
     return true;
   }
 
