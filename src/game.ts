@@ -34,8 +34,9 @@ import {
 import { NavGraph } from "./world/nav.ts";
 import { profiler } from "./engine/profiler.ts";
 import { Robot, type AiContext } from "./ai/robot.ts";
-import type { TeamId } from "./entities/team.ts";
+import { areHostile, type TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
+import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
 import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
 
@@ -63,6 +64,10 @@ export class Game implements GameCtx {
 
   /** Nearest reachable ground item this tick (for the HUD prompt + E). */
   interactable: GroundItem | null = null;
+
+  /** Recent FRIENDLY death locations (non-hostile to the player), for the minimap
+   *  X's. Appended in reapDead, aged + pruned in despawnStale, cleared on reset. */
+  readonly minimapDeaths: DeathMark[] = [];
 
   /** Ground items the level shipped with — restored on reset so death-drops
    *  from a finished match don't pile up across restarts. */
@@ -126,6 +131,7 @@ export class Game implements GameCtx {
     this.world.particles.length = 0;
     this.world.items.length = 0;
     this.world.items.push(...this.initialItems);
+    this.minimapDeaths.length = 0;
 
     const spawn = this.level.playerSpawn[0];
     this.player.respawn(vec(spawn?.pos.x ?? 0, spawn?.pos.y ?? 0), spawn?.z ?? 0, this.playerLoadout());
@@ -402,6 +408,11 @@ export class Game implements GameCtx {
 
       this.gamemode.onDeath(c, this);
 
+      // Mark friendly deaths for the minimap (enemies aren't shown at all).
+      if (!areHostile(this.player.team, c.team)) {
+        this.minimapDeaths.push({ pos: vec(c.pos.x, c.pos.y), z: c.z, age: 0 });
+      }
+
       for (const gun of c.dropWeapons()) {
         const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
         const gi = new GunItem(vec(c.pos.x, c.pos.y), gun, vel, c.z);
@@ -436,6 +447,10 @@ export class Game implements GameCtx {
     for (let i = this.world.items.length - 1; i >= 0; i--) {
       const it = this.world.items[i];
       if (it.lifetime !== null && it.age >= it.lifetime) this.world.items.splice(i, 1);
+    }
+    // Age + prune the minimap's recent-death marks.
+    for (let i = this.minimapDeaths.length - 1; i >= 0; i--) {
+      if (++this.minimapDeaths[i].age > MINIMAP_DEATH_TTL) this.minimapDeaths.splice(i, 1);
     }
   }
 

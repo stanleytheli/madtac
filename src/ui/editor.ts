@@ -801,6 +801,22 @@ export class Editor {
     panel.append(this.matchFields);
     this.renderMatchFields();
 
+    // Minimap: the world-space side the bottom-left minimap covers (blank/0 =
+    // auto-fit to the level's extent). Level-wide, not mode-specific.
+    panel.append(this.header("minimap"));
+    const mmRow = this.mk("div", "display:flex;align-items:center;gap:6px;");
+    const mmIn = this.mk("input", Editor.INPUT_CSS + "width:80px;");
+    mmIn.type = "number";
+    mmIn.min = "0";
+    mmIn.value = this.state.meta.minimapSize ? String(this.state.meta.minimapSize) : "";
+    mmIn.placeholder = "auto";
+    mmIn.oninput = () => {
+      const v = parseFloat(mmIn.value);
+      this.state.meta.minimapSize = Number.isFinite(v) && v > 0 ? v : undefined;
+    };
+    mmRow.append(this.mk("span", "opacity:0.8;", "size"), mmIn, this.mk("span", "opacity:0.6;", "world px (blank=auto)"));
+    panel.append(mmRow);
+
     // Inspector (rebuilt per selection).
     panel.append(this.header("selection"));
     // The infinite background floor has no rect to click in the world, so it

@@ -8,6 +8,7 @@ import type { Armor } from "../entities/armor.ts";
 import type { GamemodeHud, PlayerRow } from "../gamemodes/gamemode.ts";
 import type { Gun } from "../entities/gun.ts";
 import { armorIcon, assetImage, gunIcon, utilityIcon } from "../entities/item.ts";
+import { Minimap, type DeathMark } from "./minimap.ts";
 import type { Vec2 } from "../engine/vec.ts";
 
 /** Uniform downscale for the whole screen-space HUD (1 = original size). */
@@ -245,7 +246,15 @@ export interface HudOptions {
   gamemode?: GamemodeHud;
   /** Whether to show the full K/D player list (Tab held). */
   showScoreboard?: boolean;
+  /** Bottom-left minimap (built once at load), plus the live roster + recent
+   *  friendly deaths it overlays. Undefined in the editor / when unavailable. */
+  minimap?: Minimap;
+  characters?: readonly Character[];
+  deaths?: readonly DeathMark[];
 }
+
+/** Logical-px margin of the bottom-left minimap from the screen edges. */
+const MINIMAP_MARGIN = 16;
 
 /**
  * Draw the whole screen-space HUD: pickup prompt, the bottom health bar with the
@@ -301,7 +310,15 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
 
   drawLoadout(ctx, player, w, h);
 
-  if (o.gamemode) drawGamemodeHud(ctx, o.gamemode, w, h);
+  // Bottom-left minimap; the gamemode ticket bars stack above it.
+  let gamemodeInset = 0;
+  if (o.minimap && o.characters) {
+    const px = o.minimap.px;
+    o.minimap.draw(ctx, MINIMAP_MARGIN, h - MINIMAP_MARGIN - px, o.characters, o.deaths ?? [], player);
+    gamemodeInset = px + MINIMAP_MARGIN;
+  }
+
+  if (o.gamemode) drawGamemodeHud(ctx, o.gamemode, w, h, gamemodeInset);
   if (o.showScoreboard && o.gamemode?.players) drawScoreboard(ctx, o.gamemode.players, w, h);
 
   ctx.restore();
@@ -375,22 +392,31 @@ function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: 
  * per team, filled to remaining/limit in the team color with a numeric label)
  * and a centered banner for win/lose + respawn text. Drawn in logical HUD units.
  */
-function drawGamemodeHud(ctx: CanvasRenderingContext2D, hud: GamemodeHud, w: number, h: number): void {
+function drawGamemodeHud(
+  ctx: CanvasRenderingContext2D,
+  hud: GamemodeHud,
+  w: number,
+  h: number,
+  bottomInset = 0,
+): void {
   const BAR_W = 240;
   const BAR_H = 18;
   const GAP = 8;
   const MARGIN = 24;
+  // Bottom-anchored bits stack up from here — lifted above the minimap when one
+  // is present (the centered banner still uses the true screen center).
+  const bottom = h - bottomInset;
 
   ctx.font = uiFont("bold 17px");
   ctx.textAlign = "left";
   ctx.fillStyle = "rgb(0,0,0)";
-  ctx.fillText(`${hud.name}`, MARGIN + 1, h - MARGIN - BAR_H * hud.scores.length - 19)
+  ctx.fillText(`${hud.name}`, MARGIN + 1, bottom - MARGIN - BAR_H * hud.scores.length - 19)
   ctx.fillStyle = "rgb(255,255,255)";
-  ctx.fillText(`${hud.name}`, MARGIN, h - MARGIN - BAR_H * hud.scores.length - 20)
+  ctx.fillText(`${hud.name}`, MARGIN, bottom - MARGIN - BAR_H * hud.scores.length - 20)
 
   ctx.textBaseline = "middle";
   // First score on top: lay them out upward from the bottom edge.
-  let y = h - MARGIN - BAR_H;
+  let y = bottom - MARGIN - BAR_H;
   for (let i = hud.scores.length - 1; i >= 0; i--) {
     const s = hud.scores[i];
     const frac = s.limit > 0 ? clamp01(s.remaining / s.limit) : 0;

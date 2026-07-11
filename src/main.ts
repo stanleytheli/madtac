@@ -15,6 +15,7 @@ import { drawParticles } from "./engine/particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
+import { Minimap } from "./ui/minimap.ts";
 import { dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import {
   enclosureCap,
@@ -140,6 +141,9 @@ const camera = game ? game.camera : { size: editorPlayer!.gun.spec.zoom };
 const healthBar = new HealthBar({ width: 450, height: 35 });
 // Slightly shorter cyan bar for armor, stacked above the health bar.
 const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", radius: 0, displayLoss: false });
+// Bottom-left minimap: baked once from the (static) world, sized by the level's
+// meta or auto-fit. Play mode only — the editor has its own world overview.
+const minimap = game ? new Minimap(world, meta.minimapSize) : null;
 
 /**
  * The respawn-screen loadout dropdown (TDM): a small DOM panel with primary /
@@ -649,6 +653,9 @@ function render(): void {
       interactableLabel: game!.interactable ? game!.interactable.label : null,
       gamemode: gh ?? undefined,
       showScoreboard: isDown("tab"),
+      minimap: minimap ?? undefined,
+      characters,
+      deaths: game!.minimapDeaths,
     });
     profiler.end("render.hud");
     updateRespawnMenu?.(gh);

@@ -108,6 +108,10 @@ export interface TdmConfig {
 export interface LevelMeta {
   mode?: string;
   tdm?: TdmConfig;
+  /** World-space side length the bottom-left minimap covers (square, centered on
+   *  the map's bounds). Omitted/0 = auto-fit to the level's obstacle+floor extent
+   *  (see ui/minimap.ts). */
+  minimapSize?: number;
 }
 
 /** Everything a level owns: the world's static arrays plus the spawn tables. */
@@ -564,7 +568,8 @@ export function serializeLevel(state: LevelState): string {
   }
   // The match config, when set, rides on top of the entity list (compact, one
   // line). Levels with no mode serialize exactly as before.
-  const metaLine = state.meta.mode ? `  "meta": ${JSON.stringify(state.meta)},\n` : "";
+  const hasMeta = state.meta.mode || state.meta.minimapSize;
+  const metaLine = hasMeta ? `  "meta": ${JSON.stringify(state.meta)},\n` : "";
   return `{ "version": 1,\n${metaLine}  "entities": [\n${lines.join(",\n")}\n] }`;
 }
 
