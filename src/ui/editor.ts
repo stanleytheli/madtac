@@ -18,7 +18,7 @@ import { pointInBox } from "../engine/collision.ts";
 import { GAMEMODES } from "../gamemodes/gamemode.ts";
 import { DEFAULT_TDM } from "../gamemodes/tdm.ts";
 import { DEFAULT_DOM } from "../gamemodes/domination.ts";
-import { MAX_EQUIP } from "../gamemodes/teammatch.ts";
+import { EQUIP_NAMES } from "../gamemodes/teammatch.ts";
 import { isDown, mouse, moveAxis } from "../engine/input.ts";
 import {
   ENTITY_DEFS,
@@ -943,6 +943,23 @@ export class Editor {
     return row;
   }
 
+  /** A labeled dropdown bound to a getter/setter, for the match panel. */
+  private matchSelectRow(label: string, options: readonly string[], get: () => string, set: (v: string) => void): HTMLElement {
+    const row = this.mk("div", "display:flex;align-items:center;justify-content:space-between;gap:6px;");
+    row.append(this.mk("span", "opacity:0.8;", label));
+    const sel = this.mk("select", Editor.INPUT_CSS + "width:110px;");
+    for (const o of options) {
+      const opt = document.createElement("option");
+      opt.value = o;
+      opt.textContent = o;
+      sel.append(opt);
+    }
+    sel.value = get();
+    sel.onchange = () => set(sel.value);
+    row.append(sel);
+    return row;
+  }
+
   /** (Re)build the mode-specific parameter inputs under the mode picker. Both
    *  team modes share the per-side troop/skill/equip block; they differ only in
    *  their one top-level ticket field (kill limit vs score limit). */
@@ -977,7 +994,7 @@ export class Editor {
       this.matchFields.append(
         this.matchNumRow("troops", () => c.troops, (v) => (c.troops = Math.max(0, Math.round(v))), { min: 0, step: 1 }),
         this.matchNumRow("skill 0-1", () => c.skill, (v) => (c.skill = Math.max(0, Math.min(1, v))), { min: 0, step: 0.1 }),
-        this.matchNumRow(`equip 0-${MAX_EQUIP}`, () => c.equip, (v) => (c.equip = Math.max(0, Math.min(MAX_EQUIP, Math.round(v)))), { min: 0, step: 1 }),
+        this.matchSelectRow("equip", EQUIP_NAMES, () => c.equip, (v) => (c.equip = v)),
       );
     }
   }

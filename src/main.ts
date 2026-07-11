@@ -51,7 +51,7 @@ const EDIT = params.get("edit") === "true";
 
 // The map: ?level=<name> picks a JSON from src/world/levels/; with no param the
 // arena-teamfight map loads. (?edit composes: ?edit=true&level=foo edits it.)
-const DEFAULT_LEVEL = "tdm-arena-big";
+const DEFAULT_LEVEL = "dom-arena-big";
 
 const levelName = params.get("level");
 if (levelName && !(levelName in LEVELS)) {
@@ -78,15 +78,22 @@ function numParam(key: string): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/** A raw string URL param (case-insensitive), or undefined. */
+function strParam(key: string): string | undefined {
+  return lowerParams.get(key.toLowerCase());
+}
+
 /** Per-side troop/skill/equip overrides for `side` off the URL, or undefined
- *  when none were given (shared by TDM and Domination — same param names). */
+ *  when none were given (shared by TDM and Domination — same param names).
+ *  `equip` is a tier NAME (e.g. ?blueEquip=elite); resolveTdm/resolveDom
+ *  validate it, falling back to the default tier if it isn't a known name. */
 function sideUrlOverrides(side: "blue" | "red"): Partial<TeamConfig> | undefined {
   const s: Partial<TeamConfig> = {};
   const troops = numParam(`${side}Troops`);
   if (troops !== undefined) s.troops = troops;
   const skill = numParam(`${side}Skill`);
   if (skill !== undefined) s.skill = skill;
-  const equip = numParam(`${side}Equip`);
+  const equip = strParam(`${side}Equip`);
   if (equip !== undefined) s.equip = equip;
   return Object.keys(s).length > 0 ? s : undefined;
 }

@@ -21,14 +21,14 @@ import type { DomConfig, TeamConfig } from "../world/level.ts";
 import { TEAMS, type TeamId } from "../entities/team.ts";
 import { dist } from "../engine/vec.ts";
 import type { GameCtx, GamemodeHud, TeamScore } from "./gamemode.ts";
-import { TeamMatchMode } from "./teammatch.ts";
+import { DEFAULT_EQUIP, resolveEquip, TeamMatchMode } from "./teammatch.ts";
 
 /** Applied when a domination level omits some or all of `meta.domination`. */
 export const DEFAULT_DOM: DomConfig = {
   scoreLimit: 100,
   respawnDelay: 120, // ticks (~2s) — objective mode, faster back into the fight
-  blue: { troops: 4, skill: 0.6, equip: 2 },
-  red: { troops: 4, skill: 0.6, equip: 2 },
+  blue: { troops: 4, skill: 0.6, equip: DEFAULT_EQUIP },
+  red: { troops: 4, skill: 0.6, equip: DEFAULT_EQUIP },
 };
 
 /** A partial config (a level's `meta.domination`) before defaults. */
@@ -39,13 +39,18 @@ export interface DomOverrides {
   red?: Partial<TeamConfig>;
 }
 
-/** Fill any missing field of a partial domination config from DEFAULT_DOM. */
+/** Fill any missing field of a partial domination config from DEFAULT_DOM,
+ *  normalizing each side's equip to a canonical tier name (accepts legacy nums). */
 export function resolveDom(o?: DomOverrides): DomConfig {
+  const blue = { ...DEFAULT_DOM.blue, ...o?.blue };
+  const red = { ...DEFAULT_DOM.red, ...o?.red };
+  blue.equip = resolveEquip(blue.equip);
+  red.equip = resolveEquip(red.equip);
   return {
     scoreLimit: o?.scoreLimit ?? DEFAULT_DOM.scoreLimit,
     respawnDelay: o?.respawnDelay ?? DEFAULT_DOM.respawnDelay,
-    blue: { ...DEFAULT_DOM.blue, ...o?.blue },
-    red: { ...DEFAULT_DOM.red, ...o?.red },
+    blue,
+    red,
   };
 }
 

@@ -9,14 +9,14 @@
 import type { TdmConfig, TeamConfig } from "../world/level.ts";
 import { TEAMS } from "../entities/team.ts";
 import type { TeamScore } from "./gamemode.ts";
-import { TeamMatchMode } from "./teammatch.ts";
+import { DEFAULT_EQUIP, resolveEquip, TeamMatchMode } from "./teammatch.ts";
 
 /** Applied when a TDM level omits some or all of `meta.tdm`. */
 export const DEFAULT_TDM: TdmConfig = {
   killLimit: 20,
   respawnDelay: 180, // ticks (~3s at 60 Hz)
-  blue: { troops: 4, skill: 0.6, equip: 2 },
-  red: { troops: 4, skill: 0.6, equip: 2 },
+  blue: { troops: 4, skill: 0.6, equip: DEFAULT_EQUIP },
+  red: { troops: 4, skill: 0.6, equip: DEFAULT_EQUIP },
 };
 
 /** A partial config (a level's `meta.tdm`, or URL overrides) before defaults. */
@@ -27,13 +27,18 @@ export interface TdmOverrides {
   red?: Partial<TeamConfig>;
 }
 
-/** Fill any missing field of a partial TDM config from DEFAULT_TDM. */
+/** Fill any missing field of a partial TDM config from DEFAULT_TDM, normalizing
+ *  each side's equip to a canonical tier name (accepts legacy numeric tiers). */
 export function resolveTdm(o?: TdmOverrides): TdmConfig {
+  const blue = { ...DEFAULT_TDM.blue, ...o?.blue };
+  const red = { ...DEFAULT_TDM.red, ...o?.red };
+  blue.equip = resolveEquip(blue.equip);
+  red.equip = resolveEquip(red.equip);
   return {
     killLimit: o?.killLimit ?? DEFAULT_TDM.killLimit,
     respawnDelay: o?.respawnDelay ?? DEFAULT_TDM.respawnDelay,
-    blue: { ...DEFAULT_TDM.blue, ...o?.blue },
-    red: { ...DEFAULT_TDM.red, ...o?.red },
+    blue,
+    red,
   };
 }
 

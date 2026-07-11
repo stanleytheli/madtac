@@ -28,24 +28,40 @@ export interface TeamMatchConfig {
 /** Each side's body skin (SKINS keys), so blue and red read at a glance. */
 const TEAM_SKIN: Record<"blue" | "red", string> = { blue: "BLUE_SKIN", red: "RED_SKIN" };
 
-/** Equipment ladder: per tier, pools for the primary slot, the secondary slot,
- *  and armor (GUN_SPECS / ARMOR_SPECS keys). A loadout roll draws one of each at
+/** Equipment ladder: each tier has a NAME (how it's referenced in the editor,
+ *  URL, and level meta) plus pools for the primary slot, the secondary slot, and
+ *  armor (GUN_SPECS / ARMOR_SPECS keys). A loadout roll draws one of each at
  *  random, so slots hold class-appropriate guns (rifle up top, sidearm below)
  *  and armor varies too. A `""` entry means "empty"; an empty pool `[]` always
  *  yields empty. `both: false` hands out only ONE weapon (random pool, dropped
- *  in its class's slot) — the "spawn with an M9 and scramble" tier. */
-const EQUIP: { primaries: string[]; secondaries: string[]; armors: string[]; both?: boolean }[] = [
-  { primaries: ["M9"], secondaries: [], armors: [], both: false },
-  { primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["", "ARMOR_L1"], both: false },
-  { primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["ARMOR_L1", "ARMOR_L2"] },
-  { primaries: ["M16", "AK47"], secondaries: ["Deagle"], armors: ["ARMOR_L2", "ARMOR_L3"] },
-  { primaries: ["AK47", "M249"], secondaries: ["Deagle", "Golden_Deagle"], armors: ["ARMOR_L3", "ARMOR_L4"] },
-  { primaries: ["M249", "AK47", "M16"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
+ *  in its class's slot) — the "spawn with one gun and scramble" tiers. */
+const EQUIP: { name: string; primaries: string[]; secondaries: string[]; armors: string[]; both?: boolean }[] = [
+  { name: "m9 only", primaries: ["M9"], secondaries: [], armors: [], both: false },
+  { name: "light", primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["", "ARMOR_L1"], both: false },
+  { name: "medium", primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["ARMOR_L1", "ARMOR_L2"] },
+  { name: "heavy", primaries: ["M16", "AK47"], secondaries: ["Deagle"], armors: ["ARMOR_L2", "ARMOR_L3"] },
+  { name: "superheavy", primaries: ["AK47", "M249"], secondaries: ["Deagle", "Golden_Deagle"], armors: ["ARMOR_L3", "ARMOR_L4"] },
+  { name: "random", primaries: ["M249", "AK47", "M16"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
 ];
 
-/** Highest valid equipment tier (0-based) — the single source of truth for
- *  clamping equip inputs (editor / URL) so it tracks the table above. */
-export const MAX_EQUIP = EQUIP.length - 1;
+/** The equipment tier names, in ladder order — the editor dropdown + URL/meta
+ *  vocabulary. Single source of truth (tracks the table above). */
+export const EQUIP_NAMES: readonly string[] = EQUIP.map((t) => t.name);
+/** The tier a config falls back to when none is set. */
+export const DEFAULT_EQUIP = "standard";
+
+/** The tier for a name, falling back to DEFAULT_EQUIP (then the first tier). */
+function equipTier(name: string): (typeof EQUIP)[number] {
+  return EQUIP.find((t) => t.name === name) ?? EQUIP.find((t) => t.name === DEFAULT_EQUIP) ?? EQUIP[0];
+}
+
+/** Normalize an equip value to a canonical tier NAME: a known name passes
+ *  through; a legacy numeric tier index is mapped to its name; anything else
+ *  (unknown / missing) becomes DEFAULT_EQUIP. Keeps old numeric levels loading. */
+export function resolveEquip(v: string | number | undefined): string {
+  if (typeof v === "number") return (EQUIP[Math.max(0, Math.min(EQUIP.length - 1, Math.round(v)))] ?? EQUIP[0]).name;
+  return typeof v === "string" && EQUIP.some((t) => t.name === v) ? v : DEFAULT_EQUIP;
+}
 
 /** Callsign pool. Shuffled once per match then handed out in order, so names are
  *  unique until the pool is exhausted (then good-faith numbered duplicates). */
@@ -86,10 +102,10 @@ export function skillParams(skill: number): { reactionTime: number; lambda: numb
   };
 }
 
-/** Roll a random loadout from an equip tier: a primary + secondary + armor (or,
- *  when the tier is `both: false`, just one weapon in its class's slot + armor). */
-export function rollLoadout(tier: number): PlayerLoadout {
-  const t = EQUIP[Math.max(0, Math.min(EQUIP.length - 1, Math.round(tier)))];
+/** Roll a random loadout from a named equip tier: a primary + secondary + armor
+ *  (or, when the tier is `both: false`, just one weapon in its class's slot). */
+export function rollLoadout(equip: string): PlayerLoadout {
+  const t = equipTier(equip);
   const armor = t.armors.length ? pick(t.armors) : undefined;
   if (t.both === false) {
     const pools = [t.primaries, t.secondaries].filter((p) => p.length > 0);
@@ -121,8 +137,8 @@ export interface Agent {
   team: "blue" | "red";
   isPlayer: boolean;
   skill: number;
-  /** Equipment tier. Bots re-roll a gun+armor from it every (re)spawn. */
-  equip: number;
+  /** Equipment tier name. Bots re-roll a gun+armor from it every (re)spawn. */
+  equip: string;
   /** The player's chosen kit, edited at the respawn screen. Empty (no weapon) =
    *  "auto": re-roll from `equip` each spawn like a bot. Bots leave this unset. */
   loadout?: PlayerLoadout;

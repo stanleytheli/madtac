@@ -99,11 +99,12 @@ export interface DomPoint {
 
 /** Per-side Team Deathmatch settings. `troops` = AI bots on that side (the
  *  player is an extra combatant on blue). `skill` ∈ [0,1] maps to reaction
- *  time / burst bravery / strafe exploration; `equip` is an equipment tier. */
+ *  time / burst bravery / strafe exploration; `equip` is an equipment tier NAME
+ *  (see EQUIP_NAMES in gamemodes/teammatch.ts). */
 export interface TeamConfig {
   troops: number;
   skill: number;
-  equip: number;
+  equip: string;
 }
 
 export interface TdmConfig {
