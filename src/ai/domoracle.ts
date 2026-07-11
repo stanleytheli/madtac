@@ -36,6 +36,12 @@ import { dist, vec, type Vec2 } from "../engine/vec.ts";
  *  edge — it has to actually clear the area. */
 const CONTEST_PAD = 4 * BODY_RADIUS;
 
+/** How far outside a point's radius the bot will still let it pull its COMBAT
+ *  maneuvering toward it (so a firefight near a point drags onto the point).
+ *  Deliberately generous — the pull only ever picks among spots that can still
+ *  shoot/cover, so a large trigger just means "fight on the point when near it". */
+const OBJ_PULL_MARGIN = 10 * BODY_RADIUS; // ~300px past the ring
+
 export class DominationOracle extends TacOracle {
   /** A throwaway waypoint (never in the world/roster) parked on the target
    *  objective, so the base's navChase can steer toward a position. */
@@ -53,6 +59,28 @@ export class DominationOracle extends TacOracle {
    *  short and hovering just off the node. */
   protected override standoffFor(chase: Character): number {
     return chase === this.objMarker ? 0 : super.standoffFor(chase);
+  }
+
+  /** Bias combat maneuvering toward the nearest point that still needs work when
+   *  we're fighting near it — so an engagement on/around a capture point is waged
+   *  FROM the point (capturing while shooting) rather than wherever the enemy
+   *  happens to pull us. Null when the nearest workable point is too far, or we
+   *  already hold it outright. */
+  protected override biasObjective(ai: AiContext): { pos: Vec2; radius: number } | null {
+    const objs = ai.objectives;
+    if (!objs || objs.length === 0) return null;
+    let best: ObjectivePoint | null = null;
+    let bestD = Infinity;
+    for (const o of objs) {
+      if (o.owner === this.team && o.progress >= 2) continue; // fully ours: nothing to gain
+      const d = dist(this.pos, o.pos);
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+    if (!best || bestD > best.radius + OBJ_PULL_MARGIN) return null;
+    return { pos: best.pos, radius: best.radius };
   }
 
   /** Out-of-combat destination: the nearest capture point that still needs work.

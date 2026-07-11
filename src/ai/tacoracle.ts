@@ -121,6 +121,11 @@ const STRAFE_OFFSETS = [15, 30, 45, 60, 90, 120];
  *  away can cross a stair midpoint and drop z — valid cover (breaks LoS) even
  *  when there's nothing lateral to hide behind. Used for cover, not firing. */
 const AXIAL_OFFSETS = [40, 90];
+/** Objective bias: a flat, huge reward for a combat spot standing ON the bias
+ *  point (see biasObjective / objReward). Dwarfs the by-distance term, so any
+ *  on-point firing spot outranks every off-point one — the bot fights on the
+ *  point whenever a spot there can still shoot. */
+const ON_POINT_REWARD = 1e6;
 /** Re-score the candidate spots this often while committed to one. */
 const EVAL_TICKS = 10;
 /** Dodge rhythm: flip strafing direction every this many ticks (~0.5s). */
@@ -302,6 +307,9 @@ export class TacOracle extends Oracle {
   private dodging = false;
   private dodgeDir: 1 | -1 = 1;
   private dodgeIn = 0;
+  /** The capture point (centre + radius) combat movement is pulled toward this
+   *  plan tick, or null — set from biasObjective() in act(). */
+  private biasObj: { pos: Vec2; radius: number } | null = null;
 
   constructor(pos: Vec2, options: TacOracleOptions = {}) {
     super(pos, {
@@ -354,6 +362,10 @@ export class TacOracle extends Oracle {
     }
     this.updateMode(target ?? this.focus);
     this.updatePosture(); // may override the combat mode with RUN / HEAL
+    // What capture point (if any) should pull our combat maneuvering this tick —
+    // read only by strafe/cover below, so it steers fighting without touching
+    // run/heal or target selection.
+    this.biasObj = this.biasObjective(ai);
     if (!chase) return;
 
     // Heavy-penalty guns are fired from a stand: while actively mid-burst
@@ -777,31 +789,99 @@ export class TacOracle extends Oracle {
     return this.chaseCache;
   }
 
-  /** SHOOT, engaged and in sight: hold ground unless the lane is bad — a
-   *  teammate in the line of fire, or too few target points visible — then
-   *  slide to the best-scoring lateral spot. */
+  /** SHOOT, engaged and in sight. Normally: hold ground unless the lane is bad
+   *  (teammate in the line, or too few target points visible), then slide to the
+   *  best-scoring lateral spot. When biased toward a capture point: among spots
+   *  that can still shoot, take the one that most rewards the objective (on the
+   *  point ≫ nearer to it) — so it fights ON the point when possible — and only
+   *  fall back to the plain best-lane search if nothing there can shoot. */
   private strafeMove(ai: AiContext, target: Character): void {
     this.evalIn -= 1;
     if (this.strafeTarget && dist(this.pos, this.strafeTarget) <= ARRIVE) this.strafeTarget = null;
     if (!this.strafeTarget || this.evalIn <= 0) {
       this.evalIn = EVAL_TICKS;
-      const cands = this.candidates(ai, target);
-      const cur = cands[0];
-      const friendInLane = cur.score < cur.clear; // some ray charged a teammate
-      if (!friendInLane && cur.clear > LOW_VISIBILITY) {
-        this.strafeTarget = null; // lane is good: stand and shoot
+      const cands = [...this.candidates(ai, target), ...this.objectiveCandidates(ai, target)];
+      const objBest = this.biasObj ? this.bestFiringToward(cands) : null;
+      if (objBest) {
+        this.strafeTarget = objBest.offset === 0 ? null : objBest.point;
       } else {
-        // Firing spots only: a cross-z (cover) candidate can't shoot from there.
-        let best = cur;
-        for (const c of cands) {
-          if (c.z !== this.z) continue;
-          if (c.score > best.score) best = c;
-          else if (c.score === best.score && Math.abs(c.offset) < Math.abs(best.offset)) best = c;
+        const cur = cands[0];
+        const friendInLane = cur.score < cur.clear; // some ray charged a teammate
+        if (!friendInLane && cur.clear > LOW_VISIBILITY) {
+          this.strafeTarget = null; // lane is good: stand and shoot
+        } else {
+          // Firing spots only: a cross-z (cover) candidate can't shoot from there.
+          let best = cur;
+          for (const c of cands) {
+            if (c.z !== this.z) continue;
+            if (c.score > best.score) best = c;
+            else if (c.score === best.score && Math.abs(c.offset) < Math.abs(best.offset)) best = c;
+          }
+          this.strafeTarget = best.offset === 0 ? null : best.point;
         }
-        this.strafeTarget = best.offset === 0 ? null : best.point;
       }
     }
     if (this.strafeTarget) this.stepToward(this.strafeTarget);
+  }
+
+  /** The best objective-ward firing spot among `cands`, or null if none can
+   *  shoot. "Can shoot" = same level, at least one clear target point, no friend
+   *  flagged. Ranked by objReward (on-point ≫ nearer), then lane quality, then
+   *  least travel — so being on the point wins even over a somewhat cleaner lane
+   *  elsewhere, but a spot that can't shoot at all is never chosen. */
+  private bestFiringToward(cands: Candidate[]): Candidate | null {
+    let best: Candidate | null = null;
+    for (const c of cands) {
+      if (c.z !== this.z || c.clear < 1 || c.score !== c.clear) continue;
+      if (best === null) {
+        best = c;
+        continue;
+      }
+      const rc = this.objReward(c.point);
+      const rb = this.objReward(best.point);
+      if (rc > rb) best = c;
+      else if (rc === rb && (c.score > best.score || (c.score === best.score && Math.abs(c.offset) < Math.abs(best.offset)))) best = c;
+    }
+    return best;
+  }
+
+  /** The capture point (centre + radius) combat movement should gravitate toward
+   *  this tick, or null. Base TacOracle never biases (plain combat); objective-
+   *  seeking subclasses (DominationOracle) override it. */
+  protected biasObjective(_ai: AiContext): { pos: Vec2; radius: number } | null {
+    return null;
+  }
+
+  /** Objective reward for a spot: a huge flat bonus for standing on the point
+   *  (inside its radius), else the negative distance to it (nearer = better). 0
+   *  with no active bias, so it drops out of the ranking. */
+  private objReward(p: Vec2): number {
+    const b = this.biasObj;
+    if (!b) return 0;
+    const d = dist(p, b.pos);
+    return d <= b.radius ? ON_POINT_REWARD : -d;
+  }
+
+  /** Extra candidate spots stepped straight toward the bias point at the strafe
+   *  offsets (capped so as not to overshoot its centre), so combat maneuvering
+   *  has a DIRECT on-point option rather than only the enemy-relative fan. Scored
+   *  like any spot — a step onto the point is taken only if it can still shoot /
+   *  cover. Empty when unbiased, so plain combat is untouched. */
+  private objectiveCandidates(ai: AiContext, opponent: Character): Candidate[] {
+    const b = this.biasObj;
+    if (!b) return [];
+    const to = sub(b.pos, this.pos);
+    const len = Math.hypot(to.x, to.y);
+    if (len < 1e-3) return [];
+    const dir = vec(to.x / len, to.y / len);
+    const out: Candidate[] = [];
+    for (const off of this.strafeOffsets) {
+      const point = add(this.pos, scale(dir, Math.min(off, len)));
+      const cz = zAt(ai.world, point, this.z);
+      if (!walkable(ai.world, this.pos, this.z, point, cz)) continue;
+      out.push(this.scoreAt(ai, point, off, opponent, cz));
+    }
+    return out;
   }
 
   /** COVER: get to the lateral spot the opponent sees the least of. When no
@@ -812,14 +892,24 @@ export class TacOracle extends Oracle {
     if (this.strafeTarget && dist(this.pos, this.strafeTarget) <= ARRIVE) this.strafeTarget = null;
     if (!this.strafeTarget || this.evalIn <= 0) {
       this.evalIn = EVAL_TICKS;
-      const cands = this.candidates(ai, chase);
-      const cur = cands[0];
+      const base = this.candidates(ai, chase);
+      const cur = base[0];
+      const cands = [...base, ...this.objectiveCandidates(ai, chase)];
+      // Least exposure stays the primary — cover mustn't step onto an exposed
+      // point mid-reload — but among equally-safe spots, drift toward the
+      // objective (then least travel), so the bot covers on/near the point.
       let best = cur;
       for (const c of cands) {
         if (c.exposed < best.exposed) best = c;
-        else if (c.exposed === best.exposed && Math.abs(c.offset) < Math.abs(best.offset)) best = c;
+        else if (c.exposed === best.exposed) {
+          const rc = this.objReward(c.point);
+          const rb = this.objReward(best.point);
+          if (rc > rb || (rc === rb && Math.abs(c.offset) < Math.abs(best.offset))) best = c;
+        }
       }
-      this.dodging = cands.every((c) => c.exposed === cur.exposed);
+      // "Nowhere to hide" is judged on the real cover fan only (objective-ward
+      // spots don't count), so an exposed point can't suppress the dodge.
+      this.dodging = base.every((c) => c.exposed === cur.exposed);
       this.strafeTarget = this.dodging || best.offset === 0 ? null : best.point;
     }
     if (this.strafeTarget) {
