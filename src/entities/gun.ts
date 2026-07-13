@@ -220,42 +220,24 @@ export class Gun {
     const grip = (g: { f: number; l: number }): Vec2 =>
       add(headCenter, add(scale(forward, g.f - this.kickback), scale(side, g.l)));
 
-    const b = this.spec.barrel;
-    if (!b) return; // e.g. unarmed: nothing to draw
-
-    const p0 = add(headCenter, scale(forward, b.start - this.kickback));
-    const p1 = add(headCenter, scale(forward, b.end - this.kickback));
-
-    // draw muzzle flash below gun -- just looks better imo
-    if (this.flashTicks > 0) {
-      drawMuzzleFlash(ctx, p1, forward, this.flashTicks / FLASH_TICKS);
+    // Muzzle flash at the functional muzzle (a local f/l point, kicked back with
+    // the gun), drawn first so it sits below the gun -- just looks better imo. A
+    // gun with no muzzle (unarmed) never flashes. The flash still points along
+    // forward regardless of any lateral muzzle offset.
+    if (this.flashTicks > 0 && this.spec.muzzle !== undefined) {
+      drawMuzzleFlash(ctx, grip(this.spec.muzzle), forward, this.flashTicks / FLASH_TICKS);
     }
 
-    if (this.spec.otherParts !== undefined) {
-      for (const line of this.spec.otherParts) {
-        if (line.over) {
-          continue;
-        }
-        drawBar(ctx, grip(line.p0), grip(line.p1), line.width + outlineWidth * 2, outlineColor);
-        drawBar(ctx, grip(line.p0), grip(line.p1), line.width, line.color)
-      }
-    }
-
-    drawBar(ctx, p0, p1, b.width + outlineWidth * 2, outlineColor); // outline
-    drawBar(ctx, p0, p1, b.width, this.spec.color); // fill
-
-
-    if (this.spec.otherParts !== undefined) {
-      for (const line of this.spec.otherParts) {
-        if (!line.over) {
-          continue;
-        }
-        drawBar(ctx, grip(line.p0), grip(line.p1), line.width + outlineWidth * 2, outlineColor);
-        drawBar(ctx, grip(line.p0), grip(line.p1), line.width, line.color)
-      }
-    }
-
-
+    // Rendered parts (the barrel is just one of them): outline + fill per bar,
+    // `over: false` beneath, then `over: true` on top.
+    const parts = this.spec.parts;
+    if (!parts) return;
+    const drawPart = (line: (typeof parts)[number]): void => {
+      drawBar(ctx, grip(line.p0), grip(line.p1), line.width + outlineWidth * 2, outlineColor);
+      drawBar(ctx, grip(line.p0), grip(line.p1), line.width, line.color);
+    };
+    for (const line of parts) if (!line.over) drawPart(line);
+    for (const line of parts) if (line.over) drawPart(line);
   }
 
   /**
@@ -269,7 +251,8 @@ export class Gun {
     // Project from the head center (not the muzzle) so shots can't originate past
     // objects/walls in front of the shooter.
     const dir = rotate(forward, this.shoot(speedRatio));
-    const muzzleLen = this.spec.barrel ? this.spec.barrel.end : 0;
+    const m = this.spec.muzzle;
+    const muzzleLen = m ? Math.hypot(m.f, m.l) : 0;
     // Melee "bullets" are never drawn (the punch is the visual); guns hide the
     // bullet until it has cleared the muzzle.
     const renderAfter = this.spec.melee ? Infinity : muzzleLen + 50;

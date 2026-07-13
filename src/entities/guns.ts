@@ -97,12 +97,21 @@ export interface GunSpec {
   reloadAnim?: HandsAnimation;
   // fireAnim?: HandsAnimation; 
   
-  /** Barrel drawn as a rounded bar from `barrel.start` to `barrel.end` along forward. */
-  barrel?: { start: number; end: number; width: number };
-  /** Gun body color. The gun renders itself, so this is not part of the character skin. */
-  color: string;
+  /**
+   * Muzzle location in the holder's local frame (`f` forward, `l` lateral), like
+   * a grip. Purely mechanical — it fixes where the muzzle flash spawns and (via
+   * its distance from the head center) how far a bullet flies before it renders,
+   * nothing visual. Fully decoupled from the *drawn* barrel, which is just another
+   * entry in `parts`. Omitted = no muzzle (e.g. unarmed/melee).
+   */
+  muzzle?: GripLocal;
 
-  otherParts?: LinePart[];
+  /**
+   * Rendered gun geometry: rounded bars in the holder's local frame (each
+   * endpoint an `f`/`l` grip), drawn under (`over: false`) then over the pass.
+   * The visible barrel carries no special status — it's simply one of these.
+   */
+  parts?: LinePart[];
 
   /** Damage dealt per bullet, before armor. */
   damage: number;
@@ -187,8 +196,10 @@ export const M16: GunSpec = {
   },
 
 
-  barrel: { start: 35, end: 110, width: 11 },
-  color: "#26292e",
+  muzzle: { f: 110, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#26292e", over: false },
+  ],
   damage: 20,
   armorPen: DEFAULT_AP_556,
   zoom: 2.3,
@@ -239,8 +250,10 @@ export const AK47: GunSpec = {
     leftTimes: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
   },
 
-  barrel: { start: 35, end: 110, width: 11 },
-  color: "#53360b",
+  muzzle: { f: 110, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#53360b", over: false },
+  ],
   damage: 25,
   armorPen: DEFAULT_AP_762,
   zoom: 2.3,
@@ -291,8 +304,10 @@ export const MP220: GunSpec = {
     leftTimes: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
   },
 
-  barrel: { start: 35, end: 110, width: 11 },
-  color: "#53360b",
+  muzzle: { f: 110, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#53360b", over: false },
+  ],
   damage: 10,
   armorPen: DEFAULT_AP_12GA_BUCK,
   shotgunPellets: 9,
@@ -330,11 +345,11 @@ export const M249: GunSpec = {
   icon: "m249_small",
   rightGrip: { f: 45, l: 0 },
   leftGrip: { f: 75, l: -6 },
-  barrel: { start: 30, end: 125, width: 14 },
-  color: "#1f1f1f",
+  muzzle: { f: 125, l: 0 },
 
-  otherParts: [
-    {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309", over: false}
+  parts: [
+    {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309", over: false},
+    { p0: { f: 30, l: 0 }, p1: { f: 125, l: 0 }, width: 14, color: "#1f1f1f", over: false },
   ],
 
   reloadAnim: {
@@ -420,8 +435,10 @@ export const M9: GunSpec = {
     leftTimes: [0, 15, 25, 40, 45, 55, 65, 70]
   },
 
-  barrel: { start: 50, end: 100, width: 8 },
-  color: "#33373d",
+  muzzle: { f: 100, l: 0 },
+  parts: [
+    { p0: { f: 50, l: 0 }, p1: { f: 100, l: 0 }, width: 8, color: "#33373d", over: false },
+  ],
   damage: 17,
   armorPen: DEFAULT_AP_9MM,
   zoom: 1.9,
@@ -473,12 +490,12 @@ export const USPS: GunSpec = {
     leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
   },
 
-  barrel: { start: 95, end: 135, width: 8 },
-  color: "#000000",
+  muzzle: { f: 135, l: 0 },
 
-  otherParts: [
+  parts: [
     {p0: {f: 50, l: 0}, p1: {f: 90, l: 0}, width: 8, color: "#000000", over: false},
-    {p0: {f: 85, l: 0}, p1: {f: 100, l: 0}, width: 4, color: "#000000", over: false}
+    {p0: {f: 85, l: 0}, p1: {f: 100, l: 0}, width: 4, color: "#000000", over: false},
+    { p0: { f: 95, l: 0 }, p1: { f: 135, l: 0 }, width: 8, color: "#000000", over: false },
   ],
 
   damage: 22,
@@ -531,8 +548,10 @@ export const Deagle: GunSpec = {
     leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
   },
 
-  barrel: { start: 55, end: 110, width: 11 },
-  color: "#7e858f",
+  muzzle: { f: 110, l: 0 },
+  parts: [
+    { p0: { f: 55, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#7e858f", over: false },
+  ],
   damage: 40,
   armorPen: DEFAULT_AP_50AE,
   zoom: 2.1,
@@ -582,8 +601,10 @@ export const Golden_Deagle: GunSpec = {
     leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
   },
 
-  barrel: { start: 55, end: 110, width: 11 },
-  color: "#f0d313",
+  muzzle: { f: 110, l: 0 },
+  parts: [
+    { p0: { f: 55, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#f0d313", over: false },
+  ],
   damage: 50,
   armorPen: DEFAULT_AP_50AE,
   zoom: 2.2,
@@ -624,7 +645,6 @@ export const UNARMED: GunSpec = {
   melee: true,
   rightGrip: { f: 50, l: 15 },
   leftGrip: { f: 70, l: -20 },
-  color: "#000000", // no barrel, so unused
   damage: 20,
   armorPen: DEFAULT_AP_MELEE,
   zoom: 1.9,
