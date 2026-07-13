@@ -285,28 +285,34 @@ export const AK47: GunSpec = {
 export const MP220: GunSpec = {
   name: "MP220",
   primary: true,
-  icon: "ak47", // TODO: ICON
+  icon: "mp220",
   rightGrip: { f: 40, l: 0 },
-  leftGrip: { f: 65, l: -6 },
+  leftGrip: { f: 70, l: -6 },
 
   reloadAnim: {
-    leftPositions: [{ f : 65, l : -6}, // 0
-                    { f : 20, l : -27}, // 40
-                    { f : 20, l : -27}, // 60
-                    { f : 65, l : -6}, // 100
-                    { f: 70, l: -12}, // 105
-                    { f: 70, l: -12}, // 115
-                    { f: 55, l: -12}, // 125
-                    { f: 55, l: -12}, // 130
-                    { f: 70, l: -12}, // 140
-                    { f : 65, l : -6}, // 150
+    leftPositions: [{ f : 70, l : -6}, // 0
+                    { f : 20, l : -27}, // 25
+                    { f : 20, l : -27}, // 35
+                    { f : 55, l : -6}, // 60
+                    { f : 60, l : -6}, // 65
+                    { f : 55, l : -6}, // 70
+                    { f : 55, l : -6}, // 80
+
+                    { f : 20, l : -27}, // 105
+                    { f : 20, l : -27}, // 115
+                    { f : 55, l : 6}, // 140
+                    { f : 60, l : 6}, // 145
+                    { f : 70, l : -6}, // 150
                     ],
-    leftTimes: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
+    leftTimes: [0, 25, 35, 60, 65, 70, 80, 105, 115, 140, 145, 150]
   },
 
   muzzle: { f: 110, l: 0 },
   parts: [
-    { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#53360b", over: false },
+    { p0: { f: 35, l: 0 }, p1: { f: 90, l: 0 }, width: 11, color: "#53360b", over: false },
+    { p0: { f: 60, l: 5 }, p1: { f: 120, l: 5 }, width: 6, color: "#393939", over: false },
+    { p0: { f: 60, l: -5 }, p1: { f: 120, l: -5 }, width: 6, color: "#393939", over: false },
+
   ],
   damage: 10,
   armorPen: DEFAULT_AP_12GA_BUCK,
