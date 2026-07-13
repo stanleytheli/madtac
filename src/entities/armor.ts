@@ -125,7 +125,7 @@ export const ARMOR_L1: ArmorSpec = {
   name: "Level I Armor",
   level: 1,
   icon: "armor_l1",
-  maxHp: 150,
+  maxHp: 225,
   speed: 1.0,
   border: { color: "#9aa0a6", width: 5 }, // light gray
 };
@@ -134,7 +134,7 @@ export const ARMOR_L2: ArmorSpec = {
   name: "Level II Armor",
   level: 2,
   icon: "armor_l2",
-  maxHp: 150,
+  maxHp: 250,
   speed: 1.0,
   border: { color: "#2c2c2c", width: 5 }, // green
 };
@@ -143,7 +143,7 @@ export const ARMOR_L3: ArmorSpec = {
   name: "Level III Armor",
   level: 3,
   icon: "armor_l3",
-  maxHp: 150,
+  maxHp: 275,
   speed: 1.0,
   border: { color: "#2c2c2c", width: 5 }, // blue
   helmet: { color: "#005a0c", radius: 17, back: 8},
@@ -153,7 +153,7 @@ export const ARMOR_L4: ArmorSpec = {
   name: "Level IV Armor",
   level: 4,
   icon: "armor_l4",
-  maxHp: 300,
+  maxHp: 500,
   speed: 0.75,
   border: { color: "#000000", width: 7 }, // purple
   helmet: { color: "#182819", radius: 17, back: 8 },
