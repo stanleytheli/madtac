@@ -332,7 +332,7 @@ export const Scout: GunSpec = {
 
   muzzle: { f: 120, l: 0 },
   parts: [
-    { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 11, color: "#877d6e", over: false },
+    { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 9, color: "#877d6e", over: false },
   ],
   damage: 65,
   armorPen: DEFAULT_AP_762,
