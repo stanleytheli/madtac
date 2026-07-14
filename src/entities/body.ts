@@ -105,7 +105,7 @@ export class Body {
     if (this.lifetime === null) return 1;
     const left = this.lifetime - this.age;
     if (left >= FLASH_TICKS) return 1;
-    return Math.floor(left / BLINK) % 2 === 0 ? 0.2 : 1;
+    return Math.floor(left / BLINK) % 2 === 0 ? 0 : 1;
   }
 
   /** Slide + spin toward rest, pushing out of solid obstacles on its own level. */
