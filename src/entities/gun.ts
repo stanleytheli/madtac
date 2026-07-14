@@ -204,6 +204,14 @@ export class Gun {
       if (anim.leftPositions && anim.leftTimes) left = grip(interpGrip(anim.leftPositions, anim.leftTimes, t))
       if (anim.rightPositions && anim.rightTimes) right = grip(interpGrip(anim.rightPositions, anim.rightTimes, t))
     }
+    if (this.spec.fireAnim && this.spec.fire !== undefined && this.fireCooldown > 0) {
+      const t = this.spec.fire.delay - this.fireCooldown
+      const anim = this.spec.fireAnim
+      // grip() is affine, so interpolating the local grips then applying grip is
+      // identical to lerping the world-space hand positions.
+      if (anim.leftPositions && anim.leftTimes) left = grip(interpGrip(anim.leftPositions, anim.leftTimes, t))
+      if (anim.rightPositions && anim.rightTimes) right = grip(interpGrip(anim.rightPositions, anim.rightTimes, t))
+    }
 
 
     // Punch: thrust the active hand forward and back over the animation (sin = a

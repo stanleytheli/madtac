@@ -95,7 +95,7 @@ export interface GunSpec {
   leftGrip: GripLocal;
 
   reloadAnim?: HandsAnimation;
-  // fireAnim?: HandsAnimation; 
+  fireAnim?: HandsAnimation; 
   
   /**
    * Muzzle location in the holder's local frame (`f` forward, `l` lateral), like
@@ -281,6 +281,87 @@ export const AK47: GunSpec = {
   movingFirstShotRecoilMin: 7.0,
   movingFirstShotRecoilMax: 8.0,
 };
+
+export const Scout: GunSpec = {
+  name: "Steyr Scout",
+  primary: true,
+  icon: "scout",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 65, l: -6 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 65, l : -6}, // 0
+                    { f : 20, l : -27}, // 35
+                    { f : 20, l : -27}, // 50
+                    { f : 65, l : -6}, // 85
+                    { f : 65, l : -6}, // 175
+                    ],
+    leftTimes: [0, 35, 50, 85, 175],
+
+    rightPositions:  [{ f: 40, l: 0 }, // 0
+                      { f: 40, l: 0 }, // 0 + 95
+                      { f: 50, l: 15}, // 15 + 95
+                      { f: 50, l: 8}, // 20 + ...
+                      { f: 50, l: 8}, // 25 ...
+                      { f: 40, l: 8}, // 35
+                      { f: 40, l: 8}, // 40
+                      { f: 50, l: 8}, // 50
+                      { f: 50, l: 8}, // 55
+                      { f: 50, l: 15}, // 60
+                      { f: 50, l: 15}, // 65
+                      { f: 40, l: 0}, // 80
+                      ],
+    rightTimes: [0, 95, 110, 115, 120, 130, 135, 145, 150, 155, 160, 175]
+  },
+
+  fireAnim: {
+    rightPositions:  [{ f: 40, l: 0 }, // 0
+                      { f: 50, l: 15}, // 15
+                      { f: 50, l: 8}, // 20
+                      { f: 50, l: 8}, // 25
+                      { f: 40, l: 8}, // 35
+                      { f: 40, l: 8}, // 40
+                      { f: 50, l: 8}, // 50
+                      { f: 50, l: 8}, // 55
+                      { f: 50, l: 15}, // 60
+                      { f: 50, l: 15}, // 65
+                      { f: 40, l: 0}, // 80
+                      ],
+    rightTimes: [0, 15, 20, 25, 35, 40, 50, 55, 60, 65, 80]
+  },
+
+  muzzle: { f: 120, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 11, color: "#877d6e", over: false },
+  ],
+  damage: 65,
+  armorPen: DEFAULT_AP_762,
+  zoom: 2.7,
+  speed: 0.75,
+  fire: {
+    delay: 80,
+    bulletSpeed: 80,
+    bulletLife: 70,
+    auto: false,
+    spread: 0.01,
+    magSize: 10,
+    reserveMags: 3,
+    reloadTime: 175,
+    drawTime: 60,
+    tracerWidth: 5.5,
+    tracerLength: 180,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 16,
+  recoilRecovery: 1,
+  recoilCoef: 0.25,
+  recoilGain: 5.5,
+  recoilDelay: 45,
+  movePenalty: 3.5,
+  movingFirstShotRecoilMin: 20,
+  movingFirstShotRecoilMax: 28,
+};
+
 
 export const MP220: GunSpec = {
   name: "MP220",
