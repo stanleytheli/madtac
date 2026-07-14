@@ -83,6 +83,19 @@ export class Gun {
   }
 
   /**
+   * The range (world px) at which the gun stops being worth firing — the AI won't
+   * shoot, chase, or count a target as "in contact" past it. For now this is just
+   * the bullet's physical reach: it lives `bulletLife` ticks at `bulletSpeed`
+   * px/tick, so it simply vanishes past `bulletSpeed * bulletLife`. A melee/no-fire
+   * gun has no feasible range (0). (Named for the concept, not the formula, so a
+   * later accuracy-aware model can slot in here without touching callers.)
+   */
+  get feasibleRange(): number {
+    const f = this.spec.fire;
+    return f ? f.bulletSpeed * f.bulletLife : 0;
+  }
+
+  /**
    * The gun to leave on the ground when the holder drops it or dies. A normal gun
    * drops itself (keeping its ammo state); subclasses may substitute a different
    * instance (e.g. an enemy gun yields a normal, player-usable version).

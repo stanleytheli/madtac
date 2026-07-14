@@ -54,10 +54,12 @@
  *  - Reaction time keeps all of it human: a hostile must stay in view
  *    reactionTime ticks before it's engaged (Robot.seenFor), and readiness
  *    changes — burst spent, recoil settled, reload started/finished — steer
- *    the mode and the trigger reactionTime late. The one reflex is the burst
- *    cutoff itself: fire stops the instant the envelope is spent, because
- *    spray control is trained, not decided. Semi-auto guns add a per-shot
- *    clicking delay on top of their mechanical fire delay.
+ *    the mode and the trigger reactionTime late. Two things are reflexive
+ *    (acted on at once, not reaction-gated): the burst cutoff — fire stops the
+ *    instant the envelope is spent, spray control being trained not decided —
+ *    and starting a reload, a self-known event that drops it straight into
+ *    cover rather than holding a lane through the mag swap. Semi-auto guns add
+ *    a per-shot clicking delay on top of their mechanical fire delay.
  *
  * Strafe candidates sample perpendicular to the opponent line and score one
  * ray per target point: obstacle-blocked 0, teammate in the ray -1 (never
@@ -147,6 +149,11 @@ const BETA_DIST = 0.35;
 /** Cost edge a challenger needs over the current focus — don't flip-flop
  *  between two near-equal targets every re-evaluation. */
 const FOCUS_STICKINESS = 30;
+/** Target-selection penalty for a hostile beyond the weapon's feasible range:
+ *  large enough that any in-range hostile outranks any out-of-range one, while
+ *  out-of-range hostiles keep their relative order among themselves (so the best
+ *  of a bad lot is still picked when nothing is reachable). */
+const OUT_OF_RANGE_PENALTY = 1e5;
 /** Ticks without sight of anyone before the remembered focus is dropped and
  *  navigation goes back to "whoever is quickest to reach". */
 const FOCUS_MEMORY = 120;
@@ -368,19 +375,11 @@ export class TacOracle extends Oracle {
     this.biasObj = this.biasObjective(ai);
     if (!chase) return;
 
-    // Heavy-penalty guns are fired from a stand: while actively mid-burst
-    // (would fire now or is between semi-auto clicks), hold position and let
-    // strafes/approaches happen between bursts. vel is already zeroed.
-    if (
-      target &&
-      this.mode === "shoot" &&
-      this.fireOk &&
-      !this.burstDone &&
-      this.gun.spec.movePenalty >= STAND_TO_SHOOT_PENALTY &&
-      this.laneClear(ai, target)
-    ) {
-      return;
-    }
+    // Heavy-penalty guns are fired from a stand: while a shot is on, hold
+    // position and let strafes/approaches happen between bursts. vel is already
+    // zeroed. Only holds when the target is actually in reach (see standToShoot),
+    // else it'd freeze planted on an enemy it can't hit.
+    if (this.standToShoot(ai, target)) return;
 
     if (this.mode === "heal") {
       this.healMove(ai, chase); // back off to grow the enemy's reach, then hold cover
@@ -419,16 +418,7 @@ export class TacOracle extends Oracle {
       return;
     }
     // Mirror act's stand-to-shoot hold so a heavy gunner doesn't creep mid-burst.
-    if (
-      target &&
-      this.mode === "shoot" &&
-      this.fireOk &&
-      !this.burstDone &&
-      this.gun.spec.movePenalty >= STAND_TO_SHOOT_PENALTY &&
-      this.laneClear(ai, target)
-    ) {
-      return;
-    }
+    if (this.standToShoot(ai, target)) return;
     if (this.strafeTarget) {
       this.stepToward(this.strafeTarget);
       return;
@@ -506,7 +496,12 @@ export class TacOracle extends Oracle {
 
     // RUN: stay while still safe; enter only after the dwell.
     const wantRun = !healing && runSafe && (this.mode === "run" || this.runDwell >= RUN_COMMIT_TICKS);
-    const mode: "shoot" | "cover" | "run" | "heal" = healing ? "heal" : wantRun ? "run" : this.combatMode;
+    // Reloading is a self-known, vulnerable moment: drop to cover at once
+    // (reflexively, like the burst cutoff) instead of holding a firing lane while
+    // the mag swaps — don't wait out the reaction delay that gates the normal
+    // shoot<->cover flip. combatMode still catches up on its own timer underneath.
+    const combat = this.gun.reloading ? "cover" : this.combatMode;
+    const mode: "shoot" | "cover" | "run" | "heal" = healing ? "heal" : wantRun ? "run" : combat;
 
     if (mode !== this.mode) {
       if (this.mode === "heal") this.cancelUse(); // leaving a heal drops a half-finished use
@@ -596,31 +591,37 @@ export class TacOracle extends Oracle {
     return this.mode === "run";
   }
 
-  /** Distance-until-visibility: the nav-route distance a mover at (fromPos,
-   *  fromZ) must travel before it can see `tgt` — 0 if it already can, the walk
-   *  to the nearest node that sees `tgt` otherwise. `fromNode` (the mover's
-   *  nearest walkable node) and `tgtGoal` (nearest node that sees `tgt`) can be
-   *  passed precomputed to hoist those node scans out of a loop (see contactScan).
-   *  No graph / unreachable falls back to straight-line / Infinity. */
+  /** Distance-until-contact: the distance a mover at (fromPos, fromZ) with weapon
+   *  reach `range` must travel before it can both SEE `tgt` and be within `range`
+   *  of it — 0 if already so. Already seeing it (but out of range) → the straight
+   *  gap left to close; can't see it yet → the walk to the nearest node that sees
+   *  `tgt`, plus any gap still left from there (usually 0 — a sighting node sits
+   *  near what it sees). `fromNode` (the mover's nearest walkable node) and
+   *  `tgtGoal` (nearest node that sees `tgt`) can be passed precomputed to hoist
+   *  those node scans out of a loop (see contactScan). Adds only dist() arithmetic
+   *  over the old sight-only scan. No graph / unreachable falls back to
+   *  straight-line / Infinity. */
   private routeUntilSight(
     ai: AiContext,
     fromPos: Vec2,
     fromZ: number,
     tgt: Character,
+    range: number,
     fromNode?: number,
     tgtGoal?: number,
   ): number {
-    if (fromZ === tgt.z && targetPoints(tgt).some((pt) => losClear(ai.world, fromPos, pt, fromZ))) {
-      return 0;
-    }
+    const sees = fromZ === tgt.z && targetPoints(tgt).some((pt) => losClear(ai.world, fromPos, pt, fromZ));
+    if (sees) return Math.max(0, dist(fromPos, tgt.pos) - range); // 0 if also in range
     const nav = ai.nav;
     if (!nav || nav.nodes.length === 0) return dist(fromPos, tgt.pos);
     const curr = fromNode ?? nav.nearestWalkable(ai.world, fromPos, fromZ);
     const goal = tgtGoal ?? nav.nearestInSight(ai.world, tgt.pos, tgt.z);
     if (curr < 0 || goal < 0) return dist(fromPos, tgt.pos);
-    if (curr === goal) return dist(fromPos, nav.nodes[curr].pos);
+    // Reach a sighting node, then close any straight gap from it to within range.
+    const gapFrom = (n: number): number => Math.max(0, dist(nav.nodes[n].pos, tgt.pos) - range);
+    if (curr === goal) return dist(fromPos, nav.nodes[curr].pos) + gapFrom(curr);
     const step = nav.route(curr, goal);
-    return step ? dist(fromPos, nav.nodes[curr].pos) + step.dist : Infinity;
+    return step ? dist(fromPos, nav.nodes[curr].pos) + step.dist + gapFrom(goal) : Infinity;
   }
 
   /** Both contact metrics: `myMin` = the soonest WE could see anyone (drives RUN),
@@ -651,10 +652,12 @@ export class TacOracle extends Oracle {
     let myMin = Infinity;
     let enemyMin = Infinity;
     let threat: Character | null = null;
+    const myRange = this.gun.feasibleRange;
     for (const h of near) {
-      const my = this.routeUntilSight(ai, this.pos, this.z, h, myNode, undefined);
+      const my = this.routeUntilSight(ai, this.pos, this.z, h, myRange, myNode, undefined);
       if (my < myMin) myMin = my;
-      const en = this.routeUntilSight(ai, h.pos, h.z, this, undefined, mySightGoal);
+      // The enemy shoots us with ITS weapon, so its reach gates its contact.
+      const en = this.routeUntilSight(ai, h.pos, h.z, this, h.gun.feasibleRange, undefined, mySightGoal);
       if (en < enemyMin) {
         enemyMin = en;
         threat = h;
@@ -678,12 +681,32 @@ export class TacOracle extends Oracle {
     );
   }
 
+  /** Heavy-recoil guns fire from a planted stance: while a shot is genuinely on
+   *  — ready, mid-burst, target in reach, lane clear — hold position, so a
+   *  strafe/approach doesn't drag the muzzle off mid-burst; repositioning happens
+   *  between bursts instead. The `feasibleRange` gate matches shouldFire: without
+   *  it a shotgun would plant on a target it can't actually shoot and never close
+   *  — frozen with the gun raised at a faraway enemy. */
+  private standToShoot(ai: AiContext, target: Character | null): boolean {
+    return (
+      target !== null &&
+      this.mode === "shoot" &&
+      this.fireOk &&
+      !this.burstDone &&
+      this.gun.spec.movePenalty >= STAND_TO_SHOOT_PENALTY &&
+      dist(this.pos, target.pos) <= this.gun.feasibleRange &&
+      this.laneClear(ai, target)
+    );
+  }
+
   /** Fire only mid-burst in SHOOT mode, with the muzzle settled on the target
    *  — never near a teammate's line, and on semi-auto guns only as fast as a
    *  trigger finger clicks. */
   protected override shouldFire(ai: AiContext, target: Character | null): boolean {
     if (this.mode !== "shoot" || !this.fireOk || !target) return false;
     if (this.clickIn > 0) return false;
+    // Don't spend rounds past the weapon's reach — the bullet would die short.
+    if (dist(this.pos, target.pos) > this.gun.feasibleRange) return false;
     // Gate against the jittered aim point (where the muzzle actually points), so
     // the trigger agrees with the aim — otherwise it'd fire the instant it's dead
     // on the true target while the muzzle is off by aimError.
@@ -718,9 +741,12 @@ export class TacOracle extends Oracle {
 
     let best: Character | null = null;
     let bestCost = Infinity;
+    const range = this.gun.feasibleRange;
     for (const h of this.hostiles(ai)) {
       if (h.z !== this.z || !this.canSee(ai.world, h)) continue;
-      let cost = this.shootCost(ai, h) + BETA_DIST * dist(this.pos, h.pos);
+      const d = dist(this.pos, h.pos);
+      let cost = this.shootCost(ai, h) + BETA_DIST * d;
+      if (d > range) cost += OUT_OF_RANGE_PENALTY; // prefer anyone we can actually reach
       if (h === this.focus) cost -= FOCUS_STICKINESS;
       if (cost < bestCost) {
         best = h;
@@ -750,12 +776,19 @@ export class TacOracle extends Oracle {
    *  the graph — route distance to the node that sees them — instead of raw
    *  straight-line distance (which happily picks someone behind a wall on
    *  another floor). Cached: routes are table lookups but nearestInSight isn't. */
-  /** Are we in visual contact with `chase` (an enemy) right now — i.e. actively
-   *  fighting, so the contact metrics are ~0 and the scan can be skipped? Kept
+  /** Are we in visual contact with `chase` (an enemy) AND within our weapon's
+   *  reach of it right now — i.e. actually able to trade, so the contact metrics
+   *  are ~0 and the expensive scan can be skipped? A target seen but beyond
+   *  feasible range isn't contact yet (we'd have to close first), so it falls
+   *  through to the full scan — which measures the distance left to close. Kept
    *  overridable so an objective-seeking subclass can exempt a non-enemy chase
    *  (a domination point marker) from being mistaken for a live fight. */
   protected inContact(ai: AiContext, chase: Character): boolean {
-    return chase.z === this.z && this.canSee(ai.world, chase);
+    return (
+      chase.z === this.z &&
+      dist(this.pos, chase.pos) <= this.gun.feasibleRange &&
+      this.canSee(ai.world, chase)
+    );
   }
 
   protected bestChase(ai: AiContext): Character | null {
