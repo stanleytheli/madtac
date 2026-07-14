@@ -9,7 +9,7 @@
  * AI-filled from the per-side `TeamConfig` (troop count, skill, equipment tier).
  */
 import type { Character } from "../entities/actor.ts";
-import { BANDAGE, SYRINGE, type UtilityStack } from "../entities/consumable.ts";
+import { BANDAGE, SYRINGE, UtilityStack } from "../entities/consumable.ts";
 import { makeTroop } from "../ai/enemies.ts";
 import type { TeamConfig } from "../world/level.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
@@ -125,8 +125,8 @@ export function rollLoadout(equip: string): PlayerLoadout {
 export function rollUtilities(): UtilityStack[] {
   const out: UtilityStack[] = [];
   const bandages = Math.floor(Math.random() * 3); // 0..2
-  if (bandages > 0) out.push({ spec: BANDAGE, count: bandages });
-  if (Math.random() < 0.4) out.push({ spec: SYRINGE, count: 1 });
+  if (bandages > 0) out.push(new UtilityStack(BANDAGE, bandages));
+  if (Math.random() < 0.4) out.push(new UtilityStack(SYRINGE, 1));
   return out;
 }
 
@@ -161,7 +161,7 @@ export abstract class TeamMatchMode implements Gamemode {
   // Respawns would otherwise bury the map in corpses and dropped gear, so both
   // clear on a timer (blinking out over their last second).
   readonly bodyTtl = 720; // ~12s
-  readonly itemTtl = 600; // ~10s
+  readonly itemTtl = 900; // ~15s
 
   protected readonly cfg: TeamMatchConfig;
   protected phase: "playing" | "over" = "playing";

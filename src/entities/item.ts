@@ -30,10 +30,23 @@ export interface GroundItem {
   draw(ctx: CanvasRenderingContext2D): void;
 }
 
+/**
+ * Something a character carries that can be put on the ground: a gun, a worn
+ * armor, or a stack of a utility (see Gun / Armor / UtilityStack). Each droppable
+ * knows how to wrap itself as the matching `GroundItem` — the single drop API
+ * used by every drop path (pickup swap, manual drop, death). `getGroundItem` also
+ * resets any carry-only state as the gear leaves the hand (e.g. a gun clears its
+ * reload/recoil/cooldown timers). The caller stamps a despawn `lifetime` on the
+ * result if its gamemode wants one.
+ */
+export interface Droppable {
+  getGroundItem(pos: Vec2, vel: Vec2, z: number): GroundItem;
+}
+
 const ITEM_RADIUS = 35; // collision radius vs walls/crates
 const ITEM_FRICTION = 0.85; // per-tick velocity retention as it slides to rest
 const SEPARATION_RATE = 0.25; // fraction of overlap resolved per tick (soft, gradual)
-const FLASH_TICKS = 60; // an item blinks over this many ticks before it despawns
+const FLASH_TICKS = 120; // an item blinks over this many ticks before it despawns
 const BLINK = 6; // ticks per on/off half-cycle of the despawn flash
 
 /** Opacity for a timed item: solid until its final FLASH_TICKS, then blinking
@@ -42,7 +55,7 @@ function flashAlpha(age: number, lifetime: number | null): number {
   if (lifetime === null) return 1;
   const left = lifetime - age;
   if (left >= FLASH_TICKS) return 1;
-  return Math.floor(left / BLINK) % 2 === 0 ? 0.2 : 1;
+  return Math.floor(left / BLINK) % 2 === 0 ? 0 : 1;
 }
 
 /**
@@ -317,3 +330,4 @@ export class UtilityItem implements GroundItem {
     drawGroundIconFit(ctx, this.pos, this.iconSrc, UTILITY_BACKDROP, UTILITY_TARGET, 0, flashAlpha(this.age, this.lifetime));
   }
 }
+

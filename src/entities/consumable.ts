@@ -12,6 +12,8 @@
  */
 import type { Character } from "./actor.ts";
 import type { HandsAnimation } from "./guns.ts";
+import { UtilityItem, type Droppable, type GroundItem } from "./item.ts";
+import type { Vec2 } from "../engine/vec.ts";
 
 export interface UtilitySpec {
   readonly name: string;
@@ -29,10 +31,16 @@ export interface UtilitySpec {
   apply(user: Character): void;
 }
 
-/** One entry on a character's utility belt: a spec and how many are held. */
-export interface UtilityStack {
-  spec: UtilitySpec;
-  count: number;
+/** One entry on a character's utility belt: a spec and how many are held. Also a
+ *  Droppable — a dropped stack becomes a UtilityItem pile of the same count. */
+export class UtilityStack implements Droppable {
+  constructor(public spec: UtilitySpec, public count: number) {}
+
+  /** Put this stack on the ground as a UtilityItem pile at (`pos`, `z`), tossed
+   *  with `vel` (the Droppable API). */
+  getGroundItem(pos: Vec2, vel: Vec2, z: number): GroundItem {
+    return new UtilityItem(pos, this.spec, this.count, vel, z);
+  }
 }
 
 /** Instant patch: heals a flat amount the moment the use completes. */
@@ -77,11 +85,11 @@ export const SYRINGE: UtilitySpec = {
 
 /** The belt a fresh player spawns with. */
 const DEFAULT_KIT: readonly UtilityStack[] = [
-  { spec: BANDAGE, count: 2 },
-  { spec: SYRINGE, count: 1 },
+  new UtilityStack(BANDAGE, 2),
+  new UtilityStack(SYRINGE, 1),
 ];
 
 /** A fresh (independently mutable) copy of the default starting belt. */
 export function startingUtilities(): UtilityStack[] {
-  return DEFAULT_KIT.map((u) => ({ spec: u.spec, count: u.count }));
+  return DEFAULT_KIT.map((u) => new UtilityStack(u.spec, u.count));
 }

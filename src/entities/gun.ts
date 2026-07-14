@@ -1,4 +1,5 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
+import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { spawnBullet, type Hittable, type World } from "../world/world.ts";
@@ -37,7 +38,7 @@ function sampleNormal(mu: number, sigma: number) {
  * recoil-pattern accumulator). These are meant to exist in the world and be
  * dropped / picked up, so each carries its own state independent of who holds it.
  */
-export class Gun {
+export class Gun implements Droppable {
   readonly spec: GunSpec;
 
   /** Recoil-pattern accumulator. Grows per shot, resets after `recoilDelay` idle ticks. */
@@ -102,6 +103,25 @@ export class Gun {
    */
   dropClone(): Gun {
     return this;
+  }
+
+  /**
+   * Put this gun on the ground as a pickup at (`pos`, `z`), tossed with `vel`
+   * (the Droppable API — see item.ts). It keeps its ammo (mag + reserve) but
+   * forgets all transient timing — cooldown, kick, muzzle flash, reload, draw,
+   * and recoil spray — so picking it back up starts from a clean slate instead
+   * of mid-reload or mid-cooldown.
+   */
+  getGroundItem(pos: Vec2, vel: Vec2, z: number): GroundItem {
+    this.fireCooldown = 0;
+    this.kickback = 0;
+    this.flashTicks = 0;
+    this.reloadTicks = 0;
+    this.drawTicks = 0;
+    this.currentRecoil = 0;
+    this.idleTicks = 0;
+    this.meleeTicks = 0;
+    return new GunItem(pos, this, vel, z);
   }
 
   get canFire(): boolean {

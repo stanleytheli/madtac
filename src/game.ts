@@ -22,7 +22,7 @@ import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
 import { isDown, mouse, moveAxis, pointer } from "./engine/input.ts";
-import { ArmorItem, GunItem, separateItems, UtilityItem, type GroundItem } from "./entities/item.ts";
+import { ArmorItem, GunItem, separateItems, UtilityItem, type Droppable, type GroundItem } from "./entities/item.ts";
 import {
   ARMOR_SPECS,
   DEFAULT_PLAYER_PRIMARY,
@@ -356,6 +356,16 @@ export class Game implements GameCtx {
     return fromAngle(Math.random() * Math.PI * 2, 9.5);
   }
 
+  /** Put a dropped piece of gear on the ground (via its own getGroundItem) at
+   *  (pos, z), tossed with `vel`, and stamp it with the gamemode's despawn timer —
+   *  so voluntary drops (Q, HUD right-click, pickup swaps) age out exactly like
+   *  death drops instead of lingering forever. */
+  private dropToWorld(gear: Droppable, pos: Vec2, vel: Vec2, z: number): void {
+    const it = gear.getGroundItem(pos, vel, z);
+    it.lifetime = this.gamemode.itemTtl ?? null;
+    this.world.items.push(it);
+  }
+
   private pickUp(item: GroundItem): void {
     const idx = this.world.items.indexOf(item);
     if (idx >= 0) this.world.items.splice(idx, 1);
@@ -363,10 +373,10 @@ export class Game implements GameCtx {
 
     if (item instanceof GunItem) {
       const dropped = this.player.holster(item.gun);
-      if (dropped) this.world.items.push(new GunItem(here(), dropped, this.tossVel(), this.player.z));
+      if (dropped) this.dropToWorld(dropped, here(), this.tossVel(), this.player.z);
     } else if (item instanceof ArmorItem) {
       const prev = this.player.equipArmor(item.armor);
-      if (prev) this.world.items.push(new ArmorItem(here(), prev, this.tossVel(), this.player.z));
+      if (prev) this.dropToWorld(prev, here(), this.tossVel(), this.player.z);
     } else if (item instanceof UtilityItem) {
       // Take what fits (capped at the spec's maxCarry); leave any remainder on
       // the ground so a full belt doesn't silently swallow the pile.
@@ -379,24 +389,16 @@ export class Game implements GameCtx {
 
   private dropEquippedWeapon(): void {
     const dropped = this.player.dropEquipped();
-    if (!dropped) return;
-    this.world.items.push(new GunItem(vec(this.player.pos.x, this.player.pos.y), dropped, this.tossVel(), this.player.z));
+    if (dropped) this.dropToWorld(dropped, vec(this.player.pos.x, this.player.pos.y), this.tossVel(), this.player.z);
   }
 
   private dropFromHud(kind: SlotKind): void {
-    const at = vec(this.player.pos.x, this.player.pos.y);
-    if (kind === "armor") {
-      const a = this.player.dropArmor();
-      if (a) this.world.items.push(new ArmorItem(at, a, this.tossVel(), this.player.z));
-    } else if (kind === "utility") {
-      const spec = this.player.dropCurrentUtility();
-      if (spec) this.world.items.push(new UtilityItem(at, spec, 1, this.tossVel(), this.player.z));
-    } else if (kind === "melee") {
-      // Fists — nothing to drop.
-    } else {
-      const g = this.player.dropSlot(kind);
-      if (g) this.world.items.push(new GunItem(at, g, this.tossVel(), this.player.z));
-    }
+    let gear: Droppable | null = null;
+    if (kind === "armor") gear = this.player.dropArmor();
+    else if (kind === "utility") gear = this.player.dropCurrentUtility();
+    else if (kind === "melee") return; // fists — nothing to drop
+    else gear = this.player.dropSlot(kind);
+    if (gear) this.dropToWorld(gear, vec(this.player.pos.x, this.player.pos.y), this.tossVel(), this.player.z);
   }
 
   /** Convert any character at 0 HP into a corpse, dropping its gear, and remove
@@ -404,7 +406,7 @@ export class Game implements GameCtx {
   private reapDead(): void {
     // Death-drops and corpses inherit the gamemode's despawn timers (null = the
     // object's default: linger forever). Authored pickups are never stamped.
-    const itemTtl = this.gamemode.itemTtl ?? null;
+    // Item TTL is applied by dropToWorld; corpses take bodyTtl here.
     const bodyTtl = this.gamemode.bodyTtl ?? null;
     for (let i = this.characters.length - 1; i >= 0; i--) {
       const c = this.characters[i];
@@ -417,24 +419,14 @@ export class Game implements GameCtx {
         this.minimapDeaths.push({ pos: vec(c.pos.x, c.pos.y), z: c.z, age: 0 });
       }
 
-      for (const gun of c.dropWeapons()) {
+      // All the dead character's gear, each tossed out on its own random spurt
+      // and stamped with the gamemode's death-drop despawn timer.
+      const gear: Droppable[] = [...c.dropWeapons(), ...c.dropUtilities()];
+      const armor = c.dropArmor();
+      if (armor) gear.push(armor);
+      for (const g of gear) {
         const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
-        const gi = new GunItem(vec(c.pos.x, c.pos.y), gun, vel, c.z);
-        gi.lifetime = itemTtl;
-        this.world.items.push(gi);
-      }
-      const a = c.dropArmor();
-      if (a) {
-        const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
-        const ai = new ArmorItem(vec(c.pos.x, c.pos.y), a, vel, c.z);
-        ai.lifetime = itemTtl;
-        this.world.items.push(ai);
-      }
-      for (const u of c.dropUtilities()) {
-        const vel = fromAngle(Math.random() * Math.PI * 2, 3 + Math.random() * 3);
-        const ui = new UtilityItem(vec(c.pos.x, c.pos.y), u.spec, u.count, vel, c.z);
-        ui.lifetime = itemTtl;
-        this.world.items.push(ui);
+        this.dropToWorld(g, vec(c.pos.x, c.pos.y), vel, c.z);
       }
       const body = Body.fromCharacter(c);
       body.lifetime = bodyTtl;

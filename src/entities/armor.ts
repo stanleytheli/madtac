@@ -11,6 +11,7 @@
  * it's destroyed and removed.
  */
 import { add, scale, type Vec2 } from "../engine/vec.ts";
+import { ArmorItem, type Droppable, type GroundItem } from "./item.ts";
 
 /** Filled circle helper (no outline). */
 function circle(ctx: CanvasRenderingContext2D, c: Vec2, r: number, color: string): void {
@@ -55,7 +56,7 @@ export interface ArmorSpec {
  * A worn/ownable armor instance: an immutable spec plus its current HP. Exists in
  * the world so it can be dropped and picked up while keeping its damage state.
  */
-export class Armor {
+export class Armor implements Droppable {
   readonly spec: ArmorSpec;
   hp: number;
 
@@ -70,6 +71,13 @@ export class Armor {
 
   get destroyed(): boolean {
     return this.hp <= 0;
+  }
+
+  /** Put this armor on the ground as a pickup at (`pos`, `z`), tossed with `vel`
+   *  (the Droppable API). Keeps its current HP — the whole point of a droppable
+   *  armor instance. */
+  getGroundItem(pos: Vec2, vel: Vec2, z: number): GroundItem {
+    return new ArmorItem(pos, this, vel, z);
   }
 
   /** Soak `damage` (the bullet's raw damage). Returns true if this destroyed the armor. */

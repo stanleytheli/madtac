@@ -1,7 +1,7 @@
 import type { Armor } from "./armor.ts";
 import type { TeamId } from "./team.ts";
 import { drawCharacter, type Skin } from "./character.ts";
-import type { UtilitySpec, UtilityStack } from "./consumable.ts";
+import { UtilityStack, type UtilitySpec } from "./consumable.ts";
 import { Gun } from "./gun.ts";
 import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.ts";
 import { gunIcon, utilityIcon } from "./item.ts";
@@ -99,7 +99,7 @@ export class Character {
       secondary: loadout.secondary ?? null,
       hand: loadout.hand,
     };
-    this.utilities = (loadout.utilities ?? []).map((u) => ({ spec: u.spec, count: u.count }));
+    this.utilities = (loadout.utilities ?? []).map((u) => new UtilityStack(u.spec, u.count));
     this.equipped = loadout.primary ? "primary" : loadout.secondary ? "secondary" : "hand";
   }
 
@@ -121,7 +121,7 @@ export class Character {
     this.slots.primary = loadout.primary ?? null;
     this.slots.secondary = loadout.secondary ?? null;
     this.slots.hand = loadout.hand;
-    this.utilities = (loadout.utilities ?? []).map((u) => ({ spec: u.spec, count: u.count }));
+    this.utilities = (loadout.utilities ?? []).map((u) => new UtilityStack(u.spec, u.count));
     this.utilityIndex = 0;
     this.cancelUse();
     this.regenTicks = 0;
@@ -238,18 +238,19 @@ export class Character {
     const take = Math.max(0, Math.min(n, spec.maxCarry - have));
     if (take === 0) return 0;
     if (stack) stack.count += take;
-    else this.utilities.push({ spec, count: take });
+    else this.utilities.push(new UtilityStack(spec, take));
     return take;
   }
 
-  /** Drop one of the selected utility (HUD right-click), returning its spec, or
-   *  null if the belt is empty. */
-  dropCurrentUtility(): UtilitySpec | null {
+  /** Drop one of the selected utility (HUD right-click), returning it as a
+   *  single-count stack (a Droppable) to place on the ground, or null if the
+   *  belt is empty. */
+  dropCurrentUtility(): UtilityStack | null {
     const cur = this.utilities[this.utilityIndex];
     if (!cur) return null;
     const spec = cur.spec;
     this.consumeUtility(spec);
-    return spec;
+    return new UtilityStack(spec, 1);
   }
 
   /** All carried utilities (for death drops), clearing the belt. */
