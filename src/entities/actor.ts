@@ -5,7 +5,7 @@ import { UtilityStack, type UtilitySpec } from "./consumable.ts";
 import { Gun } from "./gun.ts";
 import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.ts";
 import { gunIcon, utilityIcon } from "./item.ts";
-import { add, angleOf, deg2rad, len, mid, perp, scale, vec, type Vec2 } from "../engine/vec.ts";
+import { add, angleOf, deg2rad, len, mid, perp, scale, scaleAlong, sub, vec, type Vec2 } from "../engine/vec.ts";
 import type { Hittable, World } from "../world/world.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
@@ -18,6 +18,10 @@ const SLUNG_BACK_OFFSET = 40; // world px shifted opposite the aim, so it peeks 
 // Movement tuning (per 60 Hz tick).
 const ACCEL = 1.5; // velocity gained per tick at full input
 const FRICTION = 0.80; // velocity retained per tick
+/** On a staircase, the velocity component along the climb axis is scaled by this
+ *  each tick — climbing is slower than flat ground (see Character.applyStairMove).
+ *  1/sqrt2. */
+const STAIR_CLIMB_MUL = 0.9;
 
 /** Terminal speed of the accel/friction model, per the recoil spec's definition. */
 const maxSpeedFor = (spec: GunSpec): number => (ACCEL * spec.speed) / (1 - FRICTION);
@@ -53,6 +57,11 @@ export class Character {
   /** Vertical level (integer). Changes sharply when crossing a staircase's
    *  midpoint; gates rendering, collision, bullets, and line of sight. */
   z = 0;
+  /** When standing on a staircase, the unit direction of its climb axis (set by
+   *  the session each tick before move()); null on flat ground. move() shrinks the
+   *  velocity component along it (climbing is slower), and the recoil `speed`
+   *  getter undoes that scaling so accuracy reflects the intended movement. */
+  onStairs: Vec2 | null = null;
   skin: Skin;
   /** Team allegiance (see team.ts). AI picks targets by team hostility; the
    *  player's character is on "player", spawned NPCs get theirs from the spawn. */
@@ -113,6 +122,7 @@ export class Character {
     this.pos = pos;
     this.z = z;
     this.vel = vec(0, 0);
+    this.onStairs = null;
     this.forward = vec(0, -1);
     this.hp = this.maxHp;
     this.lastHitDir = null;
@@ -170,7 +180,22 @@ export class Character {
 
   /** Current movement speed (world px/tick). */
   get speed(): number {
+    // On stairs, applyStairMove shrank the climb-axis velocity by STAIR_CLIMB_MUL;
+    // undo it here (the inverse) so recoil — the consumer that matters — treats a
+    // climb as full-speed movement instead of rewarding the shooter for the stair
+    // slowdown.
+    if (this.onStairs) return len(scaleAlong(this.vel, this.onStairs, 1 / STAIR_CLIMB_MUL));
     return len(this.vel);
+  }
+
+  /** This character's movement speed multiplier: the held gun's weight, worn
+   *  armor, and whether a utility use is slowing it (heal). Assembled here, with
+   *  the movement it scales, rather than by the caller. */
+  get moveSpeedMul(): number {
+    let m = this.gun.spec.speed;
+    if (this.armor) m *= this.armor.spec.speed;
+    if (this.usingUtility) m *= USE_SPEED_MUL; // slowed mid-heal
+    return m;
   }
 
   /** Switch to a slot. No-op if it's empty (a gun slot with no gun, or the utility
@@ -360,7 +385,7 @@ export class Character {
   }
 
   /** Acceleration + friction movement. `axis` is raw -1/0/1 input per axis. */
-  move(axis: Vec2, speedMul = 1): void {
+  move(axis: Vec2): void {
     let ax = axis.x;
     let ay = axis.y;
     // Normalize diagonals so they aren't faster than cardinal movement.
@@ -368,10 +393,27 @@ export class Character {
       ax *= SQRT1_2;
       ay *= SQRT1_2;
     }
-    const accel = ACCEL * speedMul;
+    const accel = ACCEL * this.moveSpeedMul;
     this.vel = add(this.vel, vec(ax * accel, ay * accel));
     this.vel = scale(this.vel, FRICTION);
     this.pos = add(this.pos, this.vel);
+    this.applyStairMove(); // staircase climb slowdown (no-op off stairs)
+  }
+
+  /** Apply the staircase climb slowdown to the step just taken: shrink this tick's
+   *  velocity component along the flight's climb axis by STAIR_CLIMB_MUL (leaving
+   *  the sideways, perpendicular component full) and shift position to match — so a
+   *  diagonal approach scales the stairs no faster than a straight climb. Called by
+   *  every mover after it steps (the player's physics move() above, and an AI's
+   *  kinematic step via Robot.think), so climbing is slower for all. `onStairs` (the
+   *  climb-axis unit vector) is set by the session before the move; no-op off
+   *  stairs. The recoil `speed` getter undoes this so accuracy reflects intent. */
+  applyStairMove(): void {
+    if (!this.onStairs) return;
+    const scaled = scaleAlong(this.vel, this.onStairs, STAIR_CLIMB_MUL);
+    // pos was already stepped by the full vel; nudge it by the shortfall.
+    this.pos = add(this.pos, sub(scaled, this.vel));
+    this.vel = scaled;
   }
 
   /** Per-tick recovery for the equipped gun (cooldown, flash, kick, spray reset). */

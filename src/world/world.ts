@@ -287,6 +287,14 @@ export function stairZ(s: Stairs, p: Vec2): number | null {
   return t < 0.5 ? s.zAtMin : s.zAtMax;
 }
 
+/** Unit vector along a flight's climb axis in WORLD space — the direction z
+ *  changes along, rotated by the flight's `angle`. Sign is arbitrary; callers use
+ *  it only as an axis (e.g. the stair movement slowdown in Character.move). */
+export function stairClimbDir(s: Stairs): Vec2 {
+  const local = s.axis === "x" ? vec(1, 0) : vec(0, 1);
+  return s.angle ? rotate(local, s.angle) : local;
+}
+
 /**
  * The viewer's enclosure cap: the lowest `enclosing` ceiling covering them from
  * above, or Infinity in the open. Everything at or above the cap is hidden —

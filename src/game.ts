@@ -12,7 +12,7 @@
  * nav graph are untouched by a reset, so the player object is reused (revived,
  * never replaced) and every reference main.ts holds to it stays valid.
  */
-import { Character, USE_SPEED_MUL, type Loadout } from "./entities/actor.ts";
+import { Character, type Loadout } from "./entities/actor.ts";
 import * as Armors from "./entities/armor.ts";
 import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
@@ -38,7 +38,7 @@ import { areHostile, type TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
 import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
-import { stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
+import { stairClimbDir, stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ZOOM_EASE = 0.12;
@@ -336,6 +336,16 @@ export class Game implements GameCtx {
     }
   }
 
+  /** The climb-axis direction of the staircase `c` is standing on, or null if on
+   *  none. Handed to the Character so its move() can slow the climb (see
+   *  Character.onStairs) — the world-aware half of that feature. */
+  private stairDirAt(c: Character): Vec2 | null {
+    for (const s of this.world.stairs) {
+      if (stairZ(s, c.pos) !== null) return stairClimbDir(s);
+    }
+    return null;
+  }
+
   /** Nearest ground item on the player's level, within reach and line of sight. */
   private findInteractable(): GroundItem | null {
     let best: GroundItem | null = null;
@@ -518,12 +528,13 @@ export class Game implements GameCtx {
 
     this.camera.size += (this.zoomTarget() - this.camera.size) * ZOOM_EASE;
 
+    // Refresh every character's staircase state before anyone moves, so the climb
+    // slowdown (Character.move / applyStairMove) and the recoil speed both see it.
+    for (const c of this.characters) c.onStairs = this.stairDirAt(c);
+
     if (canControl) {
       this.player.forward = this.aimForward();
-      let speedMult = this.player.gun.spec.speed;
-      if (this.player.armor) speedMult *= this.player.armor.spec.speed;
-      if (this.player.usingUtility) speedMult *= USE_SPEED_MUL; // slowed mid-heal
-      this.player.move(moveAxis(), speedMult);
+      this.player.move(moveAxis()); // speed factors live on the Character now
       this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
       this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
     }

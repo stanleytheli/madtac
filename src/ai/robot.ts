@@ -219,6 +219,11 @@ export class Robot extends Character {
     // crowd separation), so it runs regardless of which movement branch ran.
     this.postMove(ai);
 
+    // Staircase climb slowdown for the step just taken (no-op off stairs). Before
+    // aiming/firing, so the recoil speed reads the scaled velocity — same order
+    // the player gets (move() then fire). onStairs is set by the session.
+    this.applyStairMove();
+
     // Aim & fire run EVERY tick (not just plan ticks). Planning only picks the
     // *desired* heading (aimAngle); the actual heading eases toward it here, so
     // turning stays smooth at 60 Hz regardless of stagger — no thinking, just

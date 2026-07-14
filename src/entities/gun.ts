@@ -157,6 +157,7 @@ export class Gun implements Droppable {
   startReload(): void {
     if (!this.canReload) return;
     this.reloadTicks = this.spec.fire!.reloadTime;
+    this.fireCooldown = 0;
   }
 
   /** Abort an in-progress reload without consuming a spare (e.g. on weapon switch). */

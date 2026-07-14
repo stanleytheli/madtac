@@ -19,6 +19,14 @@ export const norm = (a: Vec2): Vec2 => {
   return { x: a.x / l, y: a.y / l };
 };
 
+/** Scale `v`'s component along unit vector `dir` by `k`, leaving the perpendicular
+ *  component unchanged (project v onto dir, rescale just that part):
+ *  `v + (k - 1)(v·dir)dir`. `dir` must be unit length. */
+export const scaleAlong = (v: Vec2, dir: Vec2, k: number): Vec2 => {
+  const c = dot(v, dir) * (k - 1);
+  return { x: v.x + dir.x * c, y: v.y + dir.y * c };
+};
+
 /** Rotate +90° in screen space (y-down). Points "to the right" of a forward vector. */
 export const perp = (a: Vec2): Vec2 => ({ x: -a.y, y: a.x });
 
