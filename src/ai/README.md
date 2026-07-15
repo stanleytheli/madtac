@@ -323,10 +323,16 @@ selectTarget(ai):
   pick the min; remember it as focus (kept while briefly blind)
 ```
 
-`shootCost(ai, h)` = distance to the nearest local movement point (here or a
-strafe candidate) whose lane onto `h` is clear of friends, plus `LOW_VIS_PENALTY`
-if that lane is poor (≤ `LOW_VISIBILITY` points visible). No lane anywhere →
-`NO_LANE_COST + range`, so anyone shootable-in-place beats anyone who isn't.
+`shootCost(ai, h)` = the *repositioning* distance to the nearest local movement
+point (here or a strafe candidate) whose lane onto `h` is clear of friends, plus
+`LOW_VIS_PENALTY` if that lane is poor (≤ `LOW_VISIBILITY` points visible). No
+lane anywhere → a flat `NO_LANE_COST`, so anyone shootable-in-place beats anyone
+who isn't. It is deliberately *not* distance-scaled: range enters the cost only
+through the single `BETA_DIST · dist(h)` term above, applied uniformly to
+lane-blocked and shootable hostiles alike. (Folding raw distance into the no-lane
+branch too used to double-weight it, letting a clear far enemy outrank a merely
+teammate-blocked near one — the bot would aim across the map instead of at the
+enemy right in front.)
 
 ### 3f. Strafe / cover candidates & scoring
 
