@@ -140,12 +140,14 @@ const TARGET_EVAL_TICKS = 10;
  *  as bad as walking half the strafe fan to a clean one. */
 const LOW_VIS_PENALTY = 60;
 /** shootCost for a hostile with no lane from any local point: worse than any
- *  amount of strafing (max 120 + 60), so anyone shootable in place wins. */
+ *  amount of strafing (max 120 + 60), so anyone shootable in place wins. A flat
+ *  constant, not distance-scaled — range ordering is selectTarget's BETA_DIST
+ *  term alone, applied uniformly to lane-blocked and shootable hostiles. */
 const NO_LANE_COST = 400;
 /** Weight on raw distance-to-target in target selection, added to shootCost
  *  (which measures cost-to-first-shot). Breaks ties toward the closer enemy so
  *  the AI doesn't fixate on a far but easily-shot one. */
-const BETA_DIST = 0.35;
+const BETA_DIST = 0.75;
 /** Cost edge a challenger needs over the current focus — don't flip-flop
  *  between two near-equal targets every re-evaluation. */
 const FOCUS_STICKINESS = 30;
@@ -757,11 +759,14 @@ export class TacOracle extends Oracle {
     return best;
   }
 
-  /** How quickly `h` could be shot from here, as a distance: the nearest local
-   *  movement point (current spot or a strafe candidate) whose lane onto `h`
-   *  is clear of friends, plus a surcharge if that lane is poor. No lane from
-   *  anywhere local -> a big constant + range, so it sorts behind every
-   *  shootable-in-place hostile but still orders the hopeless ones by range. */
+  /** How quickly `h` could be shot from here, as a *repositioning* distance: the
+   *  nearest local movement point (current spot or a strafe candidate) whose lane
+   *  onto `h` is clear of friends, plus a surcharge if that lane is poor. No lane
+   *  from anywhere local -> a flat NO_LANE_COST, larger than any in-lane result so
+   *  it sorts behind every shootable-in-place hostile. Deliberately NOT scaled by
+   *  range: selectTarget adds the sole BETA_DIST*range term, so folding raw
+   *  distance in here too would double-count it (at weight ~1.0 vs the intended
+   *  0.35) and let a clear far enemy outrank a merely lane-blocked near one. */
   private shootCost(ai: AiContext, h: Character): number {
     let cost = Infinity;
     for (const c of this.candidates(ai, h)) {
@@ -769,7 +774,7 @@ export class TacOracle extends Oracle {
       const poorLane = c.clear <= LOW_VISIBILITY ? LOW_VIS_PENALTY : 0;
       cost = Math.min(cost, Math.abs(c.offset) + poorLane);
     }
-    return cost === Infinity ? NO_LANE_COST + dist(this.pos, h.pos) : cost;
+    return cost === Infinity ? NO_LANE_COST : cost;
   }
 
   /** Blind navigation target: the hostile reachable-and-shootable soonest by
