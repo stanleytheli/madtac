@@ -499,6 +499,82 @@ export const M249: GunSpec = {
   movingFirstShotRecoilMax: 10.0,
 };
 
+export const Golden_M249: GunSpec = {
+  name: "Golden M249",
+  primary: true,
+  icon: "golden_m249",
+  rightGrip: { f: 45, l: 0 },
+  leftGrip: { f: 75, l: -6 },
+  muzzle: { f: 125, l: 0 },
+
+  parts: [
+    {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#330404", over: false},
+    { p0: { f: 30, l: 0 }, p1: { f: 125, l: 0 }, width: 14, color: "#8d8213", over: false },
+  ],
+
+  reloadAnim: {
+    leftPositions: [
+      { f: 75, l: -6 }, // 0 -- opening cover
+      { f: 60, l: -6 }, // 15
+      { f: 60, l: -10 }, // 25
+      { f: 60, l: -10 }, // 35
+      { f: 60, l: 10 }, // 55
+      { f: 60, l: -10 }, // 75
+      { f: 60, l: -10 }, // 85
+
+      { f: 60, l: -20 }, // 95 -- new mag
+      { f : 20, l : -27}, // 140
+      { f : 20, l : -27}, // 190
+      { f: 60, l: -20 }, // 235
+      { f: 60, l: -10 }, // 245
+      { f: 75, l: -6 }, // 265
+      { f: 75, l: -6 }, // 360
+      ],
+    leftTimes: [0, 15, 25, 35, 55, 75, 85, 95, 140, 190, 235, 245, 265, 360],
+    rightPositions: [
+      { f: 45, l: 0 }, // 0 -- opening cover
+      { f: 45, l: 0 }, // 265
+
+      { f: 55, l: 10}, // 295
+      { f: 40, l: 10}, // 305
+      { f: 40, l: 10}, // 320
+      { f: 55, l: 10}, // 330
+      { f: 45, l: 0 }, // 360
+      ],
+    rightTimes: [0, 265, 295, 305, 320, 330, 360],
+  },
+
+  shotgunPellets: 2,
+  shotgunSpread: 1.25,
+
+  damage: 15,
+  armorPen: DEFAULT_AP_556,
+  zoom: 2.3,
+  speed: 0.75,
+  fire: {
+    delay: 8,
+    bulletSpeed: 60,
+    bulletLife: 70,
+    auto: true,
+    spread: 0.04,
+    magSize: 100,
+    reserveMags: 1,
+    reloadTime: 360,
+    drawTime: 75,
+    tracerWidth: 4.5,
+    tracerLength: 200,
+    tracerColor: "#ae9131"
+  },
+  visualRecoil: 7,
+  recoilRecovery: 1,
+  recoilCoef: 0.125,
+  recoilGain: 5.9,
+  recoilDelay: 45,
+  movePenalty: 2.0,
+  movingFirstShotRecoilMin: 5.0,
+  movingFirstShotRecoilMax: 10.0,
+};
+
 
 export const M9: GunSpec = {
   name: "M9",
