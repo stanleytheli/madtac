@@ -41,7 +41,7 @@ const EQUIP: { name: string; primaries: string[]; secondaries: string[]; armors:
   { name: "medium", primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["ARMOR_L1", "ARMOR_L2"] },
   { name: "heavy", primaries: ["M16", "AK47"], secondaries: ["Deagle"], armors: ["ARMOR_L2", "ARMOR_L3"] },
   { name: "superheavy", primaries: ["AK47", "M249"], secondaries: ["Deagle", "Golden_Deagle"], armors: ["ARMOR_L3", "ARMOR_L4"] },
-  { name: "random", primaries: ["M249", "AK47", "M16", "MP220", "Scout"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
+  { name: "random", primaries: ["M249", "AK47", "M16", "MP220", "Scout"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle", "Skorpion"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
 ];
 
 /** The equipment tier names, in ladder order — the editor dropdown + URL/meta

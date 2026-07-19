@@ -630,6 +630,62 @@ export const M9: GunSpec = {
   movingFirstShotRecoilMax: 0.0,
 };
 
+export const Skorpion: GunSpec = {
+  name: "Skorpion",
+  primary: false,
+  icon: "skorpion_1",
+  rightGrip: { f: 50, l: 0 },
+  leftGrip: { f: 75, l: -9 },
+  //leftGrip: { f: 35, l: 20 },
+  //leftGrip: { f: 30, l: 10 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 60, l : 0}, // 0
+                    { f : 20, l : -27}, // 15
+                    { f : 20, l : -27}, // 30
+                    { f : 55, l : -9}, // 45
+                    { f: 70, l: -12}, // 55
+                    { f: 45, l: -12}, // 65
+                    { f: 45, l: -12}, // 70
+                    { f: 70, l: -12}, // 80
+                    { f: 60, l: 0}, // 90
+                    ],
+    leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
+  },
+
+  muzzle: { f: 105, l: 0 },
+  parts: [
+    { p0: { f: 50, l: 0 }, p1: { f: 100, l: 0 }, width: 8, color: "#464a51", over: false },
+  ],
+  damage: 17,
+  armorPen: DEFAULT_AP_9MM,
+  zoom: 1.9,
+  speed: 0.925,
+  fire: {
+    delay: 7,
+    bulletSpeed: 50,
+    bulletLife: 60,
+    auto: true,
+    spread: 0.10,
+    magSize: 20,
+    reserveMags: 4,
+    reloadTime: 90,
+    drawTime: 45,
+    tracerWidth: 3,
+    tracerLength: 130,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 10,
+  recoilRecovery: 2,
+  recoilCoef: 0.12,
+  recoilGain: 8.0,
+  recoilDelay: 30,
+  movePenalty: 1.0,
+  movingFirstShotRecoilMin: 0.0,
+  movingFirstShotRecoilMax: 0.0,
+};
+
+
 export const USPS: GunSpec = {
   name: "USP-S",
   primary: false,
@@ -663,7 +719,7 @@ export const USPS: GunSpec = {
 
   damage: 22,
   armorPen: DEFAULT_AP_45ACP,
-  zoom: 2.0,
+  zoom: 2.1,
   speed: 0.925,
   fire: {
     delay: 8,
@@ -720,7 +776,7 @@ export const Deagle: GunSpec = {
   zoom: 2.1,
   speed: 0.85,
   fire: {
-    delay: 10,
+    delay: 15,
     bulletSpeed: 60,
     bulletLife: 60,
     auto: false,
@@ -738,7 +794,7 @@ export const Deagle: GunSpec = {
   recoilCoef: 0.17,
   recoilGain: 15.0,
   recoilDelay: 30,
-  movePenalty: 1.5,
+  movePenalty: 2.0,
   movingFirstShotRecoilMin: 35.0,
   movingFirstShotRecoilMax: 40.0,
 };
@@ -773,7 +829,7 @@ export const Golden_Deagle: GunSpec = {
   zoom: 2.2,
   speed: 0.8,
   fire: {
-    delay: 13,
+    delay: 15,
     bulletSpeed: 60,
     bulletLife: 60,
     auto: false,
@@ -791,7 +847,7 @@ export const Golden_Deagle: GunSpec = {
   recoilCoef: 0.17,
   recoilGain: 15.0,
   recoilDelay: 40,
-  movePenalty: 1.5,
+  movePenalty: 2.0,
   movingFirstShotRecoilMin: 35.0,
   movingFirstShotRecoilMax: 40.0,
 };
