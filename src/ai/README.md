@@ -121,8 +121,10 @@ and gun discipline added by subclasses.
 ## Layer 2 — `Oracle`: navigation
 
 The Oracle adds **movement toward a chase target over the level's nav graph**
-(`world/nav.ts`: a baked all-pairs Dijkstra table, O(1) `route(from,to)` → next
-hop + total distance). It still aims/fires like a Robot.
+(`world/nav.ts`: a Customizable Contraction Hierarchy; `route(from,to)` → next
+hop + total distance via a bidirectional up-search — exact, and re-weightable in
+place when a car/crate changes the map without rebuilding the whole index). It
+still aims/fires like a Robot.
 
 ```
 Oracle.act(ai, target):

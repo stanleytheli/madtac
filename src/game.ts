@@ -94,8 +94,8 @@ export class Game implements GameCtx {
   ) {
     this.world = level.world;
     this.initialItems = level.world.items.slice();
-    // Build the sight index before the nav graph so the graph's all-pairs
-    // visibility build rides the fast line-of-sight path too.
+    // Build the sight index before the nav graph so the graph's edge-visibility
+    // build rides the fast line-of-sight path too.
     this.world.grid = new ObstacleGrid(this.world.obstacles);
     this.nav = new NavGraph(this.world);
     this.player = this.buildPlayer();
