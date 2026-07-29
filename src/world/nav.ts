@@ -19,6 +19,7 @@ import { circleIntersectsBox } from "../engine/collision.ts";
 import { profiler } from "../engine/profiler.ts";
 import { dist, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, stairZ, type PathNode, type World } from "./world.ts";
+import type { Vehicle } from "../entities/vehicle.ts";
 
 /** Max straight-line distance of a movable link. */
 export const MOVE_RADIUS = 350;
@@ -65,6 +66,13 @@ export function walkable(world: World, from: Vec2, fromZ: number, to: Vec2, toZ:
         for (const o of world.obstacles) {
           if (o.z !== z) continue;
           if (circleIntersectsBox(p, BODY_RADIUS, o)) return false;
+        }
+      }
+      // Vehicle hulls are solid to bodies too, so a parked one blocks the march.
+      // This is what lets updateWalkability's re-march see a vehicle — the CCH hook.
+      if (world.vehicles.length) {
+        for (const v of world.vehicles) {
+          if (v.z === z && v.blocksCircle(p, BODY_RADIUS)) return false;
         }
       }
     }
@@ -483,6 +491,39 @@ export class NavGraph {
       }
     }
     if (dirty.length) this.customizeDirty(dirty);
+  }
+
+  /** The nav edges the CCH should re-check for vehicle `v`: every real candidate
+   *  edge (a within-MOVE_RADIUS proximity arc) with a node near the vehicle, on
+   *  the vehicle's level, packed as `min*n + max`. Deliberately a *superset* of the
+   *  truly-blocked edges — `updateWalkability` re-marches each and only dirties the
+   *  ones whose walkability actually flipped, so over-selecting costs a few marches,
+   *  never a wrong graph. `Vehicle.syncNav` diffs this against last tick and only
+   *  re-checks the change, so a parked vehicle (stable set) costs nothing. */
+  candidateEdges(v: Vehicle): Set<number> {
+    const out = new Set<number>();
+    const box = v.aabb();
+    const extra = 0.5 * Math.hypot(box.maxx - box.minx, box.maxy - box.miny);
+    const cx = (box.minx + box.maxx) / 2;
+    const cy = (box.miny + box.maxy) / 2;
+    const reach = MOVE_RADIUS + extra;
+    const near: number[] = [];
+    for (const nd of this.nodes) {
+      const dx = nd.pos.x - cx;
+      const dy = nd.pos.y - cy;
+      if (dx * dx + dy * dy <= reach * reach) near.push(nd.id);
+    }
+    for (let i = 0; i < near.length; i++) {
+      for (let j = i + 1; j < near.length; j++) {
+        const a = near[i];
+        const b = near[j];
+        if (this.nodes[a].z !== v.z && this.nodes[b].z !== v.z) continue;
+        if (dist(this.nodes[a].pos, this.nodes[b].pos) > MOVE_RADIUS) continue;
+        if (this.arc(a, b) < 0) continue;
+        out.add(a < b ? a * this.n + b : b * this.n + a);
+      }
+    }
+    return out;
   }
 
   private arc(a: number, b: number): number {

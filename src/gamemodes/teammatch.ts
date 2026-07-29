@@ -13,7 +13,7 @@ import { BANDAGE, SYRINGE, UtilityStack } from "../entities/consumable.ts";
 import { makeTroop } from "../ai/enemies.ts";
 import type { TeamConfig } from "../world/level.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
-import { TEAMS } from "../entities/team.ts";
+import { TEAMS, areHostile } from "../entities/team.ts";
 import type { GameCtx, Gamemode, GamemodeHud, PlayerLoadout, PlayerRow, TeamScore } from "./gamemode.ts";
 
 /** Config common to every team match. Modes add their own win parameter
@@ -41,7 +41,7 @@ const EQUIP: { name: string; primaries: string[]; secondaries: string[]; armors:
   { name: "medium", primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["ARMOR_L1", "ARMOR_L2"] },
   { name: "heavy", primaries: ["M16", "AK47"], secondaries: ["Deagle"], armors: ["ARMOR_L2", "ARMOR_L3"] },
   { name: "superheavy", primaries: ["AK47", "M249"], secondaries: ["Deagle", "Golden_Deagle"], armors: ["ARMOR_L3", "ARMOR_L4"] },
-  { name: "random", primaries: ["M249", "AK47", "M16", "MP220", "Scout"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle", "Skorpion"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
+  { name: "random", primaries: ["M249", "AK47", "M16", "MP220", "Scout", "RPG"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle", "Skorpion"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
 ];
 
 /** The equipment tier names, in ladder order — the editor dropdown + URL/meta
@@ -294,8 +294,12 @@ export abstract class TeamMatchMode implements Gamemode {
 
     victim.deaths += 1;
     victim.char = null;
-    const killer = dead.lastAttacker ? this.charAgent.get(dead.lastAttacker as Character) : undefined;
-    if (killer && killer !== victim) killer.kills += 1;
+    // Only a kill against a team you're hostile to counts. Friendly-fire and
+    // neutral kills (e.g. rocket splash catching a teammate, or a self-kill) still
+    // register the death but credit no kill — mirrors the AI's areHostile targeting.
+    const attacker = dead.lastAttacker as Character | null;
+    const killer = attacker ? this.charAgent.get(attacker) : undefined;
+    if (killer && killer !== victim && areHostile(attacker!.team, dead.team)) killer.kills += 1;
 
     this.afterDeath(victim, ctx); // subclass may end the match (TDM: killLimit)
     if (this.matchOver) return;

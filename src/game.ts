@@ -37,10 +37,12 @@ import { Robot, type AiContext } from "./ai/robot.ts";
 import { areHostile, type TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
-import { dist, fromAngle, norm, sub, vec, type Vec2 } from "./engine/vec.ts";
-import { stairClimbDir, stairZ, updateBullets, updateSurfaceAlphas, type World } from "./world/world.ts";
+import { add, angleOf, dist, fromAngle, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { stairClimbDir, stairZ, updateBullets, updateProjectiles, updateSurfaceAlphas, type World } from "./world/world.ts";
+import { Vehicle, type VehicleSpec } from "./entities/vehicle.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
+const ENTER_RANGE = 160; // world px to a seat the player can board it from (hulls are big)
 const ZOOM_EASE = 0.12;
 // Body/wall separation (see separateCharacters / resolveWalls).
 // One small squishy nudge per tick between touching bodies — LESS than a
@@ -70,6 +72,10 @@ export class Game implements GameCtx {
   /** Nearest reachable ground item this tick (for the HUD prompt + E). */
   interactable: GroundItem | null = null;
 
+  /** Nearest empty vehicle seat the player could board this tick (on foot). E
+   *  boards it; while seated, E exits. */
+  enterable: { vehicle: Vehicle; seat: number } | null = null;
+
   /** Recent FRIENDLY death locations (non-hostile to the player), for the minimap
    *  X's. Appended in reapDead, aged + pruned in despawnStale, cleared on reset. */
   readonly minimapDeaths: DeathMark[] = [];
@@ -77,6 +83,11 @@ export class Game implements GameCtx {
   /** Ground items the level shipped with — restored on reset so death-drops
    *  from a finished match don't pile up across restarts. */
   private readonly initialItems: readonly GroundItem[];
+
+  /** The vehicles the level shipped with, as authored transforms — rebuilt fresh
+   *  each match in start() (so a reset ejects occupants and restores positions),
+   *  and kept OUT of the nav baseline (see the constructor). */
+  private readonly initialVehicles: readonly { spec: VehicleSpec; pos: Vec2; angle: number; z: number }[];
 
   // input edge-detection state (per-tick "was it down last tick?")
   private prevDown = false;
@@ -94,6 +105,17 @@ export class Game implements GameCtx {
   ) {
     this.world = level.world;
     this.initialItems = level.world.items.slice();
+    // Snapshot the authored vehicles, then clear the live list BEFORE the nav
+    // graph is built: the CCH baseline must be the vehicle-free map, so each
+    // vehicle's hull is a pure dynamic delta applied later via updateWalkability
+    // (see start() -> the initial drive() sync). start() rebuilds them fresh.
+    this.initialVehicles = level.world.vehicles.map((v) => ({
+      spec: v.spec,
+      pos: vec(v.pos.x, v.pos.y),
+      angle: v.angle,
+      z: v.z,
+    }));
+    this.world.vehicles.length = 0;
     // Build the sight index before the nav graph so the graph's edge-visibility
     // build rides the fast line-of-sight path too.
     this.world.grid = new ObstacleGrid(this.world.obstacles);
@@ -137,6 +159,16 @@ export class Game implements GameCtx {
     this.world.items.length = 0;
     this.world.items.push(...this.initialItems);
     this.minimapDeaths.length = 0;
+
+    // Rebuild vehicles fresh from the authored transforms (drops any occupants,
+    // restores positions), then apply each one's footprint to the CCH — a first
+    // drive() with zero throttle just settles it out of walls and runs syncNav.
+    this.world.vehicles.length = 0;
+    this.enterable = null;
+    for (const iv of this.initialVehicles) {
+      this.world.vehicles.push(new Vehicle(iv.spec, iv.pos, iv.angle, iv.z));
+    }
+    for (const v of this.world.vehicles) v.drive(this.world, this.nav);
 
     const spawn = this.level.playerSpawn[0];
     this.player.respawn(vec(spawn?.pos.x ?? 0, spawn?.pos.y ?? 0), spawn?.z ?? 0, this.playerLoadout());
@@ -245,6 +277,19 @@ export class Game implements GameCtx {
    *  separate squishy pass (see separateCharacters). */
   private resolveCollisions(c: Character): void {
     c.pos = this.resolveWalls(c.pos, c.z);
+    c.pos = this.resolveVehicles(c.pos, c.z);
+  }
+
+  /** Push a body at `pos` out of every vehicle's solid parts on level `z` — a
+   *  pedestrian can't stand inside a hull (occupants are pinned and skip this).
+   *  A moving vehicle thus shoves anyone it drives into (they're re-ejected each
+   *  tick as the hull advances). No-op when the map has no vehicles. */
+  private resolveVehicles(pos: Vec2, z: number): Vec2 {
+    for (const v of this.world.vehicles) {
+      if (v.z !== z) continue;
+      for (const b of v.movementBoxes()) pos = resolveCircleVsBox(pos, BODY_RADIUS, b);
+    }
+    return pos;
   }
 
   /** Push a body at `pos` out of every wall it overlaps on level `z`, a few
@@ -281,7 +326,8 @@ export class Game implements GameCtx {
    *  ticks. This IS the whole body-collision model — the wall side is a plain
    *  push-out (resolveWalls); together they replaced the swept normal system. */
   private separateCharacters(): void {
-    const cs = this.characters.filter((c) => c.hp > 0);
+    // Occupants are pinned to their seats — never squished against other bodies.
+    const cs = this.characters.filter((c) => c.hp > 0 && !c.vehicle);
     const diam = 2 * BODY_RADIUS;
     const diam2 = diam * diam;
     for (let i = 0; i < cs.length; i++) {
@@ -319,10 +365,13 @@ export class Game implements GameCtx {
         b.pos = vec(b.pos.x + nx * half, b.pos.y + ny * half);
       }
     }
-    // Walls win: re-project everyone out of walls after the nudge so a shove
-    // can't leave a body inside a wall (a body squeezed between a wall and
-    // another body ends against the wall — the least-bad spot, not a freeze).
-    for (const c of cs) c.pos = this.resolveWalls(c.pos, c.z);
+    // Walls win: re-project everyone out of walls (and vehicle hulls) after the
+    // nudge so a shove can't leave a body inside a wall (a body squeezed between a
+    // wall and another body ends against the wall — the least-bad spot, not a freeze).
+    for (const c of cs) {
+      c.pos = this.resolveWalls(c.pos, c.z);
+      c.pos = this.resolveVehicles(c.pos, c.z);
+    }
   }
 
   /** Flip `c`'s z at any stair midpoint it's standing on. Called right after a
@@ -360,6 +409,112 @@ export class Game implements GameCtx {
       bestD = d;
     }
     return best;
+  }
+
+  /** The nearest empty vehicle seat the player could board: on the player's z,
+   *  within ENTER_RANGE, with clear line of sight to the seat. LOS uses only the
+   *  static walls (the vehicle's OWN hull doesn't block — boarding "through" its
+   *  walls is the whole point), so you can't board through a map wall. */
+  private findEnterable(): { vehicle: Vehicle; seat: number } | null {
+    let best: { vehicle: Vehicle; seat: number } | null = null;
+    let bestD = Infinity;
+    for (const v of this.world.vehicles) {
+      if (v.z !== this.player.z) continue;
+      for (let i = 0; i < v.seats.length; i++) {
+        if (v.seats[i].occupant) continue;
+        const sp = v.seatWorld(i);
+        const d = dist(this.player.pos, sp);
+        if (d > ENTER_RANGE || d >= bestD) continue;
+        if (!hasLineOfSight(this.player.pos, sp, this.world.obstacles, this.player.z)) continue;
+        best = { vehicle: v, seat: i };
+        bestD = d;
+      }
+    }
+    return best;
+  }
+
+  /** E on foot: board the boardable seat, else pick up the item (at most one of
+   *  the two is set — see update()). Seated: E exits. */
+  private interact(): void {
+    if (this.player.vehicle) this.exitVehicle();
+    else if (this.enterable) this.enterVehicle(this.enterable);
+    else if (this.interactable) this.pickUp(this.interactable);
+  }
+
+  enterVehicle(t: { vehicle: Vehicle; seat: number }): void {
+    t.vehicle.seats[t.seat].occupant = this.player;
+    this.player.vehicle = t.vehicle;
+    this.player.seatIndex = t.seat;
+    this.player.vel = vec(0, 0);
+    this.player.pos = t.vehicle.seatWorld(t.seat);
+    this.player.z = t.vehicle.z;
+    this.interactable = null;
+    this.enterable = null;
+  }
+
+  exitVehicle(): void {
+    const v = this.player.vehicle;
+    if (!v) return;
+    const seat = this.player.seatIndex;
+    if (v.seats[seat]) v.seats[seat].occupant = null;
+    v.throttle = 0; // stop driving the instant you step out
+    v.steer = 0;
+    this.player.pos = this.exitSpot(v, seat);
+    this.player.z = v.z;
+    this.player.vel = vec(0, 0);
+    this.player.vehicle = null;
+    this.player.seatIndex = -1;
+  }
+
+  /** A free spot to step out to beside `seat`: try left, right, behind, ahead of
+   *  the hull (far enough to clear it), and take the first that's clear of static
+   *  walls AND every vehicle hull. Falls back to the seat pushed out of walls, so
+   *  exiting never clips the player into a wall. */
+  private exitSpot(v: Vehicle, seat: number): Vec2 {
+    const fwd = fromAngle(v.angle);
+    const right = perp(fwd);
+    const box = v.aabb();
+    const reach = 0.5 * Math.max(box.maxx - box.minx, box.maxy - box.miny) + BODY_RADIUS + 15;
+    const seatW = v.seatWorld(seat);
+    for (const dir of [right, scale(right, -1), scale(fwd, -1), fwd]) {
+      const cand = add(seatW, scale(dir, reach));
+      if (this.spotClear(cand, v.z)) return cand;
+    }
+    return this.resolveWalls(seatW, v.z);
+  }
+
+  /** Is a body at `pos` on `z` clear of every static wall and vehicle hull? */
+  private spotClear(pos: Vec2, z: number): boolean {
+    const rw = this.resolveWalls(pos, z);
+    if (rw.x !== pos.x || rw.y !== pos.y) return false; // pushed => inside a wall
+    for (const v of this.world.vehicles) {
+      if (v.z === z && v.blocksCircle(pos, BODY_RADIUS)) return false;
+    }
+    return true;
+  }
+
+  /** Route the player's WASD to the driven vehicle — throttle forward/back, steer
+   *  left/right, RELATIVE to the hull's facing — and aim its turret at the mouse.
+   *  A passenger seat has no driving controls (it only aims a turret if it owns one). */
+  private driveInput(): void {
+    const v = this.player.vehicle!;
+    const seat = this.player.seatIndex;
+    const spec = v.seats[seat]?.spec;
+    if (!spec) return;
+    if (spec.role === "driver") {
+      const axis = moveAxis();
+      v.throttle = -axis.y; // W (screen-up = -y) drives forward along the hull
+      v.steer = axis.x; // D (+x) steers right
+    }
+    if (spec.turret !== undefined) v.aimTurret(seat, angleOf(this.aimForward()));
+  }
+
+  /** The interaction prompt text for the HUD: "Exit" while seated, else "Enter
+   *  <vehicle>" or the item's label (at most one is active — see update()). */
+  interactLabel(): string | null {
+    if (this.player.vehicle) return "Exit";
+    if (this.enterable) return `Enter ${this.enterable.vehicle.spec.name}`;
+    return this.interactable ? this.interactable.label : null;
   }
 
   private tossVel(): Vec2 {
@@ -422,6 +577,16 @@ export class Game implements GameCtx {
       const c = this.characters[i];
       if (c.hp > 0) continue;
 
+      // A dead occupant frees its seat and stops driving (the body drops at the seat).
+      if (c.vehicle) {
+        const s = c.vehicle.seats[c.seatIndex];
+        if (s) s.occupant = null;
+        c.vehicle.throttle = 0;
+        c.vehicle.steer = 0;
+        c.vehicle = null;
+        c.seatIndex = -1;
+      }
+
       this.gamemode.onDeath(c, this);
 
       // Mark friendly deaths for the minimap (enemies aren't shown at all).
@@ -476,7 +641,18 @@ export class Game implements GameCtx {
     }
 
     const canControl = this.player.hp > 0 && !over;
-    this.interactable = canControl ? this.findInteractable() : null;
+    // Item pickup and vehicle boarding are on-foot actions; while seated E exits.
+    const onFoot = !this.player.vehicle;
+    this.interactable = canControl && onFoot ? this.findInteractable() : null;
+    this.enterable = canControl && onFoot ? this.findEnterable() : null;
+    // Exactly one interaction is active at a time — one highlight, one E action.
+    // When a seat and an item are both in reach, keep the nearer and drop the other.
+    if (this.interactable && this.enterable) {
+      const ds = dist(this.player.pos, this.enterable.vehicle.seatWorld(this.enterable.seat));
+      const di = dist(this.player.pos, this.interactable.pos);
+      if (ds <= di) this.interactable = null;
+      else this.enterable = null;
+    }
 
     if (canControl) {
       if (isDown("1")) this.player.equip("primary");
@@ -495,7 +671,7 @@ export class Game implements GameCtx {
       } else this.fourDown = false;
 
       if (isDown("e")) {
-        if (!this.eDown && this.interactable) this.pickUp(this.interactable);
+        if (!this.eDown) this.interact();
         this.eDown = true;
       } else this.eDown = false;
 
@@ -534,9 +710,32 @@ export class Game implements GameCtx {
 
     if (canControl) {
       this.player.forward = this.aimForward();
-      this.player.move(moveAxis()); // speed factors live on the Character now
-      this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
-      this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
+      if (this.player.vehicle) {
+        this.driveInput(); // WASD -> vehicle (relative to its facing); aim its turret
+      } else {
+        this.player.move(moveAxis()); // speed factors live on the Character now
+        this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
+        this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
+      }
+    }
+
+    // Vehicles: integrate physics + sync the CCH every tick. Only the player-driven
+    // vehicle carries nonzero throttle/steer (set in driveInput); the rest idle.
+    // Then pin every occupant to its seat (they don't move or collide on their own).
+    for (const v of this.world.vehicles) {
+      v.tick();
+      v.drive(this.world, this.nav);
+    }
+    for (const v of this.world.vehicles) {
+      for (let i = 0; i < v.seats.length; i++) {
+        const occ = v.seats[i].occupant;
+        if (occ && occ.hp > 0) {
+          occ.pos = v.seatWorld(i);
+          occ.z = v.z;
+          occ.vel = vec(0, 0);
+          occ.onStairs = null;
+        }
+      }
     }
 
     profiler.begin("surfaces");
@@ -549,7 +748,21 @@ export class Game implements GameCtx {
     for (const c of this.characters) c.tickStatus();
 
     if (canControl) {
-      if (this.player.holdingUtility) {
+      const veh = this.player.vehicle;
+      if (veh) {
+        // Seated: a turret seat fires the mounted weapon (from a muzzle outside the
+        // hull); any other seat fires the occupant's own personal weapon out.
+        const seat = this.player.seatIndex;
+        const tgun = veh.turretGunForSeat(seat);
+        const f = (tgun ?? this.player.gun).spec.fire;
+        if (f) {
+          const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
+          if (wantFire) {
+            if (tgun) veh.fireTurret(seat, this.world, this.player);
+            else this.player.fire(this.world);
+          }
+        }
+      } else if (this.player.holdingUtility) {
         // Click begins using the selected healing item (not a punch/shot).
         if (pointer.down && !this.prevDown) this.player.startUse();
       } else {
@@ -577,7 +790,7 @@ export class Game implements GameCtx {
 
     profiler.begin("collide");
     for (const c of this.characters) {
-      if (c === this.player) continue;
+      if (c === this.player || c.vehicle) continue; // player resolved above; occupants are pinned
       this.applyStairZ(c); // flip z after this tick's move, before resolving (see applyStairZ)
       this.resolveCollisions(c);
     }
@@ -588,6 +801,7 @@ export class Game implements GameCtx {
 
     profiler.begin("bullets");
     updateBullets(this.world, this.characters);
+    updateProjectiles(this.world, this.characters);
     profiler.end("bullets");
 
     profiler.begin("items");

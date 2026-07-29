@@ -70,6 +70,29 @@ export const BLOOD: ParticleStyle = {
   count: 6,
 };
 
+/** Bright fireball flung out in every direction by an explosion. `spread` = PI is
+ *  a full 360° burst (the ejection cone spans the whole circle). */
+export const EXPLOSION: ParticleStyle = {
+  color: "#ffb43a",
+  shape: "circle",
+  size: 13,
+  speed: 11,
+  spread: Math.PI,
+  life: 20,
+  count: 26,
+};
+
+/** Dark smoke puff layered under the fireball for a bit of body. */
+export const EXPLOSION_SMOKE: ParticleStyle = {
+  color: "#4a4038",
+  shape: "circle",
+  size: 16,
+  speed: 6,
+  spread: Math.PI,
+  life: 34,
+  count: 16,
+};
+
 const DRAG = 0.86; // per-tick velocity retention (particles slow as they fly)
 
 /**

@@ -1,8 +1,10 @@
 import { BODY_RADIUS } from "../entities/character.ts";
-import { hasLineOfSight, pointInBox, type ObstacleGrid } from "../engine/collision.ts";
+import { hasLineOfSight, pointInBox, type Box, type ObstacleGrid } from "../engine/collision.ts";
 import {
   BLOOD,
   CRATE_SHRAPNEL,
+  EXPLOSION,
+  EXPLOSION_SMOKE,
   WALL_SHRAPNEL,
   spawnParticles,
   updateParticles,
@@ -10,6 +12,7 @@ import {
   type ParticleStyle,
 } from "../engine/particle.ts";
 import type { GroundItem } from "../entities/item.ts";
+import type { Vehicle } from "../entities/vehicle.ts";
 import type { ArmorPen } from "../entities/guns.ts";
 import { add, dist, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 
@@ -373,6 +376,30 @@ export interface Bullet {
   armorPen: ArmorPen; // per-tier penetration (from the firing gun), applied on hit
 }
 
+/**
+ * A slow, visible round that flies like a fat bullet but detonates into an
+ * area-of-effect blast instead of dealing single-target damage — the basis for
+ * launcher weapons (rockets today; grenades once z-arcing is designed). It lives
+ * entirely on the shooter's z, exactly like a bullet. On striking a wall or a
+ * (non-owner) body, or when its `life` runs out mid-air, it calls `explode`.
+ */
+export interface Projectile {
+  pos: Vec2;
+  prev: Vec2; // position last tick (for trail drawing)
+  vel: Vec2; // constant; rockets don't arc
+  z: number; // the shooter's level
+  life: number; // ticks until it self-detonates (also caps range = speed * life)
+  origin: Vec2; // spawn position (head center)
+  renderAfter: number; // don't draw until this far from origin (hides it in the tube)
+  owner: Hittable | null; // shooter; the round won't *impact* them, but the blast still can
+  damage: number; // blast damage at the center (falls off to 0 at radius)
+  radius: number; // blast radius (world px)
+  armorPen: ArmorPen; // per-tier penetration, applied to each body caught in the blast
+  bodyRadius: number; // the round's own collision + draw radius
+  color: string; // body color "#rrggbb"
+  trailColor: string; // exhaust-trail color "#rrggbb"
+}
+
 /** Static map data plus live projectiles, particle debris, and ground items. */
 export interface World {
   obstacles: Obstacle[]; // solid: crates + walls
@@ -380,7 +407,9 @@ export interface World {
   stairs: Stairs[]; // z-level connectors
   nodes: PathNode[]; // hand-placed pathfinding nodes (see nav.ts)
   items: GroundItem[]; // pickups lying on the ground
+  vehicles: Vehicle[]; // drivable multi-part rigid bodies (see entities/vehicle.ts)
   bullets: Bullet[];
+  projectiles: Projectile[]; // AoE rounds in flight (rockets etc.)
   particles: Particle[];
   /** Spatial index over sight-blocking obstacles (see ObstacleGrid), built once
    *  from the static geometry. Absent in the editor / before it's built — then
@@ -389,9 +418,16 @@ export interface World {
 }
 
 /** Clear line of sight from `a` to `b` on level `z`, using the world's spatial
- *  index when it's been built (the fast path) and scanning obstacles otherwise. */
+ *  index when it's been built (the fast path) and scanning obstacles otherwise.
+ *  A solid vehicle hull blocks sight too — matching the (bidirectional) way it
+ *  blocks rounds — so the AI treats a parked vehicle as real cover: it won't pick
+ *  a sighting node *through* a hull, try to shoot through one, or path straight
+ *  into one. (Guarded on an empty vehicle list, so the common case is unchanged;
+ *  the nav baseline is built vehicle-free, so static `visible` sets are unaffected.) */
 export function losClear(world: World, a: Vec2, b: Vec2, z: number): boolean {
-  return world.grid ? !world.grid.blocked(a, b, z) : hasLineOfSight(a, b, world.obstacles, z);
+  const clear = world.grid ? !world.grid.blocked(a, b, z) : hasLineOfSight(a, b, world.obstacles, z);
+  if (!clear) return false;
+  return !(world.vehicles.length > 0 && vehicleBlocksSegment(world.vehicles, a, b, z));
 }
 
 export const WALL_T = 26; // shared wall thickness (demo map + editor defaults)
@@ -683,9 +719,19 @@ export function createWorld(): World {
     N(-220, 480), N(120, 480, -1), N(280, 480, -1),
   ];
 
-  const world: World = { obstacles, floors, stairs, nodes, items: [], bullets: [], particles: [] };
+  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [] };
   sortRenderDepth(world); // bake the render order once (all default depths here)
   return world;
+}
+
+/** Does any vehicle on level `z` have a solid, non-permeable part crossing the
+ *  segment a->b? Used to shield a blast (and reusable for any hull-occlusion
+ *  test). Guarded on an empty vehicle list by the callers. */
+export function vehicleBlocksSegment(vehicles: readonly Vehicle[], a: Vec2, b: Vec2, z: number): boolean {
+  for (const v of vehicles) {
+    if (v.z === z && v.blocksSegment(a, b)) return true;
+  }
+  return false;
 }
 
 const BACKOUT_STEPS = 10; // max steps to walk a bullet out of what it hit
@@ -751,6 +797,25 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         break;
       }
 
+      // Vehicle hulls (solid, non-permeable parts) stop rounds — for EVERYONE,
+      // including the shooter's own vehicle. Cover is bidirectional: a round that
+      // can't get IN can't get OUT, so an enclosed seat is bulletproof but also
+      // can't fire a personal weapon out (the turret muzzle sits outside the hull).
+      if (w.vehicles.length) {
+        let hb: Box | null = null;
+        for (const v of w.vehicles) {
+          if (v.z !== b.z) continue;
+          hb = v.roundPartAt(sample);
+          if (hb) break;
+        }
+        if (hb) {
+          const at = backOut(sample, backDir, (p) => pointInBox(p, hb!));
+          spawnParticles(w.particles, at, backDir, WALL_SHRAPNEL, b.z);
+          consumed = true;
+          break;
+        }
+      }
+
       // Then characters on this level (never the shooter).
       for (const t of targets) {
         if (t === b.owner || t.z !== b.z) continue;
@@ -811,5 +876,170 @@ export function spawnBullet(
     tracerLength,
     tracerColor,
     armorPen,
+  });
+}
+
+/**
+ * Detonate an area-of-effect blast at `at` on level `z`. Every character on that
+ * level whose body circle reaches into the blast radius takes damage, scaled by a
+ * linear falloff from full at the centre to 0 at the edge, unless a solid wall
+ * stands between the blast and the body (fences don't shield — same permeability
+ * rule bullets/sight use). Damage is dealt via the normal hit pipeline, so kill
+ * crediting works exactly as for a bullet, with the shooter as attacker.
+ *
+ * Friendly fire is intentional and total: the owner and their teammates are NOT
+ * spared — anyone in the radius is hit. (Kill *crediting* still filters to hostile
+ * teams; see the gamemode's onDeath.)
+ */
+export function explode(
+  w: World,
+  at: Vec2,
+  z: number,
+  damage: number,
+  radius: number,
+  armorPen: ArmorPen,
+  owner: Hittable | null,
+  targets: readonly Hittable[],
+): void {
+  for (const t of targets) {
+    if (t.z !== z) continue;
+    const d = dist(at, t.pos);
+    if (d > radius + BODY_RADIUS) continue;
+    // A wall between the blast and the body shields it. grid.blocked / hasLineOfSight
+    // both skip permeable fences, which is what we want (fences don't stop a blast).
+    // A solid vehicle hull shields too — that's blast protection for occupants.
+    const blocked = w.grid ? w.grid.blocked(at, t.pos, z) : !hasLineOfSight(at, t.pos, w.obstacles, z);
+    if (blocked || vehicleBlocksSegment(w.vehicles, at, t.pos, z)) continue;
+    // Measure to the body's near edge so a body is fully "in" the blast the moment
+    // its circle touches the centre; linear falloff to 0 at the radius.
+    const edge = Math.max(0, d - BODY_RADIUS);
+    const frac = 1 - edge / radius;
+    if (frac <= 0) continue;
+    const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
+    t.registerHit(dir, t.pos, damage * frac, armorPen, owner);
+  }
+  spawnParticles(w.particles, at, vec(1, 0), EXPLOSION_SMOKE, z);
+  spawnParticles(w.particles, at, vec(1, 0), EXPLOSION, z);
+}
+
+/**
+ * Advance all projectiles one tick, detonating any that hit a wall / a non-owner
+ * body (sub-stepped like bullets so a fast round can't tunnel) or that reach the
+ * end of their life mid-air. Mirrors updateBullets, but every terminal event is an
+ * `explode` rather than a single-target hit.
+ */
+export function updateProjectiles(w: World, targets: readonly Hittable[]): void {
+  const alive: Projectile[] = [];
+  for (const p of w.projectiles) {
+    p.life -= 1;
+    if (p.life <= 0) {
+      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets); // airburst at max range
+      continue;
+    }
+
+    const start = p.pos;
+    const step = scale(p.vel, 1 / SUBSTEPS);
+    const backDir = norm(scale(p.vel, -1)); // toward the shooter, to back out of a wall
+    let detonated = false;
+    for (let i = 1; i <= SUBSTEPS && !detonated; i++) {
+      const sample = add(start, scale(step, i));
+
+      // Walls/crates on this level detonate it (fences are permeable, like bullets).
+      let struck: Obstacle | null = null;
+      if (w.grid) {
+        struck = w.grid.hit(sample, p.z);
+      } else {
+        for (const o of w.obstacles) {
+          if (o.z !== p.z || o.permeable) continue;
+          if (pointInBox(sample, o)) {
+            struck = o;
+            break;
+          }
+        }
+      }
+      if (struck) {
+        // Detonate at the wall's face, not embedded in it — otherwise the blast's
+        // own cover check would read the struck wall as shielding everything in
+        // front of it. (Same back-out updateBullets does for its impact debris.)
+        const at = backOut(sample, backDir, (pt) => pointInBox(pt, struck!));
+        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
+        detonated = true;
+        break;
+      }
+
+      // Vehicle hulls detonate a rocket too (so you can shell a tank), any hull
+      // included — a turret round already spawns from a muzzle OUTSIDE its own hull,
+      // so it clears without needing an owner exemption (cover is bidirectional).
+      if (w.vehicles.length) {
+        for (const v of w.vehicles) {
+          if (v.z !== p.z) continue;
+          const hb = v.roundPartAt(sample);
+          if (hb) {
+            const at = backOut(sample, backDir, (pt) => pointInBox(pt, hb));
+            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
+            detonated = true;
+            break;
+          }
+        }
+        if (detonated) break;
+      }
+
+      // A body other than the shooter detonates it on contact.
+      for (const t of targets) {
+        if (t === p.owner || t.z !== p.z) continue;
+        if (dist(sample, t.pos) < BODY_RADIUS + p.bodyRadius) {
+          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
+          detonated = true;
+          break;
+        }
+      }
+    }
+
+    if (detonated) continue;
+
+    p.prev = start;
+    p.pos = add(start, p.vel);
+    alive.push(p);
+  }
+  w.projectiles = alive;
+}
+
+/**
+ * Spawn an AoE projectile travelling along `dir` at `speed` from `origin`, on the
+ * shooter's level `z`. Blast is described by `damage`/`radius`/`armorPen`; `life`
+ * caps both fuse and range (speed * life). See spawnBullet for the shared
+ * origin/renderAfter/owner conventions.
+ */
+export function spawnProjectile(
+  w: World,
+  origin: Vec2,
+  dir: Vec2,
+  speed: number,
+  life: number,
+  renderAfter: number,
+  owner: Hittable | null,
+  damage: number,
+  radius: number,
+  armorPen: ArmorPen,
+  bodyRadius: number,
+  color: string,
+  trailColor: string,
+  z: number,
+): void {
+  w.projectiles.push({
+    pos: origin,
+    prev: origin,
+    vel: scale(dir, speed),
+    z,
+    life,
+    origin,
+    renderAfter,
+    owner,
+    damage,
+    radius,
+    armorPen,
+    bodyRadius,
+    color,
+    trailColor,
   });
 }

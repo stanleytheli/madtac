@@ -37,8 +37,9 @@ const toLocal = (p: Vec2, o: Box): Vec2 =>
 const fromLocal = (p: Vec2, o: Box): Vec2 =>
   o.angle ? add(o.pos, rotate(sub(p, o.pos), o.angle)) : p;
 
-/** Push a circle out of a box if overlapping. Returns the corrected center. */
-export function resolveCircleVsBox(pos: Vec2, r: number, o: Obstacle): Vec2 {
+/** Push a circle out of a box if overlapping. Returns the corrected center.
+ *  Takes any `Box` (obstacles, but also a vehicle part's world-frame rect). */
+export function resolveCircleVsBox(pos: Vec2, r: number, o: Box): Vec2 {
   // Resolve in the box's local frame (a circle is rotation-invariant), then
   // map the corrected center back to world space.
   const lp = toLocal(pos, o);
@@ -176,6 +177,13 @@ function segmentIntersectsAabb(a: Vec2, b: Vec2, box: AABB): boolean {
   }
 
   return true;
+}
+
+/** Does the segment a->b intersect the (possibly rotated) box `o`? Runs the slab
+ *  test in the box's own frame, so a straight line stays straight. The public
+ *  segment-vs-rect test (used for vehicle hulls blocking rounds / blasts). */
+export function segmentIntersectsBox(a: Vec2, b: Vec2, o: Box): boolean {
+  return segmentIntersectsAabb(toLocal(a, o), toLocal(b, o), boxAabb(o));
 }
 
 /** True if no obstacle blocks the straight line from `a` to `b` (clear line of

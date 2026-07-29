@@ -1,7 +1,8 @@
 import { Character } from "./entities/actor.ts";
 import type { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
-import { worldAabb, type Box } from "./engine/collision.ts";
+import { worldAabb, type AABB, type Box } from "./engine/collision.ts";
+import type { VehiclePartSpec } from "./entities/vehicle.ts";
 import { Editor } from "./ui/editor.ts";
 import { Game } from "./game.ts";
 import { DEFAULT_MODE, GAMEMODES, type DomPointView, type GamemodeHud } from "./gamemodes/gamemode.ts";
@@ -459,6 +460,52 @@ function drawBullets(z: number): void {
   }
 }
 
+/** Draw one vehicle part: a filled (optionally stroked) rounded-less rect in its
+ *  world frame. Turret parts arrive already rotated to their aim angle. */
+function drawVehiclePart(box: Box, spec: VehiclePartSpec): void {
+  ctx.save();
+  ctx.translate(box.pos.x, box.pos.y);
+  ctx.rotate(box.angle ?? 0);
+  ctx.fillStyle = spec.fill;
+  ctx.fillRect(-box.w / 2, -box.h / 2, box.w, box.h);
+  if (spec.stroke && spec.strokeWidth) {
+    ctx.strokeStyle = spec.stroke;
+    ctx.lineWidth = spec.strokeWidth;
+    ctx.strokeRect(-box.w / 2, -box.h / 2, box.w, box.h);
+  }
+  ctx.restore();
+}
+
+// AoE rounds (rockets): a solid body with a fading exhaust trail behind it. Like
+// tracers, hidden until they clear the muzzle. The blast itself is particles.
+function drawProjectiles(z: number): void {
+  ctx.lineCap = "round";
+  for (const p of world.projectiles) {
+    if (p.z !== z) continue;
+    const traveled = dist(p.pos, p.origin);
+    if (traveled <= p.renderAfter) continue;
+
+    const dir = norm(p.vel);
+    const tailLen = Math.min(70, traveled - p.renderAfter);
+    const tail = sub(p.pos, scale(dir, tailLen));
+    const rgb = rgbTriple(p.trailColor);
+    const grad = ctx.createLinearGradient(tail.x, tail.y, p.pos.x, p.pos.y);
+    grad.addColorStop(0, `rgba(${rgb},0)`);
+    grad.addColorStop(1, `rgba(${rgb},0.85)`);
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = p.bodyRadius * 1.4;
+    ctx.beginPath();
+    ctx.moveTo(tail.x, tail.y);
+    ctx.lineTo(p.pos.x, p.pos.y);
+    ctx.stroke();
+
+    ctx.fillStyle = p.color;
+    ctx.beginPath();
+    ctx.arc(p.pos.x, p.pos.y, p.bodyRadius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
 // The backdrop when the surface world isn't visible: dark-brown "underground"
 // dirt for below-ground levels, near-black void otherwise (shouldn't happen).
 const UNDERGROUND_BG = "#3f3226";
@@ -475,6 +522,7 @@ function presentLevels(): number[] {
     set.add(s.zAtMax);
   }
   for (const o of world.obstacles) set.add(o.z);
+  for (const v of world.vehicles) set.add(v.z);
   for (const b of bodies) set.add(b.z);
   for (const it of world.items) set.add(it.z);
   for (const c of characters) set.add(c.z);
@@ -618,10 +666,9 @@ function render(): void {
   const vmaxx = vpX + vpW;
   const vminy = vpY;
   const vmaxy = vpY + vpH;
-  const rectInView = (o: Box): boolean => {
-    const a = worldAabb(o);
-    return a.maxx >= vminx && a.minx <= vmaxx && a.maxy >= vminy && a.miny <= vmaxy;
-  };
+  const aabbInView = (a: AABB): boolean =>
+    a.maxx >= vminx && a.minx <= vmaxx && a.maxy >= vminy && a.miny <= vmaxy;
+  const rectInView = (o: Box): boolean => aabbInView(worldAabb(o));
   const pointInView = (p: Vec2, r: number): boolean =>
     p.x + r >= vminx && p.x - r <= vmaxx && p.y + r >= vminy && p.y - r <= vmaxy;
 
@@ -651,10 +698,34 @@ function render(): void {
           if (!o.visibleFrom || zsetHas(o.visibleFrom, player.z)) drawObstacle(o);
         }
         for (const b of bodies) if (b.z === z && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
-        for (const it of world.items) if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx);
+        // Vehicle chassis (parts drawn UNDER occupants); the turret/roof parts
+        // (`over`) draw after the characters below, so occupants sit inside the hull.
+        for (const v of world.vehicles) {
+          if (v.z !== z || !aabbInView(v.aabb())) continue;
+          for (const pw of v.worldParts()) if (!pw.spec.over) drawVehiclePart(pw.box, pw.spec);
+        }
+        // Enter-prompt ring on the seat the player would board with E.
+        if (game?.enterable && game.enterable.vehicle.z === z) {
+          const sp = game.enterable.vehicle.seatWorld(game.enterable.seat);
+          ctx.strokeStyle = "#3ddcff";
+          ctx.lineWidth = 4;
+          ctx.beginPath();
+          ctx.arc(sp.x, sp.y, BODY_RADIUS + 6, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        // Highlight the item the player would grab with E (drawn by the item so
+        // the ring sits between its backdrop disc and its sprite).
+        for (const it of world.items)
+          if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
         if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
         for (const c of characters) if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx);
+        // Turret/roof parts on top of the occupants.
+        for (const v of world.vehicles) {
+          if (v.z !== z || !aabbInView(v.aabb())) continue;
+          for (const pw of v.worldParts()) if (pw.spec.over) drawVehiclePart(pw.box, pw.spec);
+        }
         drawBullets(z);
+        drawProjectiles(z);
         drawParticles(ctx, world.particles, z);
       });
 
@@ -736,7 +807,7 @@ function render(): void {
       healthBar,
       armorBar,
       mouse,
-      interactableLabel: game!.interactable ? game!.interactable.label : null,
+      interactableLabel: game!.interactLabel(),
       gamemode: gh ?? undefined,
       showScoreboard: isDown("tab"),
       minimap: minimap ?? undefined,

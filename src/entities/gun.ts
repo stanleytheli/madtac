@@ -2,7 +2,7 @@ import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
 import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
-import { spawnBullet, type Hittable, type World } from "../world/world.ts";
+import { spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
 
 const PUNCH_TICKS = 10; // duration of one punch's hand thrust
 const PUNCH_REACH = 35; // world px the punching hand lunges forward at full extension
@@ -298,6 +298,29 @@ export class Gun implements Droppable {
     // Melee "bullets" are never drawn (the punch is the visual); guns hide the
     // bullet until it has cleared the muzzle.
     const renderAfter = this.spec.melee ? Infinity : muzzleLen + 50;
+
+    // Launcher weapons throw an AoE projectile instead of a bullet. Blast damage /
+    // penetration come from the spec; travel speed + range from the FireSpec.
+    const pj = this.spec.projectile;
+    if (pj) {
+      spawnProjectile(
+        world,
+        origin,
+        dir,
+        f.bulletSpeed,
+        f.bulletLife,
+        renderAfter,
+        owner,
+        this.damage,
+        pj.radius,
+        this.spec.armorPen,
+        pj.bodyRadius,
+        pj.color,
+        pj.trailColor,
+        owner.z,
+      );
+      return true;
+    }
 
     if (this.spec.shotgunPellets == undefined || this.spec.shotgunSpread == undefined) {
       spawnBullet(

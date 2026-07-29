@@ -17,6 +17,8 @@ import { Gun } from "../entities/gun.ts";
 import { ArmorItem, GunItem } from "../entities/item.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
 import { TEAMS } from "../entities/team.ts";
+import { Vehicle } from "../entities/vehicle.ts";
+import { VEHICLE_SPECS } from "../entities/vehicles.ts";
 import { deg2rad, rad2deg, vec, type Vec2 } from "../engine/vec.ts";
 import {
   WALL_T,
@@ -431,6 +433,37 @@ export const ENTITY_DEFS: EntityDef[] = [
     zOf: (e) => e.z,
   },
   {
+    kind: "vehicle",
+    label: "Vehicle",
+    shape: "point",
+    fields: [
+      zField,
+      {
+        key: "type",
+        type: "select",
+        options: () => Object.entries(VEHICLE_SPECS).map(([value, s]) => ({ value, label: s.name })),
+        get: (e: Vehicle) => keyOf(VEHICLE_SPECS, e.spec),
+        set: (e: Vehicle, v) => {
+          if (v in VEHICLE_SPECS) e.setSpec(VEHICLE_SPECS[v]);
+        },
+      },
+      {
+        // Facing, authored in degrees (radians in memory), like a rect's angle.
+        key: "angle",
+        type: "number",
+        get: (e: Vehicle) => rad2deg(e.angle),
+        set: (e: Vehicle, v) => {
+          e.angle = deg2rad(v);
+        },
+      },
+    ],
+    list: (s) => s.world.vehicles,
+    match: () => true,
+    create: (pos, z) => new Vehicle(VEHICLE_SPECS[firstKey(VEHICLE_SPECS)], pos, 0, z),
+    zOf: (e: Vehicle) => e.z,
+    marker: (e: Vehicle) => ({ color: "#c9a24a", label: e.spec.name.toLowerCase() }),
+  },
+  {
     kind: "spawnzone",
     label: "Spawn zone",
     shape: "rect",
@@ -629,6 +662,7 @@ export function applyLevel(state: LevelState, text: string): void {
   w.stairs.length = 0;
   w.nodes.length = 0;
   w.items.length = 0;
+  w.vehicles.length = 0;
   w.bullets.length = 0;
   w.particles.length = 0;
   state.spawns.length = 0;
@@ -670,7 +704,7 @@ export function entityFromJSON(def: EntityDef, j: Record<string, any>): any {
 /** Parse a level string into a fresh, self-contained LevelState. */
 export function loadLevel(text: string): LevelState {
   const state: LevelState = {
-    world: { obstacles: [], floors: [], stairs: [], nodes: [], items: [], bullets: [], particles: [] },
+    world: { obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [] },
     spawns: [],
     playerSpawn: [],
     spawnZones: [],

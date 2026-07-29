@@ -27,7 +27,9 @@ export interface GroundItem {
   lifetime: number | null;
   /** Advance one tick (slide to rest, collide with obstacles). No-op for static items. */
   update(obstacles: readonly Obstacle[]): void;
-  draw(ctx: CanvasRenderingContext2D): void;
+  /** Draw the pickup. `highlighted` (the current E-pickup target) rings it between
+   *  its backdrop disc and its sprite. */
+  draw(ctx: CanvasRenderingContext2D, highlighted?: boolean): void;
 }
 
 /**
@@ -127,6 +129,22 @@ const ICON_SCALE = 0.5; // sprite -> world px scale for ground icons
 const GUN_BACKDROP = ICON_SIZE * 0.5; // soft shadow radius under a gun icon
 const ARMOR_BACKDROP = ICON_SIZE * 0.6; // armor sprites are a bit larger
 
+// Pickup-target highlight: a cyan rim just outside the backdrop disc, drawn under
+// the sprite. World px (part of the item's footprint, so it scales with zoom).
+const HIGHLIGHT_COLOR = "#3ddcff";
+const HIGHLIGHT_GAP = 0; // rim sits this far outside the backdrop radius
+const HIGHLIGHT_WIDTH = 4;
+
+/** The pickup-target rim: a cyan ring just outside the backdrop disc. Drawn
+ *  after the backdrop and before the sprite, so the item sits on top of it. */
+function drawHighlightRing(ctx: CanvasRenderingContext2D, pos: Vec2, backdropRadius: number): void {
+  ctx.strokeStyle = HIGHLIGHT_COLOR;
+  ctx.lineWidth = HIGHLIGHT_WIDTH;
+  ctx.beginPath();
+  ctx.arc(pos.x, pos.y, backdropRadius + HIGHLIGHT_GAP, 0, Math.PI * 2);
+  ctx.stroke();
+}
+
 /**
  * Draw a ground pickup: a soft dark backdrop (so the sprite reads on any floor)
  * with the rotated icon on top. Shared by every GroundItem so they look uniform.
@@ -139,6 +157,7 @@ function drawGroundIcon(
   scale: number,
   rotation: number,
   alpha = 1,
+  highlight = false,
 ): void {
   ctx.save();
   ctx.globalAlpha = alpha; // dropped items fade out over their last few ticks
@@ -146,6 +165,8 @@ function drawGroundIcon(
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, backdropRadius, 0, Math.PI * 2);
   ctx.fill();
+
+  if (highlight) drawHighlightRing(ctx, pos, backdropRadius);
 
   const img = iconSrc ? getImage(iconSrc) : null;
   if (img && img.complete && img.naturalWidth > 0) {
@@ -171,6 +192,7 @@ function drawGroundIconFit(
   targetPx: number,
   rotation: number,
   alpha = 1,
+  highlight = false,
 ): void {
   ctx.save();
   ctx.globalAlpha = alpha;
@@ -178,6 +200,8 @@ function drawGroundIconFit(
   ctx.beginPath();
   ctx.arc(pos.x, pos.y, backdropRadius, 0, Math.PI * 2);
   ctx.fill();
+
+  if (highlight) drawHighlightRing(ctx, pos, backdropRadius);
 
   const img = iconSrc ? getImage(iconSrc) : null;
   if (img && img.complete && img.naturalWidth > 0) {
@@ -231,8 +255,8 @@ export class GunItem implements GroundItem {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D): void {
-    drawGroundIcon(ctx, this.pos, this.iconSrc, GUN_BACKDROP, ICON_SCALE, ICON_ROT, flashAlpha(this.age, this.lifetime));
+  draw(ctx: CanvasRenderingContext2D, highlighted = false): void {
+    drawGroundIcon(ctx, this.pos, this.iconSrc, GUN_BACKDROP, ICON_SCALE, ICON_ROT, flashAlpha(this.age, this.lifetime), highlighted);
   }
 }
 
@@ -279,8 +303,8 @@ export class ArmorItem implements GroundItem {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D): void {
-    drawGroundIcon(ctx, this.pos, this.iconSrc, ARMOR_BACKDROP, ARMOR_ICON_SCALE, 0, flashAlpha(this.age, this.lifetime));
+  draw(ctx: CanvasRenderingContext2D, highlighted = false): void {
+    drawGroundIcon(ctx, this.pos, this.iconSrc, ARMOR_BACKDROP, ARMOR_ICON_SCALE, 0, flashAlpha(this.age, this.lifetime), highlighted);
   }
 }
 
@@ -325,9 +349,9 @@ export class UtilityItem implements GroundItem {
     }
   }
 
-  draw(ctx: CanvasRenderingContext2D): void {
+  draw(ctx: CanvasRenderingContext2D, highlighted = false): void {
     // Upright (no 45° tilt): these icons read best axis-aligned.
-    drawGroundIconFit(ctx, this.pos, this.iconSrc, UTILITY_BACKDROP, UTILITY_TARGET, 0, flashAlpha(this.age, this.lifetime));
+    drawGroundIconFit(ctx, this.pos, this.iconSrc, UTILITY_BACKDROP, UTILITY_TARGET, 0, flashAlpha(this.age, this.lifetime), highlighted);
   }
 }
 

@@ -43,6 +43,25 @@ export interface FireSpec {
   tracerColor: string;
 }
 
+/**
+ * Turns a gun into a launcher: instead of a hitscan-ish bullet, each shot spawns
+ * an AoE projectile (see world.ts Projectile / spawnProjectile). The blast's
+ * damage and armor penetration reuse the GunSpec's `damage`/`armorPen`; the
+ * projectile's travel speed and range reuse the FireSpec's `bulletSpeed`/
+ * `bulletLife` (so `feasibleRange = bulletSpeed * bulletLife` stays correct for
+ * the AI with no override). This block adds only what's blast/round specific.
+ */
+export interface ProjectileSpec {
+  /** Blast radius in world px (full damage at centre, linear falloff to 0 here). */
+  radius: number;
+  /** The round's own collision + draw radius (world px). */
+  bodyRadius: number;
+  /** Projectile body color "#rrggbb". */
+  color: string;
+  /** Exhaust-trail color "#rrggbb". */
+  trailColor: string;
+}
+
 /** Fraction of damage that passes through each armor tier (0..1). Indexed by the
  *  worn armor's level: l1..l4. Lower fraction = the armor stops more. */
 export interface ArmorPen {
@@ -129,6 +148,8 @@ export interface GunSpec {
 
   /** Firing behaviour. */
   fire?: FireSpec;
+  /** Present on launcher weapons: each shot is an AoE projectile, not a bullet. */
+  projectile?: ProjectileSpec;
   /**
    * Melee weapon (fists, and knives/bats later). Modeled as a gun that fires a
    * very short-range, invisible bullet: it reuses the whole shooting/hit pipeline
@@ -497,6 +518,70 @@ export const M249: GunSpec = {
   movePenalty: 2.0,
   movingFirstShotRecoilMin: 5.0,
   movingFirstShotRecoilMax: 10.0,
+};
+
+/**
+ * Shoulder-fired rocket launcher: one heavy, slow-travelling round per shot that
+ * detonates into a big blast on impact (see the `projectile` block + world.ts
+ * explode). Single-shot mag, long draw, heavy move penalty. Full friendly fire —
+ * fire it close and you'll catch yourself in the blast. `icon: "rpg"` (drop a
+ * public/assets/rpg.png to give it a ground sprite; until then it shows the
+ * generic pickup backdrop). In-hand it's drawn from `parts` — a launch tube with a
+ * fat warhead. Auto-registers in GUN_SPECS, so it's placeable in the editor.
+ */
+export const RPG: GunSpec = {
+  name: "RPG-7",
+  primary: true,
+  icon: "ak47",
+  rightGrip: { f: 30, l: 40 },
+  leftGrip: { f: 50, l: 10 },
+  muzzle: { f: 90, l: 20 },
+
+  parts: [
+    { p0: { f: -35, l: 37 }, p1: { f: 90, l: 20 }, width: 18, color: "#1f1f1f", over: false },
+  ],
+
+  /** 
+  parts: [
+    { p0: { f: 2, l: 0 }, p1: { f: 16, l: 0 }, width: 30, color: "#2a331f", over: false }, // rear cone
+    { p0: { f: 10, l: 0 }, p1: { f: 150, l: 0 }, width: 20, color: "#3b4a2f", over: false }, // launch tube
+    { p0: { f: 150, l: 0 }, p1: { f: 176, l: 0 }, width: 32, color: "#8a1f1f", over: false }, // warhead
+    { p0: { f: 176, l: 0 }, p1: { f: 192, l: 0 }, width: 14, color: "#8a1f1f", over: false }, // nose tip
+    { p0: { f: 66, l: 2 }, p1: { f: 66, l: -20 }, width: 5, color: "#1f1f1f", over: true }, // iron sight
+  ], */
+
+  damage: 95,
+  armorPen: DEFAULT_AP_50AE,
+  zoom: 2.2,
+  speed: 0.7,
+  fire: {
+    delay: 75,
+    bulletSpeed: 24, // projectile travel speed (px/tick)
+    bulletLife: 70, // range/fuse ~1680 px
+    auto: false,
+    spread: 0.006,
+    magSize: 1,
+    reserveMags: 4,
+    reloadTime: 150,
+    drawTime: 60,
+    tracerWidth: 0, // unused: launchers spawn a projectile, not a tracer bullet
+    tracerLength: 0,
+    tracerColor: "#000000",
+  },
+  projectile: {
+    radius: 150,
+    bodyRadius: 9,
+    color: "#d6d6d6",
+    trailColor: "#ffb454",
+  },
+  visualRecoil: 14,
+  recoilRecovery: 1,
+  recoilCoef: 0.1,
+  recoilGain: 4,
+  recoilDelay: 60,
+  movePenalty: 2.5,
+  movingFirstShotRecoilMin: 3.0,
+  movingFirstShotRecoilMax: 6.0,
 };
 
 export const Golden_M249: GunSpec = {

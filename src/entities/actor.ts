@@ -7,6 +7,7 @@ import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.
 import { gunIcon, utilityIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, mid, perp, scale, scaleAlong, sub, vec, type Vec2 } from "../engine/vec.ts";
 import type { Hittable, World } from "../world/world.ts";
+import type { Vehicle } from "./vehicle.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
 
@@ -81,6 +82,13 @@ export class Character {
   /** Worn armor, or null. Soaks bullet damage and renders on the head (see draw). */
   armor: Armor | null = null;
 
+  /** When seated in a vehicle: the vehicle and the seat index (else null/−1 on
+   *  foot). An occupant is pinned to its seat and skips body/wall collision; its
+   *  rounds skip its OWN vehicle's hull, so an exposed seat can fire out while an
+   *  enclosed one is sealed. Set/cleared by the session (see game.ts enter/exit). */
+  vehicle: Vehicle | null = null;
+  seatIndex = -1;
+
   readonly slots: Record<SlotName, Gun | null>;
   private equipped: EquipSlot;
 
@@ -128,6 +136,8 @@ export class Character {
     this.lastHitDir = null;
     this.lastAttacker = null;
     this.armor = null;
+    this.vehicle = null;
+    this.seatIndex = -1;
     this.slots.primary = loadout.primary ?? null;
     this.slots.secondary = loadout.secondary ?? null;
     this.slots.hand = loadout.hand;
