@@ -24,9 +24,29 @@ const UI_FONT_FAMILY = "system-ui, sans-serif";
 /** Build a canvas font string with the shared family, e.g. uiFont("bold 15px"). */
 const uiFont = (sizeWeight: string): string => `${sizeWeight} ${UI_FONT_FAMILY}`;
 
-/** A simple static crosshair centered at (cx, cy): four ticks around a gap. */
-export function drawCrosshair(ctx: CanvasRenderingContext2D, cx: number, cy: number): void {
-  const gap = 5; // empty space at the very center
+/** Logical px the crosshair ticks retreat per radian of the aimed gun's maximum
+ *  spread. Deliberately distance-independent — the marks report the weapon's
+ *  angular inaccuracy, not where rounds would land at the current aim range, so
+ *  the reading means the same thing wherever you point. Real guns span roughly
+ *  0.01 rad (rifle at rest) to 0.28 rad (Desert Eagle mid-spray), so this maps
+ *  the useful range onto about +1 to +31 px. */
+const SPREAD_PX_PER_RAD = 110;
+/** Ceiling on that retreat, so a future spec can't fling the marks off-screen. */
+const MAX_SPREAD_PX = 60;
+
+/**
+ * The crosshair: four ticks around a centre dot, the ticks standing off from the
+ * centre by the aimed weapon's inaccuracy. `spread` is the gun's maximum aim
+ * offset in radians (see Gun.maxSpread) — already smoothed by the caller, since
+ * the raw value steps every shot. The centre dot stays put as the true aim point.
+ */
+export function drawCrosshair(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  spread = 0,
+): void {
+  const gap = 5 + Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
   const len = 9; // length of each tick
   ctx.save();
   ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
@@ -43,6 +63,12 @@ export function drawCrosshair(ctx: CanvasRenderingContext2D, cx: number, cy: num
   ctx.moveTo(cx + gap, cy);
   ctx.lineTo(cx + gap + len, cy);
   ctx.stroke();
+  // Centre dot: with the ticks pushed out by spread, this is what still marks the
+  // exact point being aimed at.
+  ctx.beginPath();
+  ctx.arc(cx, cy, 1.1, 0, Math.PI * 2);
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.fill();
   ctx.restore();
 }
 
@@ -240,6 +266,9 @@ export interface HudOptions {
   /** Cyan bar shown above the health bar when the player is wearing armor. */
   armorBar: HealthBar;
   mouse: Vec2;
+  /** Maximum aim spread of the weapon being aimed (radians), smoothed — drives how
+   *  far the crosshair ticks stand off centre. See Game.crosshairSpread. */
+  spread?: number;
   /** Label for the "press E" pickup prompt, or null when nothing is reachable. */
   interactableLabel: string | null;
   /** The active gamemode's scoreboard + banner, or undefined for no gamemode UI. */
@@ -303,7 +332,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   drawAmmo(ctx, gun, barCx, topEdge - 12);
 
   // Crosshair tracks the mouse; the reload/draw/heal timer sits just under it.
-  drawCrosshair(ctx, mouse.x, mouse.y);
+  drawCrosshair(ctx, mouse.x, mouse.y, o.spread ?? 0);
   if (player.usingUtility) drawProgressBar(ctx, mouse.x, mouse.y + 30, player.useProgress, { fill: "#5bd66b" });
   else if (gun.reloading) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.reloadProgress);
   else if (gun.drawing) drawProgressBar(ctx, mouse.x, mouse.y + 30, gun.drawProgress);

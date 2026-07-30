@@ -198,6 +198,13 @@ export class Character {
     return len(this.vel);
   }
 
+  /** The movement fraction gun inaccuracy scales by: current speed over the most
+   *  this loadout can manage. Exactly what fire() hands the gun, exposed so the
+   *  HUD can ask the gun what its spread would be without guessing at it. */
+  get speedRatio(): number {
+    return this.speed / maxSpeedFor(this.gun.spec);
+  }
+
   /** This character's movement speed multiplier: the held gun's weight, worn
    *  armor, and whether a utility use is slowing it (heal). Assembled here, with
    *  the movement it scales, rather than by the caller. */
@@ -461,8 +468,7 @@ export class Character {
    */
   fire(world: World): boolean {
     const gun = this.gun;
-    const speedRatio = this.speed / maxSpeedFor(gun.spec);
-    return gun.fire(world, this.pos, this.forward, this, speedRatio);
+    return gun.fire(world, this.pos, this.forward, this, this.speedRatio);
   }
 
   /**

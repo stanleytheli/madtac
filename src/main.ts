@@ -807,6 +807,7 @@ function render(): void {
       healthBar,
       armorBar,
       mouse,
+      spread: game!.crosshairSpread,
       interactableLabel: game!.interactLabel(),
       gamemode: gh ?? undefined,
       showScoreboard: isDown("tab"),

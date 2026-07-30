@@ -370,7 +370,6 @@ export class Gun implements Droppable {
   shoot(speedRatio: number): number {
     const s = this.spec;
     const f = s.fire!;
-    const moveMul = 1 + s.movePenalty * speedRatio;
 
     // Recoil value that drives the deterministic spray. Normally `currentRecoil`,
     // so the first shot (0) is unbiased. But on a first shot while moving, stand in
@@ -384,16 +383,15 @@ export class Gun implements Droppable {
 
     // Deterministic spray pattern (a widening sinusoidal wobble) + random spread,
     // with the random part scaled up by the movement penalty.
-    const pattern =
-      s.recoilCoef * s.recoilCoef * Math.sqrt(recoilForPattern) * Math.sin(recoilForPattern);
-    const random = (Math.random() * 2 - 1) * f.spread * moveMul;
+    const pattern = this.patternBound(recoilForPattern) * Math.sin(recoilForPattern);
+    const random = (Math.random() * 2 - 1) * this.randomBound(speedRatio);
 
     // Spend the round (melee weapons never drain) and, if melee, throw a punch.
     if (s.melee) this.startPunch();
     else this.mag -= 1;
 
     // Then grow the spray; movement makes it grow faster.
-    this.currentRecoil += s.recoilGain * moveMul;
+    this.currentRecoil += s.recoilGain * this.moveMul(speedRatio);
     this.idleTicks = 0;
 
     this.fireCooldown = f.delay;
@@ -401,6 +399,42 @@ export class Gun implements Droppable {
     this.flashTicks = FLASH_TICKS;
 
     return pattern + random;
+  }
+
+  /** How much movement inflates the random spread and the recoil growth. */
+  protected moveMul(speedRatio: number): number {
+    return 1 + this.spec.movePenalty * speedRatio;
+  }
+
+  /** |deterministic pattern| at its widest for a given recoil value — the sin()
+   *  factor shoot() multiplies this by is at most 1. */
+  protected patternBound(recoil: number): number {
+    return this.spec.recoilCoef * this.spec.recoilCoef * Math.sqrt(recoil);
+  }
+
+  /** |random spread| at its widest for this movement speed. */
+  protected randomBound(speedRatio: number): number {
+    return this.spec.fire ? this.spec.fire.spread * this.moveMul(speedRatio) : 0;
+  }
+
+  /**
+   * Upper bound (radians) on the aim offset the NEXT shot could take — the same
+   * two terms shoot() adds, each at its extreme. Shares shoot()'s expressions
+   * rather than restating them, so a change to the spray model can't leave the
+   * crosshair lying about it.
+   *
+   * The pattern term uses whatever recoil the next shot would spray from: the
+   * accumulated value normally, and for a first shot while moving the top of the
+   * range shoot() draws from (it picks uniformly in [min, max] — this is the
+   * worst case of that draw).
+   */
+  maxSpread(speedRatio: number): number {
+    if (!this.spec.fire) return 0;
+    const recoil =
+      this.currentRecoil > 0
+        ? this.currentRecoil
+        : speedRatio * this.spec.movingFirstShotRecoilMax;
+    return this.patternBound(recoil) + this.randomBound(speedRatio);
   }
 }
 
@@ -438,5 +472,10 @@ export class EnemyGun extends Gun {
     this.kickback = this.spec.visualRecoil;
     this.flashTicks = FLASH_TICKS;
     return (Math.random() * 2 - 1) * this.spreadRad;
+  }
+
+  /** Flat uniform spread, so the bound is simply that spread. */
+  override maxSpread(_speedRatio: number): number {
+    return this.spreadRad;
   }
 }

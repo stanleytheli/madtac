@@ -44,6 +44,10 @@ import { Vehicle, type VehicleSpec } from "./entities/vehicle.ts";
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ENTER_RANGE = 160; // world px to a seat the player can board it from (hulls are big)
 const ZOOM_EASE = 0.12;
+/** How fast the crosshair's displayed spread chases the gun's real spread. Eased
+ *  per tick, like the camera zoom above, so it doesn't snap open on the first
+ *  shot of a burst or snap shut the instant recoil resets. */
+const CROSSHAIR_EASE = 0.2;
 // Body/wall separation (see separateCharacters / resolveWalls).
 // One small squishy nudge per tick between touching bodies — LESS than a
 // determined mutual push (2×moveSpeed ≈ 4.8/tick, more sprinting), so two bodies
@@ -88,6 +92,10 @@ export class Game implements GameCtx {
    *  each match in start() (so a reset ejects occupants and restores positions),
    *  and kept OUT of the nav baseline (see the constructor). */
   private readonly initialVehicles: readonly { spec: VehicleSpec; pos: Vec2; angle: number; z: number }[];
+
+  /** Smoothed maximum aim spread of the weapon being aimed (radians), for the
+   *  HUD crosshair. Eased in update(); the raw value comes from the gun itself. */
+  crosshairSpread = 0;
 
   // input edge-detection state (per-tick "was it down last tick?")
   private prevDown = false;
@@ -571,6 +579,15 @@ export class Game implements GameCtx {
 
   /** Convert any character at 0 HP into a corpse, dropping its gear, and remove
    *  it — signalling the gamemode first so it can score/schedule respawns. */
+  /** The weapon the player's aim actually drives: a turret when seated in one,
+   *  otherwise the held gun. One definition, so the trigger and the crosshair
+   *  can never disagree about which gun's spread is on screen. */
+  aimingGun(): Gun {
+    const veh = this.player.vehicle;
+    if (!veh) return this.player.gun;
+    return veh.turretGunForSeat(this.player.seatIndex) ?? this.player.gun;
+  }
+
   private reapDead(): void {
     // Death-drops and corpses inherit the gamemode's despawn timers (null = the
     // object's default: linger forever). Authored pickups are never stamped.
@@ -711,6 +728,11 @@ export class Game implements GameCtx {
 
     this.camera.size += (this.zoomTarget() - this.camera.size) * ZOOM_EASE;
 
+    // Crosshair spread, eased toward whatever the aimed gun says it would do at
+    // the player's current speed. Asked of the gun rather than recomputed here.
+    const spreadTarget = canControl ? this.aimingGun().maxSpread(this.player.speedRatio) : 0;
+    this.crosshairSpread += (spreadTarget - this.crosshairSpread) * CROSSHAIR_EASE;
+
     // Refresh every character's staircase state before anyone moves, so the climb
     // slowdown (Character.move / applyStairMove) and the recoil speed both see it.
     for (const c of this.characters) c.onStairs = this.stairDirAt(c);
@@ -761,7 +783,7 @@ export class Game implements GameCtx {
         // hull); any other seat fires the occupant's own personal weapon out.
         const seat = this.player.seatIndex;
         const tgun = veh.turretGunForSeat(seat);
-        const f = (tgun ?? this.player.gun).spec.fire;
+        const f = this.aimingGun().spec.fire;
         if (f) {
           const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
           if (wantFire) {
