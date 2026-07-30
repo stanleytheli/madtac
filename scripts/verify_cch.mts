@@ -11,6 +11,8 @@
  */
 import { readFileSync } from "node:fs";
 import { loadLevel } from "../src/world/level.ts";
+import { DEFAULT_MODE, GAMEMODES } from "../src/gamemodes/gamemode.ts";
+import { Game } from "../src/game.ts";
 import { dist } from "../src/engine/vec.ts";
 import { NavGraph, MOVE_RADIUS, walkable } from "../src/world/nav.ts";
 import { ObstacleGrid } from "../src/engine/collision.ts";
@@ -246,6 +248,60 @@ say("withdrawing every route zeroes the congestion field",
 let residue = 0;
 for (let a = 0; a < M; a++) if (g.cong.w[a] !== congBefore[a]) residue++;
 say("...and restores the congested metric exactly", residue === 0, `arcs still bent=${residue}`);
+
+// ---- the player's inferred route --------------------------------------------
+// Bots publish a route because they have a plan; the player never states a
+// destination, so game.ts infers one from their heading. It has to behave like
+// any other claim: present while they're walking, withdrawn the moment they
+// aren't, and made of real edges.
+console.log("\n--- inferred player route ---");
+{
+  const lp = loadLevel(readFileSync(`src/world/levels/tdm-arena-big.json`, "utf8"));
+  const gmode = lp.meta?.mode ?? DEFAULT_MODE;
+  const game = new Game(lp, GAMEMODES[gmode]({ ...lp.meta, mode: gmode }));
+  const gi = game.nav as unknown as {
+    stamped: Map<object, number[]>;
+    aBase: Float64Array;
+    congestion: Float64Array;
+  };
+  const stampOf = (): number[] | undefined => gi.stamped.get(game.player);
+
+  const walk = (ticks: number, vx: number, vy: number): void => {
+    for (let i = 0; i < ticks; i++) {
+      game.player.vel = { x: vx, y: vy };
+      game.player.pos = { x: game.player.pos.x + vx, y: game.player.pos.y + vy };
+      game.update();
+    }
+  };
+
+  walk(120, 2.5, 0);
+  const moving = stampOf();
+  say("a walking player claims a corridor", !!moving && moving.length > 0,
+    `arcs=${moving?.length ?? 0}`);
+  say("every arc it claims is a real walkable edge",
+    (moving ?? []).every((a) => Number.isFinite(gi.aBase[a])));
+
+  walk(60, 0, 0);
+  say("standing still withdraws the claim", !stampOf());
+
+  walk(60, 2.5, 0);
+  say("...and walking again re-claims", !!stampOf()?.length);
+
+  game.player.hp = 0;
+  game.update();
+  say("death withdraws the claim", !stampOf());
+  // Owner-map leak: claim and withdraw repeatedly and the registry must not grow
+  // an entry per cycle (the exact-weight restore is proven in the section above).
+  const ownersBefore = gi.stamped.size;
+  game.player.hp = game.player.maxHp;
+  for (let cycle = 0; cycle < 5; cycle++) {
+    walk(30, 2.5, 0);
+    walk(30, 0, 0);
+  }
+  say("claiming and withdrawing repeatedly leaks no owners",
+    gi.stamped.size <= ownersBefore + 1,
+    `owners ${ownersBefore} -> ${gi.stamped.size}`);
+}
 
 console.log(`\nRESULT: baseline ${ok1 ? "OK" : "FAIL"}, sparse-update ${okInc ? "OK" : "FAIL"}, rebuild ${okFull ? "OK" : "FAIL"}, congestion ${okCong ? "OK" : "FAIL"}`);
 process.exit(ok1 && okInc && okFull && okCong ? 0 : 1);

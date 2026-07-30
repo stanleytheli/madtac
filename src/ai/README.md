@@ -369,15 +369,18 @@ can't close, so a refresh there is safe.
 
 ```
   0. THREAT (holdThreat)
-       the hostile with the shortest NAV ROUTE to us — pure graph distance over
-       every hostile, no straight line, no in-sight shortcut, no cache. The whole
-       plan hangs off this pick, and straight-line "nearest" on a multi-storey
-       map is whoever happens to be standing overhead.
+       the hostile who could ENGAGE us soonest: their distance-until-visibility
+       (routeUntilSight from their side, with their drawn weapon's reach — the
+       same quantity contactScan calls enemyMin), minimised over EVERY hostile.
 planHold(ai, threat):
   1. ENTRY POINT
        walk the route from THEIR node toward ours (route() hop by hop, ≤ HOLD_PATH_HOPS)
-       entry = the first node on it we could SHOOT (clear geometry AND no teammate
-               in the line — shootingLaneClear)         ← where they step into view
+       entryNode = the first node on it we could SHOOT (clear geometry AND no
+               teammate in the line — shootingLaneClear)
+       then REFINE: march the leg from the node before it (or from the enemy
+               themselves, if the visible node is where they already stand) in
+               HOLD_ENTRY_STEP increments and take the first point in view
+                                                       ← where they step into view
   2. COVERED POINT
        Dijkstra outward from OUR node over `movable` links, in distance order
        covered = the first settled node with NO clear line to the entry point
@@ -393,6 +396,22 @@ planHold(ai, threat):
        not somewhere the bot walks to and then backs out of.
 ```
 
+**Why that metric and not walk distance.** A hold is choosing an angle to watch,
+so the ordering that matters is who gets eyes and reach on us first — a sniper
+down a long sightline is more urgent than someone closer behind three walls, and
+walking distance ranks those backwards. Switching from walk distance to
+distance-until-visibility cut the damage taken while dug in by roughly 11x on
+dom-arena-big and 2.6x on tdm-arena-big, while holds also lasted longer.
+
+It deliberately does **not** reuse contactScan's cached `threat`, which computes
+the same quantity: that pre-filters to the `CONTACT_SCAN_K` nearest hostiles *by
+straight line* before routing any of them, and on a multi-storey map that throws
+away the genuinely closest enemy before it is ever costed — which is how bots
+ended up digging in against whoever happened to be standing directly overhead.
+`holdThreat` scans every hostile. The approximation is in the distance
+(route-to-nearest-sighting-node plus any residual gap), not in which enemies are
+considered.
+
 Scanning inward rather than outward matters twice over. `from` always sees the
 entry — the predecessor was rejected *for* being visible, and when the cover is
 our own node our position had to see the entry for it to be chosen at all — so
@@ -402,6 +421,20 @@ visible from the side the bot approaches on, rather than one that happens to see
 past a blind stretch. It shows up in the numbers: failed plans roughly halved
 (33 -> 13 on tdm-arena-big, 49 -> 21 on dom-arena-big) when the scan was turned
 around.
+
+**The refinement is the difference between aiming at a corner and aiming at a
+node.** An enemy does not appear AT the first visible node — they come round the
+corner somewhere on the leg before it, so a bot aimed at the node is aimed late by
+up to a full hop. Marching that leg moves the aim point earlier in **79%** of
+cases, by a mean of **105 px** (max 325, against a 350 px `MOVE_RADIUS` ceiling).
+It costs one raycast per step, which is why it's affordable at all.
+
+The *node* is still kept alongside the refined position as the plan's identity:
+the position shifts continuously as the enemy moves, so a refresh comparing
+positions would rebuild every second, where comparing nodes rebuilds only on a
+real change of approach. The cost of the change is that the baked node `visible`
+set can no longer pre-reject cover candidates (the entry is a point on a leg now,
+not a node), so step 2 pays one live ray per settled candidate instead.
 
 **Teammates count as blockers for the angle, never for the cover.** Steps 1 and 3
 ask "could we shoot down this line", so `shootingLaneClear` adds the same
@@ -749,6 +782,7 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `HOLD_SEARCH_NODES` | 48 | nodes the search may settle before giving up |
 | `HOLD_PATH_HOPS` | 24 | hops of the enemy's route walked for the entry point |
 | `HOLD_PEEK_STEP` / `HOLD_ARRIVE` | 8 / 8 | peek slide granularity / hold waypoint slop |
+| `HOLD_ENTRY_STEP` | 10 | march granularity refining the entry point |
 | `HOLD_PEEK_MARGIN` | 16 | extra lean past where the sight line first opens |
 | `HOLD_COMMIT_TICKS` / `HOLD_RETRY_TICKS` | 30 / 60 | hold entry dwell / backoff after a failed plan |
 | `HOLD_REPLAN_TICKS` | 60 | parked threat/entry refresh, ~1s (never fires mid-walk) |
@@ -766,6 +800,28 @@ edges.
 | `OBJ_PULL_MARGIN` | 300 (10·body) | combat-bias-toward-point trigger |
 
 ---
+
+## The player is just another character
+
+Worth stating plainly, because it's easy to assume otherwise: the player sits in
+`game.characters` like everyone else, so **every AI query that scans characters
+includes them** — `hostiles()`, `teammates()`, `mateHolding`, `shootingLaneClear`,
+`separateCharacters`. A HOLD will pick the player as its threat and derive its
+entry point from the player's route to it, exactly as it would for a bot; there is
+no player branch anywhere in the posture code.
+
+The one place the player genuinely *couldn't* be symmetric is the nav congestion
+field (`nav.setRoute`). A bot publishes a route because it has a plan with a goal;
+the player never states a destination. So `Game.updatePlayerRoute` infers one from
+the outside — start at the node they're standing on, follow the graph in the
+direction they're actually moving for a few hops — and publishes that. Standing
+still, entering a vehicle, or dying withdraws the claim. Bots then route around
+the player's corridor the same way they route around each other.
+
+Note the congestion field is **team-agnostic**: an enemy avoids a friendly
+corridor just as a teammate does. That falls out of there being one shared
+metric, and it's a deliberate simplification, not an oversight — making it
+team-aware means one metric per team.
 
 ## Symptom → where to look
 

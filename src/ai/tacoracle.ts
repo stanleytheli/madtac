@@ -226,6 +226,10 @@ const HOLD_SEARCH_NODES = 48;
 const HOLD_PATH_HOPS = 24;
 /** Step size sliding back out of cover to expose a sliver of body (px). */
 const HOLD_PEEK_STEP = 8;
+/** Step size marching the leg into the entry node looking for the first point in
+ *  view (see findEntry). Finer costs a raycast per step and buys sub-step
+ *  precision on an angle that is itself a prediction. */
+const HOLD_ENTRY_STEP = 10;
 /** Once the peek's sight line to the entry point opens up, edge this much
  *  further out (px). The first step that clears the corner clears it by a hair,
  *  and a body-separation shove or the arrival slop can close it again — leaving
@@ -783,7 +787,7 @@ export class TacOracle extends Oracle {
    *  only commits on success). */
   private refreshHold(ai: AiContext, threat: Character): void {
     const entry = this.findEntry(ai, threat);
-    if (entry < 0 || entry === this.holdEntryNode) return;
+    if (entry === null || entry.node === this.holdEntryNode) return;
     this.planFromEntry(ai, entry);
   }
 
@@ -805,45 +809,75 @@ export class TacOracle extends Oracle {
    *  no cover in range), leaving HOLD to lapse. */
   private planHold(ai: AiContext, threat: Character): boolean {
     const entry = this.findEntry(ai, threat);
-    return entry >= 0 && this.planFromEntry(ai, entry);
+    return entry !== null && this.planFromEntry(ai, entry);
   }
 
-  /** STEP 1 — the entry point: walk the route from the threat's node toward ours
-   *  and return the first node on it we can see. Walking from THEIR end means the
-   *  first hit is where they'd come into view earliest, which is the angle worth
-   *  covering. -1 if there's no graph, no route, or nothing on it in sight. */
-  private findEntry(ai: AiContext, threat: Character): number {
+  /** STEP 1 — the entry point: where on their way in the enemy first comes into
+   *  view. Walk the route from the threat's node toward ours and take the first
+   *  node we can see; then refine, because they do not pop into view AT that node
+   *  — they come round the corner somewhere along the leg before it, and a bot
+   *  aimed at the node is aimed late by up to a whole hop.
+   *
+   *  So step along the leg from the node BEFORE the visible one (or, if the
+   *  visible node is where they already stand, from the enemy themselves — they
+   *  can walk straight at it) and stop at the first point that is in view. That
+   *  point is the angle worth pre-aiming.
+   *
+   *  The node is kept alongside it as the plan's identity: the refined position
+   *  wobbles as the enemy moves, and a refresh that compared positions would
+   *  rebuild constantly, where comparing nodes only rebuilds on a real change of
+   *  approach. Null if there's no graph, no route, or nothing on it in sight. */
+  private findEntry(ai: AiContext, threat: Character): { node: number; pos: Vec2 } | null {
     return profiler.measure("ai.hold", () => {
       const nav = ai.nav;
-      if (!nav || nav.nodes.length === 0) return -1;
+      if (!nav || nav.nodes.length === 0) return null;
       const myNode = nav.nearestWalkable(ai.world, this.pos, this.z);
       const enemyNode = nav.nearestWalkable(ai.world, threat.pos, threat.z);
-      if (myNode < 0 || enemyNode < 0) return -1;
+      if (myNode < 0 || enemyNode < 0) return null;
       let cur = enemyNode;
+      let prev = -1;
       for (let hop = 0; hop <= HOLD_PATH_HOPS; hop++) {
         const nd = nav.nodes[cur];
         // A lane a teammate is stood in isn't an angle worth holding — walking on
         // to the next node picks the first spot we could actually engage them at.
-        if (nd.z === this.z && this.shootingLaneClear(ai, this.pos, nd.pos)) return cur;
+        if (nd.z === this.z && this.shootingLaneClear(ai, this.pos, nd.pos)) {
+          const from = prev >= 0 ? nav.nodes[prev].pos : threat.pos;
+          return { node: cur, pos: this.firstVisibleAlong(ai, from, nd.pos) };
+        }
         if (cur === myNode) break;
         const step = nav.route(cur, myNode);
         if (!step) break;
+        prev = cur;
         cur = step.next;
       }
-      return -1;
+      return null;
     });
+  }
+
+  /** March `from` -> `to` and return the first point on it we can see. `to` is
+   *  known to be visible, so the walk always terminates there at worst; anything
+   *  earlier is a strictly better (earlier) sighting of someone walking in. */
+  private firstVisibleAlong(ai: AiContext, from: Vec2, to: Vec2): Vec2 {
+    const total = dist(from, to);
+    if (total < 1e-3) return vec(to.x, to.y);
+    const dir = norm(sub(to, from));
+    for (let d = 0; d < total; d += HOLD_ENTRY_STEP) {
+      const p = add(from, scale(dir, d));
+      if (this.shootingLaneClear(ai, this.pos, p)) return p;
+    }
+    return vec(to.x, to.y);
   }
 
   /** STEPS 2 & 3 — given the entry point, find the cover that beats it and the
    *  peek back out of that cover, and commit the plan. Only mutates on success,
    *  so a failed refresh leaves the working plan in place. */
-  private planFromEntry(ai: AiContext, entry: number): boolean {
+  private planFromEntry(ai: AiContext, entry: { node: number; pos: Vec2 }): boolean {
     return profiler.measure("ai.hold", () => {
       const nav = ai.nav;
-      if (!nav || entry < 0 || entry >= nav.nodes.length) return false;
+      if (!nav || entry.node < 0 || entry.node >= nav.nodes.length) return false;
       const myNode = nav.nearestWalkable(ai.world, this.pos, this.z);
       if (myNode < 0) return false;
-      const entryNode = nav.nodes[entry];
+      const entryPos = entry.pos;
 
       // 2. Nearest node the entry point can't see, Dijkstra'd outward from ours
       //    over movable links. Two-stage test, because the baked `visible` set
@@ -872,14 +906,15 @@ export class TacOracle extends Oracle {
         settled.add(pick);
         const node = nav.nodes[pick];
         if (
-          pick !== entry &&
-          !entryNode.visible.has(pick) &&
           this.holdSpotOk(ai, node.pos, node.z) &&
           !this.mateHolding(ai, node.pos) &&
           // Raw geometry here, deliberately: a teammate blocks a FIRING lane but
           // is never cover (same rule scoreAt applies), so the shooting-lane test
           // used for the entry and the peek must not be used for hiding.
-          !losClear(ai.world, node.pos, entryNode.pos, this.z)
+          // (The baked node `visible` set can't pre-reject any more — the entry is
+          // a point on a leg now, not a node — so this is one live ray per
+          // settled candidate, which is what makes the refinement affordable.)
+          !losClear(ai.world, node.pos, entryPos, this.z)
         ) {
           // 3. Cover is only worth taking if there's a spot on the way in that
           //    still SEES the door. Scan the last leg — from the node we'd come
@@ -888,7 +923,7 @@ export class TacOracle extends Oracle {
           //    produce one, keep searching rather than commit to a blind vigil.
           const back = prev.get(pick);
           const from = back !== undefined ? nav.nodes[back].pos : this.pos;
-          const p = this.peekSpot(ai, from, node.pos, entryNode.pos);
+          const p = this.peekSpot(ai, from, node.pos, entryPos);
           if (p) {
             covered = pick;
             peek = p;
@@ -922,8 +957,8 @@ export class TacOracle extends Oracle {
       if (path.length > 0) path[path.length - 1] = peek;
 
       const coverPos = nav.nodes[covered].pos;
-      this.holdEntry = vec(entryNode.pos.x, entryNode.pos.y);
-      this.holdEntryNode = entry;
+      this.holdEntry = vec(entryPos.x, entryPos.y);
+      this.holdEntryNode = entry.node;
       this.holdCover = vec(coverPos.x, coverPos.y);
       this.holdPeek = peek;
       this.holdPath = path;
@@ -1291,25 +1326,45 @@ export class TacOracle extends Oracle {
     );
   }
 
-  /** Who a HOLD is dug in against: the hostile with the shortest walk to us,
-   *  measured over the nav graph and nothing else. No straight-line distance, no
-   *  in-sight shortcut, no cache — the entry point is derived from this enemy's
-   *  route in, so a wrong pick makes the whole plan wrong. Only called when a
-   *  plan is actually being built or refreshed, so the per-hostile node lookup
-   *  is paid at most once per HOLD_REPLAN_TICKS. */
+  /** Who a HOLD is dug in against: the hostile who could ENGAGE us soonest —
+   *  their distance-until-visibility, `routeUntilSight` measured from their side
+   *  with their weapon's reach (the same quantity contactScan calls `enemyMin`).
+   *
+   *  Not plain walk distance, which answers a different question: a sniper down a
+   *  long sightline is a more urgent threat than someone closer behind three
+   *  walls, and walking distance ranks those backwards. What a hold is choosing
+   *  is an angle to watch, so the right ordering is who gets eyes and reach on us
+   *  first.
+   *
+   *  Deliberately NOT contactScan's cached `threat`, though it computes the same
+   *  metric: that pre-filters to the CONTACT_SCAN_K nearest hostiles BY STRAIGHT
+   *  LINE, which on a multi-storey map throws away the genuinely closest enemy
+   *  before it is ever costed. This scans every hostile. It is an approximation
+   *  in the way routeUntilSight is — the route to the nearest node that sees us,
+   *  plus any gap left to close — but the approximation is in the distance, not
+   *  in which enemies get considered.
+   *
+   *  Only called when a plan is built or refreshed, so the per-hostile node scans
+   *  are paid at most once per HOLD_REPLAN_TICKS. */
   private holdThreat(ai: AiContext): Character | null {
     const nav = ai.nav;
     if (!nav || nav.nodes.length === 0) return null;
-    const me = nav.nearestWalkable(ai.world, this.pos, this.z);
-    if (me < 0) return null;
+    // The node that can see US is the same for every hostile — hoist it out.
+    const mySightGoal = nav.nearestInSight(ai.world, this.pos, this.z);
     let best: Character | null = null;
-    let bestDist = Infinity;
+    let bestReach = Infinity;
     for (const h of this.hostiles(ai)) {
-      const from = nav.nearestWalkable(ai.world, h.pos, h.z);
-      if (from < 0) continue;
-      const step = nav.route(from, me);
-      if (step && step.dist < bestDist) {
-        bestDist = step.dist;
+      const reach = this.routeUntilSight(
+        ai,
+        h.pos,
+        h.z,
+        this,
+        fightingRangeOf(h), // their drawn weapon, not whatever is in their hands
+        undefined,
+        mySightGoal,
+      );
+      if (reach < bestReach) {
+        bestReach = reach;
         best = h;
       }
     }

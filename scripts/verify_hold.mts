@@ -380,9 +380,9 @@ function refreshSuite(level: string): void {
 
     foe.pos = vec(newFoePos.x, newFoePos.y);
     const freshEntry = (bot as unknown as {
-      findEntry(ai: AiContext, threat: Robot): number;
+      findEntry(ai: AiContext, threat: Robot): { node: number; pos: Vec2 } | null;
     }).findEntry(ai, foe);
-    if (freshEntry < 0 || freshEntry === settledEntry) continue; // same angle: nothing to update
+    if (freshEntry === null || freshEntry.node === settledEntry) continue; // same angle: nothing to update
     checkedMoved += 1;
     h.mode = "hold";
     h.holdReplanIn = 1;
@@ -396,7 +396,7 @@ function refreshSuite(level: string): void {
     const probe = new TacOracle(vec(bot.pos.x, bot.pos.y), { team: "player", z: 0 });
     const probeAi: AiContext = { world, characters: [probe, foe], nav, tick: 0 };
     const rebuildable = (probe as unknown as {
-      planFromEntry(ai: AiContext, entry: number): boolean;
+      planFromEntry(ai: AiContext, entry: { node: number; pos: Vec2 }): boolean;
     }).planFromEntry(probeAi, freshEntry);
     if (rebuildable) missedMove += 1;
     else unbuildable += 1;
@@ -493,7 +493,7 @@ function laneSuite(level: string): void {
   console.log(`\n--- teammates in the hold's lane: ${level} ---`);
   const { world, nav } = loadWorld(level);
   type H = {
-    findEntry(ai: AiContext, t: Robot): number;
+    findEntry(ai: AiContext, t: Robot): { node: number; pos: Vec2 } | null;
     planHold(ai: AiContext, t: Robot): boolean;
     holdCover: Vec2 | null;
   };
@@ -510,24 +510,24 @@ function laneSuite(level: string): void {
     const h = bot as unknown as H;
     const solo: AiContext = { world, characters: [bot, foe], nav, tick: 0 };
     const baseEntry = h.findEntry(solo, foe);
-    if (baseEntry < 0) continue;
+    if (baseEntry === null) continue;
 
     // Park a teammate squarely in the middle of the lane it just chose.
-    const entryPos = nav.nodes[baseEntry].pos;
+    const entryPos = baseEntry.pos;
     const mid = add(a.pos, scale(norm(sub(entryPos, a.pos)), dist(a.pos, entryPos) / 2));
     const mate = new Robot(vec(mid.x, mid.y), { team: "player", z: 0 });
     const crowded: AiContext = { world, characters: [bot, foe, mate], nav, tick: 0 };
     cases += 1;
 
     const picked = h.findEntry(crowded, foe);
-    if (picked < 0) {
+    if (picked === null) {
       refused += 1;
       continue;
     }
-    if (inLane(a.pos, nav.nodes[picked].pos, mate.pos)) stillBlocked += 1;
+    if (inLane(a.pos, picked.pos, mate.pos)) stillBlocked += 1;
     // Cover must still be judged on geometry alone — a body doesn't hide anyone.
     if (h.planHold(crowded, foe) && h.holdCover) {
-      if (losClear(world, h.holdCover, nav.nodes[picked].pos, 0)) coverStillHidden += 1;
+      if (losClear(world, h.holdCover, picked.pos, 0)) coverStillHidden += 1;
     }
   }
   check("teammate-blocked lane cases were built", cases > 0, `cases=${cases}`);

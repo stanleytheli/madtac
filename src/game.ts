@@ -48,6 +48,21 @@ const ZOOM_EASE = 0.12;
  *  per tick, like the camera zoom above, so it doesn't snap open on the first
  *  shot of a burst or snap shut the instant recoil resets. */
 const CROSSHAIR_EASE = 0.2;
+
+// --- inferred player route (nav congestion) ---------------------------------
+/** How often the player's route is re-inferred (ticks). The inference costs a
+ *  nearest-node scan, the same one a bot pays per re-plan, so it runs on a
+ *  cadence rather than every tick. */
+const PLAYER_ROUTE_TICKS = 15;
+/** Hops of corridor projected ahead of the player. Short: it's a guess from a
+ *  heading, and it goes stale as soon as they turn. */
+const PLAYER_ROUTE_HOPS = 6;
+/** Below this speed (world px/tick) the player isn't going anywhere, so there's
+ *  no corridor to claim. */
+const PLAYER_ROUTE_MIN_SPEED = 0.35;
+/** How closely a graph edge must line up with the player's heading to count as
+ *  "the way they're going" (cosine). ~60 degrees either side. */
+const PLAYER_ROUTE_MIN_COS = 0.5;
 // Body/wall separation (see separateCharacters / resolveWalls).
 // One small squishy nudge per tick between touching bodies — LESS than a
 // determined mutual push (2×moveSpeed ≈ 4.8/tick, more sprinting), so two bodies
@@ -579,6 +594,55 @@ export class Game implements GameCtx {
 
   /** Convert any character at 0 HP into a corpse, dropping its gear, and remove
    *  it — signalling the gamemode first so it can score/schedule respawns. */
+  /**
+   * Declare the player's likely path to the nav congestion field, so bots route
+   * around it exactly as they route around each other.
+   *
+   * Bots publish a route because they HAVE one — a plan with a goal. The player
+   * never states a destination, so it's inferred the way you'd infer any walker's
+   * from the outside: start at the node they're standing on and follow the graph
+   * in the direction they're actually moving, a few hops. Stop moving (or get in
+   * a vehicle, or die) and the claim is withdrawn.
+   */
+  private updatePlayerRoute(): void {
+    const nav = this.nav;
+    if (!nav || this.tick % PLAYER_ROUTE_TICKS !== 0) return;
+    const p = this.player;
+    if (p.hp <= 0 || p.vehicle || p.speed < PLAYER_ROUTE_MIN_SPEED) {
+      nav.setRoute(p, []);
+      return;
+    }
+    const start = nav.nearestWalkable(this.world, p.pos, p.z);
+    if (start < 0) {
+      nav.setRoute(p, []);
+      return;
+    }
+    const dir = norm(p.vel);
+    const nodes = [start];
+    let cur = start;
+    for (let hop = 0; hop < PLAYER_ROUTE_HOPS; hop++) {
+      let best = -1;
+      let bestCos = PLAYER_ROUTE_MIN_COS;
+      for (const nb of nav.nodes[cur].movable.keys()) {
+        const to = nav.nodes[nb];
+        if (to.z !== p.z || nodes.includes(nb)) continue;
+        const dx = to.pos.x - nav.nodes[cur].pos.x;
+        const dy = to.pos.y - nav.nodes[cur].pos.y;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-6) continue;
+        const cos = (dx * dir.x + dy * dir.y) / len;
+        if (cos > bestCos) {
+          bestCos = cos;
+          best = nb;
+        }
+      }
+      if (best < 0) break; // nothing ahead of them: the corridor ends here
+      nodes.push(best);
+      cur = best;
+    }
+    nav.setRoute(p, nodes);
+  }
+
   /** The weapon the player's aim actually drives: a turret when seated in one,
    *  otherwise the held gun. One definition, so the trigger and the crosshair
    *  can never disagree about which gun's spread is on screen. */
@@ -747,6 +811,9 @@ export class Game implements GameCtx {
         this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
       }
     }
+
+    // The player has moved for this tick, so their inferred corridor is current.
+    this.updatePlayerRoute();
 
     // Vehicles: integrate physics + sync the CCH every tick. Only the player-driven
     // vehicle carries nonzero throttle/steer (set in driveInput); the rest idle.
