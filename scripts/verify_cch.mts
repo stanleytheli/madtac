@@ -172,5 +172,80 @@ const refFull = reference(world);
 const okInc = compareAll(nav, refFull, "after sparse update vs fresh reference");
 const okFull = compareAll(navFull, refFull, "full rebuild vs fresh reference (control)");
 
-console.log(`\nRESULT: baseline ${ok1 ? "OK" : "FAIL"}, sparse-update ${okInc ? "OK" : "FAIL"}, rebuild ${okFull ? "OK" : "FAIL"}`);
-process.exit(ok1 && okInc && okFull ? 0 : 1);
+// ---- congestion metric (setRoute) -------------------------------------------
+// The congested metric is a SECOND customization of the same topology. It must:
+//   (a) leave the plain metric untouched — other callers use route() distances as
+//       measurements, not as a choice of walk;
+//   (b) return to exactly the plain weights once every route is withdrawn, or a
+//       stamp leak would silently bend pathfinding for the rest of the match;
+//   (c) never change reachability — a surcharge is finite, so nothing it does can
+//       disconnect the graph.
+console.log("\n--- congestion metric ---");
+const cnav = new NavGraph(loaded.world);
+const g = cnav as unknown as {
+  plain: { w: Float64Array };
+  cong: { w: Float64Array };
+  congestion: Float64Array;
+};
+const M = g.plain.w.length;
+const plainBefore = Float64Array.from(g.plain.w);
+const congBefore = Float64Array.from(g.cong.w);
+let okCong = true;
+const say = (name: string, ok: boolean, detail = ""): void => {
+  if (!ok) okCong = false;
+  console.log(`  ${ok ? "ok  " : "FAIL"} ${name}${detail ? `   ${detail}` : ""}`);
+};
+say("both metrics start identical",
+  congBefore.every((w, i) => w === plainBefore[i]));
+
+// Stamp several routes, as a squad of bots would.
+const owners = [{}, {}, {}, {}, {}, {}];
+let seedC = 7;
+const rndC = (): number => (seedC = (seedC * 1664525 + 1013904223) >>> 0) / 4294967296;
+const routes = owners.map(() => {
+  const nodes: number[] = [];
+  let cur = Math.floor(rndC() * cnav.nodes.length);
+  const goal = Math.floor(rndC() * cnav.nodes.length);
+  for (let h = 0; h < 12 && cur !== goal; h++) {
+    const step = cnav.route(cur, goal, true);
+    if (!step || step.next === cur) break;
+    nodes.push(cur);
+    cur = step.next;
+  }
+  return nodes;
+});
+const st = performance.now();
+owners.forEach((o, i) => cnav.setRoute(o, routes[i]));
+console.log(`      setRoute x${owners.length}: ${(performance.now() - st).toFixed(3)} ms total`);
+
+say("the plain metric is untouched by stamping",
+  g.plain.w.every((w, i) => w === plainBefore[i]));
+let bent = 0;
+for (let a = 0; a < M; a++) if (g.cong.w[a] !== congBefore[a]) bent++;
+say("stamping actually moved the congested metric", bent > 0, `arcs changed=${bent}`);
+
+// Reachability is unchanged, and every congested first hop is a real walkable edge.
+let unreachable = 0;
+let badHop = 0;
+for (let t = 0; t < 4000; t++) {
+  const a = Math.floor(rndC() * cnav.nodes.length);
+  const b = Math.floor(rndC() * cnav.nodes.length);
+  if (a === b) continue;
+  const p = cnav.route(a, b);
+  const c = cnav.route(a, b, true);
+  if (!!p !== !!c) unreachable++;
+  if (c && c.next !== a && !cnav.nodes[a].movable.has(c.next)) badHop++;
+}
+say("congestion never changes reachability", unreachable === 0, `mismatches=${unreachable}`);
+say("every congested first hop is a real walkable edge", badHop === 0, `bad=${badHop}`);
+
+// Withdraw one at a time; the field must land back exactly where it started.
+owners.forEach((o) => cnav.setRoute(o, []));
+say("withdrawing every route zeroes the congestion field",
+  g.congestion.every((c) => c === 0));
+let residue = 0;
+for (let a = 0; a < M; a++) if (g.cong.w[a] !== congBefore[a]) residue++;
+say("...and restores the congested metric exactly", residue === 0, `arcs still bent=${residue}`);
+
+console.log(`\nRESULT: baseline ${ok1 ? "OK" : "FAIL"}, sparse-update ${okInc ? "OK" : "FAIL"}, rebuild ${okFull ? "OK" : "FAIL"}, congestion ${okCong ? "OK" : "FAIL"}`);
+process.exit(ok1 && okInc && okFull && okCong ? 0 : 1);

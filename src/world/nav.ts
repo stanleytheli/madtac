@@ -161,6 +161,17 @@ export function buildNodeSets(world: World): void {
  * topology never changes, because a blocked edge is just an Infinity weight on
  * an arc that still exists.
  */
+/** One customized weighting of the shared CCH topology (see NavGraph.plain /
+ *  NavGraph.cong). */
+interface Metric {
+  w: Float64Array;
+  mid: Int32Array;
+  child0: Int32Array;
+  child1: Int32Array;
+  /** Per-arc surcharge on top of aBase, or null for the plain distance metric. */
+  extra: Float64Array | null;
+}
+
 export class NavGraph {
   readonly nodes: PathNode[];
   private readonly n: number;
@@ -178,10 +189,21 @@ export class NavGraph {
   private aLo!: Int32Array;
   private aHi!: Int32Array;
   private aBase!: Float64Array; // straight-line dist if walkable now, else Infinity
-  private aW!: Float64Array; // customized weight (Infinity until a metric makes it finite)
-  private aMid!: Int32Array;
-  private aChild0!: Int32Array;
-  private aChild1!: Int32Array;
+
+  /** One customization of the hierarchy. The topology is shared; each metric
+   *  carries its own weights and shortcut-unpacking pointers, which is the whole
+   *  point of a CCH — a second metric costs a customization, not a rebuild.
+   *  `extra` is a per-arc surcharge added to the walkable base distance (null for
+   *  the plain metric). Infinity + surcharge is still Infinity, so a blocked edge
+   *  stays blocked whatever the surcharge. */
+  private plain!: Metric;
+  private cong!: Metric;
+  /** Per-arc congestion surcharge: how much traffic is routed over this edge (see
+   *  setRoute). Only the `cong` metric reads it. */
+  private congestion!: Float64Array;
+  /** Each owner's currently-stamped route arcs, so a re-stamp only pays for the
+   *  difference (a bot re-planning to a similar route touches almost nothing). */
+  private readonly stamped = new Map<object, number[]>();
 
   /** up[v] / down[v]: v's CCH neighbours of higher / lower rank, each with the
    *  arc id, so query and customization walk the hierarchy without map lookups. */
@@ -216,7 +238,8 @@ export class NavGraph {
     this.order = new Int32Array(n);
     this.buildTopology();
     this.allocScratch();
-    this.customizeFull();
+    this.customizeFull(this.plain);
+    this.customizeFull(this.cong);
   }
 
   // ============================================================ topology =======
@@ -290,10 +313,16 @@ export class NavGraph {
     this.aLo = new Int32Array(loNodes);
     this.aHi = new Int32Array(hiNodes);
     this.aBase = new Float64Array(m);
-    this.aW = new Float64Array(m);
-    this.aMid = new Int32Array(m).fill(-1);
-    this.aChild0 = new Int32Array(m).fill(-1);
-    this.aChild1 = new Int32Array(m).fill(-1);
+    this.congestion = new Float64Array(m);
+    const newMetric = (extra: Float64Array | null): Metric => ({
+      w: new Float64Array(m),
+      mid: new Int32Array(m).fill(-1),
+      child0: new Int32Array(m).fill(-1),
+      child1: new Int32Array(m).fill(-1),
+      extra,
+    });
+    this.plain = newMetric(null);
+    this.cong = newMetric(this.congestion);
     this.up = nodes.map(() => []);
     this.down = nodes.map(() => []);
     this.arcOf = new Map();
@@ -329,36 +358,42 @@ export class NavGraph {
 
   // ======================================================== customization =====
 
-  /** Stage 2 (full): weigh every arc from the current metric. One bottom-up
-   *  pass — process apex nodes in increasing rank; each apex relaxes the arc
-   *  between every pair of its higher-ranked neighbours through itself. When an
-   *  apex is reached, all arcs among lower-ranked nodes are already final, so a
-   *  single pass suffices. */
-  private customizeFull(): void {
+  /** An arc's own cost under `m` before any shortcut relaxation: the walkable
+   *  base distance plus this metric's surcharge (blocked stays Infinity). */
+  private baseOf(m: Metric, a: number): number {
+    return m.extra === null ? this.aBase[a] : this.aBase[a] + m.extra[a];
+  }
+
+  /** Stage 2 (full): weigh every arc of one metric. One bottom-up pass —
+   *  process apex nodes in increasing rank; each apex relaxes the arc between
+   *  every pair of its higher-ranked neighbours through itself. When an apex is
+   *  reached, all arcs among lower-ranked nodes are already final, so a single
+   *  pass suffices. */
+  private customizeFull(mt: Metric): void {
     const m = this.aLo.length;
     for (let a = 0; a < m; a++) {
-      this.aW[a] = this.aBase[a];
-      this.aMid[a] = -1;
-      this.aChild0[a] = -1;
-      this.aChild1[a] = -1;
+      mt.w[a] = this.baseOf(mt, a);
+      mt.mid[a] = -1;
+      mt.child0[a] = -1;
+      mt.child1[a] = -1;
     }
     for (let r = 0; r < this.n; r++) {
       const x = this.order[r];
       const ups = this.up[x];
       for (let i = 0; i < ups.length; i++) {
-        const wi = this.aW[ups[i].arc];
+        const wi = mt.w[ups[i].arc];
         if (wi === Infinity) continue;
         for (let j = i + 1; j < ups.length; j++) {
-          const cand = wi + this.aW[ups[j].arc];
+          const cand = wi + mt.w[ups[j].arc];
           const y = ups[i].to;
           const z = ups[j].to;
           const uarc = this.arc(y, z);
-          if (uarc >= 0 && cand < this.aW[uarc]) {
-            this.aW[uarc] = cand;
-            this.aMid[uarc] = x;
+          if (uarc >= 0 && cand < mt.w[uarc]) {
+            mt.w[uarc] = cand;
+            mt.mid[uarc] = x;
             // legs: arc(lo(uarc), x) and arc(hi(uarc), x)
-            this.aChild0[uarc] = this.arc(this.aLo[uarc], x);
-            this.aChild1[uarc] = this.arc(this.aHi[uarc], x);
+            mt.child0[uarc] = this.arc(this.aLo[uarc], x);
+            mt.child1[uarc] = this.arc(this.aHi[uarc], x);
           }
         }
       }
@@ -369,26 +404,26 @@ export class NavGraph {
    *  triangle (a common lower-ranked neighbour x, going lo->x->hi). Returns true
    *  if the weight or midpoint changed. Assumes every lower-ranked arc is
    *  already final — the rank-ordered queue in customizeDirty guarantees it. */
-  private recomputeArc(a: number): boolean {
+  private recomputeArc(mt: Metric, a: number): boolean {
     const lo = this.aLo[a];
     const hi = this.aHi[a];
-    let w = this.aBase[a];
+    let w = this.baseOf(mt, a);
     let mid = -1;
     for (const dn of this.down[lo]) {
       const x = dn.to; // rank(x) < rank(lo) < rank(hi)
       const xhi = this.arc(x, hi);
       if (xhi < 0) continue;
-      const cand = this.aW[dn.arc] + this.aW[xhi];
+      const cand = mt.w[dn.arc] + mt.w[xhi];
       if (cand < w) {
         w = cand;
         mid = x;
       }
     }
-    if (w === this.aW[a] && mid === this.aMid[a]) return false;
-    this.aW[a] = w;
-    this.aMid[a] = mid;
-    this.aChild0[a] = mid < 0 ? -1 : this.arc(lo, mid);
-    this.aChild1[a] = mid < 0 ? -1 : this.arc(hi, mid);
+    if (w === mt.w[a] && mid === mt.mid[a]) return false;
+    mt.w[a] = w;
+    mt.mid[a] = mid;
+    mt.child0[a] = mid < 0 ? -1 : this.arc(lo, mid);
+    mt.child1[a] = mid < 0 ? -1 : this.arc(hi, mid);
     return true;
   }
 
@@ -400,7 +435,7 @@ export class NavGraph {
    *  triangles it sits in as a lower leg (apex = its lower endpoint), so we
    *  enqueue exactly those. Cost scales with the affected neighbourhood, not the
    *  graph. */
-  private customizeDirty(dirty: Iterable<number>): void {
+  private customizeDirty(mt: Metric, dirty: Iterable<number>): void {
     // Min-heap of arc ids keyed by rank of the arc's lower endpoint.
     const keys: number[] = [];
     const arcs: number[] = [];
@@ -447,7 +482,7 @@ export class NavGraph {
     while (keys.length) {
       const a = pop();
       queued.delete(a);
-      if (!this.recomputeArc(a)) continue;
+      if (!this.recomputeArc(mt, a)) continue;
       // Changed arc {lo,hi} is a lower leg only in apex-lo triangles: pair it
       // with every other up-arc {lo,z} and re-examine the upper arc {hi,z}.
       const lo = this.aLo[a];
@@ -490,7 +525,88 @@ export class NavGraph {
         dirty.push(arc);
       }
     }
-    if (dirty.length) this.customizeDirty(dirty);
+    // A base change moves both metrics; the surcharge rides on top of it.
+    if (dirty.length) {
+      this.customizeDirty(this.plain, dirty);
+      this.customizeDirty(this.cong, dirty);
+    }
+  }
+
+  // ============================================================ congestion ====
+
+  /** Per-edge surcharge (world px) applied to each hop of a route someone has
+   *  committed to walking. Big enough that a second bot prefers a genuinely
+   *  different corridor when one exists, small enough that it never invents a
+   *  long detour around a short shared hop.
+   *
+   *  Tuned by measurement, and it is NOT monotone — 60/200/400 all behave much
+   *  the same, and by 2500 spreading is back to no-congestion levels. A surcharge
+   *  that large dwarfs the Oracle's SWITCH_MARGIN (80), so the sticky-hop rule
+   *  stops damping waypoint churn and the routes thrash. Width, not magnitude, is
+   *  the lever that separates bots (see ROUTE_SPREAD). */
+  static readonly ROUTE_PENALTY = 200;
+
+  /** Stamp every edge incident to a route node, not only the edges the route
+   *  itself uses. Magnitude alone saturates — past a point it just destabilises
+   *  waypoints — so width is the lever that actually separates two bots onto
+   *  different corridors. */
+  static readonly ROUTE_SPREAD = true;
+
+  /** Declare `owner`'s committed route as the node sequence `nodes`, replacing
+   *  whatever it declared before. Only the CONGESTED metric sees it — plain
+   *  `route()` distances are untouched, which matters because several callers
+   *  (contact scans, threat picks) use them as measurements rather than as a
+   *  choice of walk.
+   *
+   *  Only the difference against the owner's previous stamp is re-customized, so
+   *  a bot re-planning onto a similar route pays for the few hops that changed.
+   *  Pass an empty array to withdraw (death, or no route). */
+  setRoute(owner: object, nodes: readonly number[]): void {
+    const next: number[] = [];
+    for (let i = 0; i + 1 < nodes.length; i++) {
+      const a = this.arc(nodes[i], nodes[i + 1]);
+      if (a >= 0) next.push(a);
+    }
+    // Stamp the CORRIDOR, not just the thread: every real edge touching a route
+    // node, so a second bot can't dodge the surcharge by taking a near-parallel
+    // edge between the same two nodes and walking shoulder to shoulder anyway.
+    // Route edges get stamped twice over (once per endpoint), so the thread still
+    // costs more than merely being beside it — a gradient rather than a wall.
+    if (NavGraph.ROUTE_SPREAD) {
+      for (const nd of nodes) {
+        for (const e of this.up[nd]) if (Number.isFinite(this.aBase[e.arc])) next.push(e.arc);
+        for (const e of this.down[nd]) if (Number.isFinite(this.aBase[e.arc])) next.push(e.arc);
+      }
+    }
+    const prev = this.stamped.get(owner);
+    if (prev === undefined && next.length === 0) return;
+    // Multiset difference: an arc used by both stamps keeps its surcharge and is
+    // never dirtied, which is what makes a re-plan onto a similar route cheap.
+    const delta = new Map<number, number>();
+    if (prev) for (const a of prev) delta.set(a, (delta.get(a) ?? 0) - 1);
+    for (const a of next) delta.set(a, (delta.get(a) ?? 0) + 1);
+    const dirty: number[] = [];
+    for (const [a, d] of delta) {
+      if (d === 0) continue;
+      this.congestion[a] = Math.max(0, this.congestion[a] + d * NavGraph.ROUTE_PENALTY);
+      dirty.push(a);
+    }
+    if (next.length) this.stamped.set(owner, next);
+    else this.stamped.delete(owner);
+    if (dirty.length) this.customizeDirty(this.cong, dirty);
+  }
+
+  /** Withdraw every stamp (match reset / level reload). */
+  clearRoutes(): void {
+    const dirty: number[] = [];
+    for (let a = 0; a < this.congestion.length; a++) {
+      if (this.congestion[a] !== 0) {
+        this.congestion[a] = 0;
+        dirty.push(a);
+      }
+    }
+    this.stamped.clear();
+    if (dirty.length) this.customizeDirty(this.cong, dirty);
   }
 
   /** The nav edges the CCH should re-check for vehicle `v`: every real candidate
@@ -537,17 +653,18 @@ export class NavGraph {
 
   /** The cached route step: the next node to walk toward and the total path
    *  distance from `from` to `to`, or null if `to` is unreachable. */
-  route(from: number, to: number): { next: number; dist: number } | null {
+  route(from: number, to: number, congested = false): { next: number; dist: number } | null {
     if (from < 0 || to < 0 || from >= this.n || to >= this.n) return null;
     if (from === to) return { next: from, dist: 0 };
-    return profiler.measure("ai.route", () => this.query(from, to));
+    const mt = congested ? this.cong : this.plain;
+    return profiler.measure("ai.route", () => this.query(mt, from, to));
   }
 
-  private query(s: number, t: number): { next: number; dist: number } | null {
+  private query(mt: Metric, s: number, t: number): { next: number; dist: number } | null {
     const gen = ++this.gen;
     this.fseenLen = 0;
-    this.upSearch(s, this.df, this.fpar, this.fparArc, this.fstamp, gen, true);
-    this.upSearch(t, this.db, this.bpar, this.bparArc, this.bstamp, gen, false);
+    this.upSearch(mt, s, this.df, this.fpar, this.fparArc, this.fstamp, gen, true);
+    this.upSearch(mt, t, this.db, this.bpar, this.bparArc, this.bstamp, gen, false);
 
     // Meet in the middle: the apex minimising forward + backward up-distance.
     // Every candidate apex is forward-reachable from s, so scanning only the
@@ -577,12 +694,13 @@ export class NavGraph {
     } else {
       firstArc = this.bparArc[s];
     }
-    return { next: this.firstHop(s, firstArc), dist: bestDist };
+    return { next: this.firstHop(mt, s, firstArc), dist: bestDist };
   }
 
   /** Dijkstra from `src` relaxing only upward arcs, writing dist/parent/parentArc
    *  for every node it settles and stamping them with `gen`. */
   private upSearch(
+    mt: Metric,
     src: number,
     d: Float64Array,
     par: Int32Array,
@@ -603,7 +721,7 @@ export class NavGraph {
       if (record) this.fseen[this.fseenLen++] = u;
       const du = d[u];
       for (const e of this.up[u]) {
-        const w = this.aW[e.arc];
+        const w = mt.w[e.arc];
         if (w === Infinity) continue;
         const nd = du + w;
         if (stamp[e.to] !== gen || nd < d[e.to]) {
@@ -621,10 +739,10 @@ export class NavGraph {
    *  return the first node reached from `from`. A shortcut lo<->hi bypasses
    *  aMid, so the path from either endpoint heads toward aMid first — follow the
    *  stored child leg on `from`'s side until an unshortcut arc remains. */
-  private firstHop(from: number, arc: number): number {
+  private firstHop(mt: Metric, from: number, arc: number): number {
     for (;;) {
-      if (this.aMid[arc] < 0) return this.aLo[arc] === from ? this.aHi[arc] : this.aLo[arc];
-      arc = this.aLo[arc] === from ? this.aChild0[arc] : this.aChild1[arc];
+      if (mt.mid[arc] < 0) return this.aLo[arc] === from ? this.aHi[arc] : this.aLo[arc];
+      arc = this.aLo[arc] === from ? mt.child0[arc] : mt.child1[arc];
     }
   }
 

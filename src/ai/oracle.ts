@@ -45,6 +45,10 @@ const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this 
 const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
+/** How many hops of the committed route are declared to the congestion field.
+ *  Bounded because walking it costs a route() query per hop, and the far end of a
+ *  long path is stale by the time anyone gets there anyway. */
+const ROUTE_STAMP_HOPS = 12;
 
 export interface OracleOptions extends RobotOptions {
   /** Constant movement speed, world px/tick. */
@@ -202,7 +206,7 @@ export class Oracle extends Robot {
     let remaining = FACE_NEXT_DISTANCE - dist(this.pos, dest);
     let curr = this.waypoint;
     for (let hops = 0; hops < MAX_HOPS && curr !== this.goal; hops++) {
-      const step = nav.route(curr, this.goal);
+      const step = nav.route(curr, this.goal, true);
       if (!step) break;
       const edge = dist(nav.nodes[curr].pos, nav.nodes[step.next].pos);
       if (edge > remaining) break; // the next node is past the look distance
@@ -241,7 +245,7 @@ export class Oracle extends Robot {
   private skipReachableHops(nav: NavGraph, world: World): void {
     if (this.atGoalNode || this.goal < 0) return;
     for (let hop = 0; hop < MAX_SKIP && this.waypoint >= 0 && this.waypoint !== this.goal; hop++) {
-      const step = nav.route(this.waypoint, this.goal);
+      const step = nav.route(this.waypoint, this.goal, true);
       if (!step) return;
       const next = nav.nodes[step.next];
       if (!walkable(world, this.pos, this.z, next.pos, next.z)) return;
@@ -252,6 +256,35 @@ export class Oracle extends Robot {
   /** One path query, committing `waypoint` + `atGoalNode`. My node is the
    *  nearest *walkable* node; the target's is the nearest that *sees* it. */
   private plan(nav: NavGraph, world: World, chase: Character): void {
+    // Take our own route off the congestion field first: every query below reads
+    // the congested metric, and routing around yesterday's version of ourselves
+    // is both wrong and unstable. It goes back on at the end, so between plans
+    // everyone else still sees where we intend to walk.
+    nav.setRoute(this, []);
+    try {
+      this.planInner(nav, world, chase);
+    } finally {
+      // Declare the new route whatever happened, including the early returns
+      // that leave us with no waypoint at all (which declares nothing).
+      nav.setRoute(this, this.routeNodes(nav));
+    }
+  }
+
+  /** Walk the committed route and list its nodes, for the congestion field. */
+  private routeNodes(nav: NavGraph): number[] {
+    if (this.waypoint < 0 || this.goal < 0) return [];
+    const out: number[] = [this.waypoint];
+    let cur = this.waypoint;
+    for (let hop = 0; hop < ROUTE_STAMP_HOPS && cur !== this.goal; hop++) {
+      const step = nav.route(cur, this.goal, true);
+      if (!step || step.next === cur) break;
+      cur = step.next;
+      out.push(cur);
+    }
+    return out;
+  }
+
+  private planInner(nav: NavGraph, world: World, chase: Character): void {
     const prev = this.waypoint; // the hop committed before this replan, or -1
     this.waypoint = -1;
     this.atGoalNode = false;
@@ -265,7 +298,7 @@ export class Oracle extends Robot {
       this.atGoalNode = true;
       return;
     }
-    const step = nav.route(curr, goal);
+    const step = nav.route(curr, goal, true);
     if (!step) return;
     const next = nav.nodes[step.next];
     // Head straight for the next hop when it's walkable from right here (we're
@@ -291,7 +324,7 @@ export class Oracle extends Robot {
       const cost = (w: number): number | null => {
         const leg = dist(this.pos, nav.nodes[w].pos);
         if (w === goal) return leg;
-        const r = nav.route(w, goal);
+        const r = nav.route(w, goal, true);
         return r ? leg + r.dist : null;
       };
       const prevCost = cost(prev);

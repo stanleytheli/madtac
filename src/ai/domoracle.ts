@@ -47,6 +47,12 @@ export class DominationOracle extends TacOracle {
    *  objective, so the base's navChase can steer toward a position. */
   private objMarker: Character | null = null;
 
+  /** The site this bot committed to holding (position + level, since the
+   *  gamemode rebuilds the ObjectivePoint objects every tick). Latched on
+   *  entering HOLD and consulted for the rest of it, so walking to cover a step
+   *  outside the ring doesn't drop the posture. */
+  private holdSite: { pos: Vec2; z: number } | null = null;
+
   /** Never treat the objective marker as a live enemy contact (that would zero
    *  the contact metrics and stop the bot healing/running on the way there). */
   protected override inContact(ai: AiContext, chase: Character): boolean {
@@ -81,6 +87,75 @@ export class DominationOracle extends TacOracle {
     }
     if (!best || bestD > best.radius + OBJ_PULL_MARGIN) return null;
     return { pos: best.pos, radius: best.radius };
+  }
+
+  /** Standing on a site with nothing in sight and no enemy on it, there is
+   *  nothing to do but wait — so wait from cover with the gun already on the
+   *  approach instead of wandering off. Who owns the site doesn't matter: an
+   *  uncaptured one keeps ticking over while we stand in it (holdSpotOk keeps the
+   *  spot inside the ring until it's ours and reinforced), so digging in captures
+   *  and defends in the same motion. An enemy on the site is the one exclusion —
+   *  that's a contest to be fought, not a vigil to be kept.
+   *
+   *  Unlike the base soldier this ignores how far off contact is — the site is
+   *  worth holding whether or not anyone is nearby — and since HOLD outranks RUN
+   *  in updatePosture it won't sprint away from it. */
+  protected override wantsHold(ai: AiContext, target: Character | null): boolean {
+    if (target) {
+      this.holdSite = null;
+      return false;
+    }
+    // Once dug in, stay committed to the site we dug in ON, rather than re-asking
+    // "am I inside a ring" every tick. Cover is routinely a step outside the ring
+    // (always so, once the site is ours and reinforced and off-ring cover is
+    // allowed), and re-testing position meant: HOLD walks the bot out of the ring
+    // -> underfoot goes null -> hold drops -> RUN drives it back across the ring
+    // -> it digs in again. That bounce is the run<->hold loop; the latch ends it.
+    const site = this.mode === "hold" && this.holdSite ? this.siteAt(ai, this.holdSite) : this.pointUnderfoot(ai);
+    if (!site || this.contested(ai, site)) {
+      this.holdSite = null;
+      return false;
+    }
+    this.holdSite = { pos: site.pos, z: site.z };
+    return true;
+  }
+
+  /** Re-resolve a latched site against this tick's objective list, which the
+   *  gamemode rebuilds each frame (so the objects can't be compared by identity). */
+  private siteAt(ai: AiContext, ref: { pos: Vec2; z: number }): ObjectivePoint | null {
+    for (const o of ai.objectives ?? []) {
+      if (o.z === ref.z && dist(o.pos, ref.pos) < 1) return o;
+    }
+    return null;
+  }
+
+  /** Any live hostile on `pt` — out to the same radius + CONTEST_PAD bestChase
+   *  uses, so an enemy can't toggle the posture by stepping across the exact
+   *  edge of the ring. */
+  private contested(ai: AiContext, pt: ObjectivePoint): boolean {
+    const reach = pt.radius + CONTEST_PAD;
+    return this.hostiles(ai).some((h) => h.z === pt.z && dist(h.pos, pt.pos) <= reach);
+  }
+
+  /** Never take cover that isn't on the point: a covered spot outside the ring
+   *  stops the capture, which is the entire reason we're standing here. Once the
+   *  point is ours AND fully reinforced there's no progress left to lose, so real
+   *  cover anywhere is fair game. */
+  protected override holdSpotOk(ai: AiContext, pos: Vec2, z: number): boolean {
+    // The latched site, not "whatever ring I happen to stand in" — otherwise the
+    // constraint evaporates the moment the walk to cover crosses the ring edge.
+    const pt = (this.holdSite ? this.siteAt(ai, this.holdSite) : null) ?? this.pointUnderfoot(ai);
+    if (!pt) return super.holdSpotOk(ai, pos, z);
+    if (pt.owner === this.team && pt.progress >= 2) return true;
+    return z === pt.z && dist(pos, pt.pos) <= pt.radius;
+  }
+
+  /** The capture point we're currently standing inside, or null. */
+  private pointUnderfoot(ai: AiContext): ObjectivePoint | null {
+    for (const o of ai.objectives ?? []) {
+      if (o.z === this.z && dist(this.pos, o.pos) <= o.radius) return o;
+    }
+    return null;
   }
 
   /** Out-of-combat destination: the nearest capture point that still needs work.

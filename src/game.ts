@@ -153,6 +153,9 @@ export class Game implements GameCtx {
    *  its spawn, then let the gamemode place teams and do its initial spawns. */
   start(): void {
     this.tick = 0;
+    // The nav graph outlives a match, so last match's committed routes would
+    // otherwise still be congesting corridors nobody is walking.
+    this.nav?.clearRoutes();
     this.bodies.length = 0;
     this.world.bullets.length = 0;
     this.world.particles.length = 0;
@@ -586,6 +589,10 @@ export class Game implements GameCtx {
         c.vehicle = null;
         c.seatIndex = -1;
       }
+
+      // Withdraw any committed route from the nav congestion field — a corpse
+      // must not keep a corridor looking busy.
+      if (this.nav) this.nav.setRoute(c, []);
 
       this.gamemode.onDeath(c, this);
 

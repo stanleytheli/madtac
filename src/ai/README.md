@@ -16,9 +16,10 @@ Character (entities/actor.ts)      — body, gun, movement, HP, z-level
                   └── DominationOracle (domoracle.ts) — works capture points when not fighting  [it plays the mode]
 ```
 
-Everything below a layer is inherited unchanged unless noted. A level spec picks
-which class to spawn and with what options (`RobotOptions` → `OracleOptions` →
-`TacOracleOptions`).
+Everything below a layer is inherited unchanged unless noted. A level spec or a
+gamemode picks which class to spawn and with what options (`RobotOptions` →
+`OracleOptions` → `TacOracleOptions`) — see "Who spawns which class" below, since
+the two paths don't expose the same knobs.
 
 Two orthogonal facts about a robot:
 
@@ -46,19 +47,40 @@ think(ai):
        if (stagger <= 1) or ((tick + thinkPhase) % stagger == 0):  decide(ai)   ← full, expensive
        else:                                                        coast(ai)    ← cheap continuation
   2. postMove(ai)          ← continuous steering hook (currently a no-op; see "Crowd spacing")
-  3. AIM (every tick)
+  3. applyStairMove()      ← if the step just taken was on a staircase, shrink its climb-axis
+                             component (and pull pos back to match). No-op off stairs.
+  4. AIM (every tick)
        target = lastTarget if still alive else null
        if target: aimAngle = angle to (target.pos + aimError)     ← jittered point, not the true target
        angle = turnToward(angle, aimAngle)                        ← eased, never snaps (TURN_GAIN 0.05 + 2° floor)
        forward = fromAngle(angle)
-  4. FIRE (every tick)
+  5. FIRE (every tick)
        if shouldFire(ai, target) and gun.fire(world): onFired()
 ```
+
+Robots step `pos` directly (kinematic) and only *report* the step in `vel` — so
+anything reading `speed` (the real gun's movement accuracy penalty, above all)
+sees graph-walking and strafing as real movement. Stairs are the one exception:
+`applyStairMove` slows the climb, but the `speed` getter divides that slowdown
+back out, so climbing is slower without also being *less accurate* than walking.
 
 `decide()` picks the *desired* heading and the movement for this plan; the actual
 heading eases toward it every tick, and the trigger is pulled every tick it's
 allowed. `lastTarget` is the bridge: `decide` sets it, the between-plan ticks aim
 and fire at it.
+
+### Where this sits in the game tick (`game.ts`)
+
+Order matters for a few behaviours, so: every character's `onStairs` is refreshed
+→ the player moves → vehicles integrate & re-weight the nav graph → `tickWeapon`
+(cooldowns, recoil decay) → `tickStatus` (heal-use timer, regen) → the player
+fires → **every live Robot's `think`** → stair-z flips + wall collision + body
+separation → bullets resolve → dead reaped, gamemode rules.
+
+Two consequences worth remembering: an AI plans against **last tick's** resolved
+positions but this tick's recoil state; and the movement it commits is only
+*proposed* — walls and the body-separation pass get the last word after `think`
+returns, so a bot can end the tick somewhere its own plan didn't put it.
 
 ### `decide()` — acquire, react, act
 
@@ -265,10 +287,32 @@ The four postures:
 | **cover** | burst spent, **or reloading** | strafe to the spot the opponent sees least of; if nowhere is better *and* here is no cover either, dodge side-to-side (`coverMove`). Re-emerges to shoot once recoil resets & reload's done — an emergent **peek cycle**. |
 | **run** | no fight for a while (`fightDist >= RUN_DISTANCE`, dwell met) | holster to fists, sprint (`RUN_SPEED_MUL`) to contact via the graph, re-arm on arrival. Faces straight ahead (no corner pre-aim). |
 | **heal** | hurt (`hp < HEAL_HP`), safe (`enemyVisDist >= HEAL_SAFE_DISTANCE`, dwell met), carrying a heal | back away to grow the threat's reach-to-us up to `HEAL_SEEK_DISTANCE`, then hold cover burning heal items back-to-back. Aborts instantly (re-arms) if the enemy could see us within `HEAL_ALARM_DISTANCE`, we top off, or run out. |
+| **hold** | nothing in sight, contact nearer than `RUN_DISTANCE`, dwell met, and cover exists (`wantsHold` + a successful `planHold`). DominationOracle instead: standing on any site with no enemy on it | dig in on the spot an approaching enemy must walk into, gun already pointed at it, and wait. See 3d-hold. |
 
-RUN/HEAL entry is **committed a-priori** (dwell), exit is **instant** for HEAL
-(safety). The `700 > 400` gap between `HEAL_SAFE_DISTANCE` and `HEAL_ALARM_DISTANCE`
-is stay-hysteresis so it doesn't chatter.
+RUN/HEAL/HOLD entry is **committed a-priori** (dwell), exit is **instant** for
+HEAL (safety).
+
+`runDwell` is held at **0 for the whole of a HOLD**. RUN and HOLD move in
+opposite directions, so without that a HOLD ending hands straight over to a RUN
+whose "a-priori commitment" filled up while the bot was dug in — the dwell gated
+nothing between them, and the pair ping-ponged: run in, dig in, walk back to
+cover, run in again. Leaving HOLD now drops to combat and RUN re-earns its 90
+ticks.
+
+This is deliberately **not** mirrored on `holdDwell`, which keeps charging during
+a RUN. RUN has no completion condition of its own — arriving somewhere doesn't
+change `fightDist` — so a bot that reaches its destination just stands there
+holstered, and HOLD taking over is what ends it. Blocking that deadlocks RUN.
+
+HOLD also only commits once `tryPlanHold` proves a plan exists, so the posture is
+never entered and then abandoned for want of cover. The `700 > 400` gap between `HEAL_SAFE_DISTANCE` and
+`HEAL_ALARM_DISTANCE` is stay-hysteresis so it doesn't chatter.
+
+Priority is `heal > hold > run > (reload→cover) > combatMode`. HOLD sits above
+RUN so an objective-holder doesn't sprint off the thing it's guarding; for a
+plain TacOracle the two can't both apply anyway (HOLD wants contact *nearer* than
+`RUN_DISTANCE`, RUN wants it further). HOLD also bypasses the reload→cover
+reflex, because it does its own ducking (below).
 
 ### 3d. `act()` — the TacOracle decision tree
 
@@ -294,6 +338,7 @@ TacOracle.act(ai, target):
 
   ── MOVEMENT BY MODE ──
   if mode==heal:  healMove(ai, chase)                ← back off / hold cover, keep healing
+  elif mode==hold: holdMove(ai, nearestHostile)      ← dig in on the pre-aimed angle (3d-hold)
   elif mode==cover: coverMove(ai, chase)             ← least-exposure spot, or dodge
   elif target and dist<=engageRange: strafeMove(ai,target)  ← in-range fight: hold / slide to a lane
   else:                                              ← approach
@@ -311,7 +356,144 @@ shouldFire(ai, target):
   return laneClear(ai, target)                             ← never fire with a friendly downrange
 ```
 
-### 3e. Target selection — cost, not distance (`selectTarget`)
+### 3d-hold. HOLD — defending an angle (`planHold`)
+
+The other postures react to where the enemy *is*. HOLD reasons about where they
+will have to *come from*, picks the ground that beats them there, and waits with
+the gun already up. The plan is three steps, each depending on the last, and it
+is **frozen while the bot is moving and refreshed only once it's planted** — the
+entry point is derived from the enemy's route to where we *stand*, so refreshing
+it mid-walk would chase its own tail: the plan moves us, which moves the plan
+(the same oscillation `SWITCH_MARGIN` exists to stop). Standing still, that loop
+can't close, so a refresh there is safe.
+
+```
+  0. THREAT (holdThreat)
+       the hostile with the shortest NAV ROUTE to us — pure graph distance over
+       every hostile, no straight line, no in-sight shortcut, no cache. The whole
+       plan hangs off this pick, and straight-line "nearest" on a multi-storey
+       map is whoever happens to be standing overhead.
+planHold(ai, threat):
+  1. ENTRY POINT
+       walk the route from THEIR node toward ours (route() hop by hop, ≤ HOLD_PATH_HOPS)
+       entry = the first node on it we could SHOOT (clear geometry AND no teammate
+               in the line — shootingLaneClear)         ← where they step into view
+  2. COVERED POINT
+       Dijkstra outward from OUR node over `movable` links, in distance order
+       covered = the first settled node with NO clear line to the entry point
+                 (the baked `visible` set as a free reject, confirmed with one
+                 live losClear), that passes holdSpotOk and is not already taken
+                 by a teammate — standing there OR committed to it (mateHolding)
+  3. PEEK SPOT
+       scan the final leg IN — from the PREDECESSOR toward `covered`, in
+       HOLD_PEEK_STEP increments — and keep the last step whose line to the
+       entry point is still clear; then relax HOLD_PEEK_MARGIN back outward.
+       Cover that yields no such spot is REJECTED and the search continues.
+       The committed route ENDS at the peek: the cover is a duck destination,
+       not somewhere the bot walks to and then backs out of.
+```
+
+Scanning inward rather than outward matters twice over. `from` always sees the
+entry — the predecessor was rejected *for* being visible, and when the cover is
+our own node our position had to see the entry for it to be chosen at all — so
+the scan is guaranteed to start seeing and end blind, where the reverse direction
+could fail to find anything. And it can only return a spot **contiguously**
+visible from the side the bot approaches on, rather than one that happens to see
+past a blind stretch. It shows up in the numbers: failed plans roughly halved
+(33 -> 13 on tdm-arena-big, 49 -> 21 on dom-arena-big) when the scan was turned
+around.
+
+**Teammates count as blockers for the angle, never for the cover.** Steps 1 and 3
+ask "could we shoot down this line", so `shootingLaneClear` adds the same
+friendly-lane test the trigger uses (`friendInLine` / `FRIENDLY_MARGIN`) on top of
+the geometry — otherwise a bot digs in watching a door one of its own squad is
+stood in front of, and holds fire the moment anyone appears. Step 2 asks the
+opposite question and stays pure `losClear`: a body is not cover, the same rule
+`scoreAt` applies when it counts `exposed`. With a teammate parked mid-lane, 55 of
+60 test cases moved to a different entry point and none refused to plan, so the
+angle shifts rather than the hold being lost.
+
+Teammates move and the plan is frozen between refreshes, so a mate wandering
+through at plan time can bias the angle for up to `HOLD_REPLAN_TICKS`. That's the
+same tradeoff `mateHolding` makes, and much cheaper than re-planning whenever
+someone walks past.
+
+Two things make step 3 work:
+
+- **The predecessor is guaranteed to be more exposed than cover.** The search
+  settles nodes in increasing distance, so every node reached before `covered` —
+  its shortest-path predecessor included — was *rejected*, and the only way to be
+  rejected is to be visible from the entry point. So "toward the predecessor" is
+  always a direction in which exposure increases. (Standing already-covered there
+  is no predecessor, so it leans toward the entry point itself instead.)
+- **Every visibility test in HOLD is centre-to-centre** (`losClear(spot, entry)`),
+  because the bot's centre is the eye every sight and firing check rays from.
+  Cover means that line is blocked, the peek means it is clear. The baked node
+  `visible` sets are the same centre-to-centre relation, so step 2 takes a free
+  reject from them and confirms with one live ray — which also catches vehicles,
+  which the baked sets don't know about.
+
+Once planned, HOLD walks the committed node route (`followHold`) and then sits.
+While the gun is out of action — reloading, or the burst is spent — it retreats
+to `holdCover` (fully hidden) and slides back out to `holdPeek` when ready: the
+same peek cycle COVER has, but rehearsed against a doorway instead of reacting to
+a body. **Facing is owned outright** (`faceHold`) for the whole posture, including
+while still walking to cover — otherwise the approach's blind lookahead would
+point the gun down the travel direction, and a pre-aimed angle is the entire
+point of the feature.
+
+A failed plan (no route, no cover in range, nothing satisfying `holdSpotOk`)
+parks the posture for `HOLD_RETRY_TICKS` rather than re-running the search
+against geometry that won't have changed.
+
+**The parked refresh** (`refreshHold`, every `HOLD_REPLAN_TICKS` — ~1s — while
+parked at either end of the cover<->peek slide) re-runs steps 0 and 1 only. The
+countdown advances by `stagger`, not 1, because `holdMove` runs on plan ticks
+only: a raw decrement made the period `stagger` times longer than it read, which
+is what made holds look like they planned once and never re-evaluated. If the nearest enemy would still enter view at the
+same node, *nothing happens at all* — so a timer can never jitter a settled
+soldier between two equally good spots. A genuinely different approach rebuilds
+steps 2–3 around it; a rebuild that finds no cover for the new angle leaves the
+old plan untouched rather than trading working cover for none.
+
+`mateHolding` exists because one node fits one body: without it two soldiers
+covering the same corridor both pick the same best node, and then spend the fight
+shoving each other off it — the squishy body separation pushes them apart and
+both walk straight back. A spot counts as taken when a teammate is **standing on
+it or has committed to it** (their `holdCover` or `holdPeek`), because the walk
+there takes a second and a body-position test can't see a claim in transit: with
+only the body test, two bots claimed the same node on ~60% of the ticks where
+more than one was dug in. Claims release when `clearHold` ends the posture. It's
+the only crowd rule inside HOLD; general spacing is still `separateCharacters`' job.
+
+**There is currently no exit timer.** A bot holds as long as `wantsHold` stays
+true — that is, until something comes into view (it fights) or contact drifts
+past `RUN_DISTANCE` (it runs). On a map where neither happens, two dug-in teams
+will stare at each other; a jittered hold duration is the intended fix when that
+becomes a problem.
+
+### 3e. `coast()` — the 4 ticks out of 5 that aren't planning
+
+With the default `stagger: 5`, `act()` runs on one tick in five; the other four
+run `TacOracle.coast`, and it is **not** a no-op. Behaviour that looks like it
+comes from `act` often actually comes from here:
+
+```
+coast(ai):
+  updateMode(target ?? focus)     ← burst envelope, reload start, click timer — EVERY tick
+  updatePosture()                 ← so heal items keep chaining and the held slot stays right
+  if mode==heal:  step to the committed strafeTarget (or hold) and return   ← never coast at the enemy
+  if mode==hold:  followHold + faceHold and return   ← keeps walking/aiming, never re-plans
+  if standToShoot(...): return                                              ← mirrors act's plant
+  if strafeTarget: step toward it; return                                   ← finish the committed slide
+  else: sidestep around a blocking mate, else coastStep (one more hop, no path query)
+```
+
+So: gun bookkeeping and posture are **per-tick**; target choice, candidate
+scoring, and path queries are **per-plan-tick**. If a bot reacts to its own mag
+running dry instantly but takes ~5 ticks to notice you moved, that split is why.
+
+### 3f. Target selection — cost, not distance (`selectTarget`)
 
 Among visible hostiles, lock the one that can be **shot soonest**, not the nearest:
 
@@ -336,7 +518,15 @@ branch too used to double-weight it, letting a clear far enemy outrank a merely
 teammate-blocked near one — the bot would aim across the map instead of at the
 enemy right in front.)
 
-### 3f. Strafe / cover candidates & scoring
+Because `BETA_DIST` is `0.75` and `NO_LANE_COST` is `400`, the practical trade is:
+**a shootable hostile beats a lane-blocked one even when it's ~300–530 px further
+away** (the span is how much strafing the shootable one costs, 0–180). Raise
+`BETA_DIST` and bots fixate on whoever's closest even
+through a teammate; lower it and they'll turn to snipe someone far away because
+the lane happens to be cleaner. The stale `0.35` in `shootCost`'s comment is the
+old value, not the live one.
+
+### 3g. Strafe / cover candidates & scoring
 
 `candidates(ai, opponent)` samples movement spots and scores each one's firing
 lane. It's the most-profiled routine (`ai.candidates`); the whole cost model rests
@@ -357,17 +547,26 @@ on it.
   equally exposed (open ground / opponent on another level) → dodge on the
   `DODGE_TICKS` rhythm instead of standing flat-footed.
 
-### 3g. Contact metrics — when is a fight on? (`contactScan`)
+### 3h. Contact metrics — when is a fight on? (`contactScan`)
 
 Two nav-route distances, both z- and range-aware, minimised over the
 `CONTACT_SCAN_K` nearest hostiles (the rest can't be the soonest threat), cached
 `CONTACT_EVAL_TICKS`:
 
 - **`visDist`** = *our* distance-until-contact: how far WE must travel to both see
-  a hostile **and** be within our weapon's range of it (`routeUntilSight` with our
-  `feasibleRange`). Drives RUN.
+  a hostile **and** be within weapon range of it. Drives RUN.
+
+  The range used is `fightingRange` — the gun we would **draw** (primary, else
+  secondary), not the one in our hands. RUN holsters to the fists, and measuring
+  with those (~138 px of punching reach) told a sprinting bot it was not in
+  contact until it could touch the enemy: its own metric stayed enormous the whole
+  way in, so only the *enemy's* reach-to-us ever ended the sprint, and the bot
+  re-armed on seeing someone rather than on a fight becoming imminent. That was
+  the "runners get ambushed" bug — hits taken while holstered dropped from 5.3% to
+  1.1% on dom-arena-big when the metric started using the drawn weapon.
 - **`enemyVisDist`** = the *enemy's* distance-until-contact to US, using **their**
-  gun's range — the soonest ANYONE could see-and-reach us. Drives HEAL, and the
+  `fightingRange` (same reasoning mirrored — a hostile sprinting at us with its
+  weapon holstered is not a punching-only threat) — the soonest ANYONE could see-and-reach us. Drives HEAL, and the
   `threat` it retreats from. It stays long while we're tucked in cover (whereas
   `visDist` snaps to 0 the instant they peek a lane we can see), which is why heal
   keys off it.
@@ -377,7 +576,7 @@ range, the straight gap left to close; if not visible, the route to the nearest
 sighting node plus any residual gap. It's the old sight-only scan plus `dist()`
 arithmetic — no new raycasts, so it stays cheap.
 
-### 3h. Crowd spacing
+### 3i. Crowd spacing
 
 There is **no boids/separation steering** in the AI (an earlier layered approach
 fought the movement and was removed). Spacing comes from two places instead:
@@ -389,6 +588,24 @@ fought the movement and was removed). Spacing comes from two places instead:
   travel/aim lane ahead (within `CROWD_DIST`, `CROWD_MARGIN` of the line), veer
   around them so we don't march in behind (and flag) them. If boxed in, drive
   straight and let squishy collision phase us through rather than freeze.
+
+### 3j. Vehicles
+
+**No AI drives.** Only the player can take a seat (`game.ts enterVehicle`); bots
+have no entry, exit, or driving logic at all, and they don't treat an occupied
+car as anything but a wall with a person somewhere inside it. Vehicles still
+reach the AI in two places, both indirect:
+
+- **Sight:** `losClear` fails if a vehicle hull crosses the ray on that z, so a
+  parked car is real cover — it drops `visibility`, kills firing lanes, and feeds
+  straight into `scoreAt` / `shootCost` / the contact scans.
+- **Movement:** `walkable`'s march tests hulls too, so vehicles block nav edges,
+  and `Vehicle.drive` re-customizes the CCH each tick for the edges near it. A
+  car pulling away *un*-blocks those edges within a tick — no rebuild — so bots
+  re-route through a newly cleared alley on their next plan tick.
+
+A seated player is still a normal target (they're a `Character` pinned to the
+seat), so bots will happily shoot at a driver whose hull isn't in the way.
 
 ---
 
@@ -416,12 +633,63 @@ bestChase(ai):   ← consulted only when nothing is seen (selectTarget engages v
   there. Real enemies go through the (now range-aware) base `inContact`.
 - **`standoffFor` override:** `0` for the marker, so it walks right onto the point
   instead of stopping a gun-length short and hovering off it.
+- **`wantsHold` override:** dig in whenever it's standing on a site with nothing
+  in sight and **no hostile on the site** (out to `radius + CONTEST_PAD`). The
+  site is **latched on entry** and re-resolved by position each tick (the gamemode
+  rebuilds the objective objects every frame), so walking to cover a step outside
+  the ring doesn't drop the posture — re-testing "am I inside a ring" every tick
+  was half of the run<->hold bounce.
+  Ownership is irrelevant — an uncaptured site keeps ticking over while the bot
+  stands in it, and `holdSpotOk` pins the spot inside the ring until it's ours and
+  reinforced, so digging in captures and defends in one motion. An enemy on the
+  site is the single exclusion: that's a contest to be fought, not a vigil to be
+  kept. Unlike the base soldier this ignores how far off contact is (a site is
+  worth holding regardless), and since HOLD outranks RUN it won't sprint away.
+- **`holdSpotOk` override:** **never take cover off the point.** A covered spot
+  outside the ring stops the capture, which is the whole reason it's standing
+  there — so hold candidates (both the covered node and every peek step) are
+  constrained to inside the radius. Once the point is ours *and* fully reinforced
+  (`progress >= 2`) there's no progress left to lose, so real cover anywhere is
+  allowed again.
 - **`biasObjective` override:** when fighting within `radius + OBJ_PULL_MARGIN` of
   a workable point, `strafeMove`/`coverMove` bias their spot choice toward the
   point (`objReward`: a huge flat bonus for standing on it — `ON_POINT_REWARD` —
   else nearer-is-better), among spots that can *still* shoot/cover. So a firefight
   near a point is waged FROM the point (capturing while shooting) instead of drifting
   off it.
+
+---
+
+## Who spawns which class (`enemies.ts`)
+
+Two entirely separate paths build bots, and they don't offer the same options —
+worth knowing before you wonder why an editor-placed bot behaves differently from
+a match bot with "the same" settings.
+
+- **Authored spawns** (`spawnEnemy`, from a level's `EnemySpawn`): picks from the
+  `ENEMY_TYPES` palette — `robot`, `elite` (200 HP, tighter spread), `oracle`,
+  `tacoracle`. Per-spawn fields are position/z/gun/armor/team/skin only. **These
+  get the class defaults for `reactionTime`, `lambda`, `aimSigma`, `stagger`** —
+  there is no editor knob for them, and `DominationOracle` isn't in the palette at
+  all.
+- **Gamemode troops** (`makeTroop`, used by TDM/teammatch/domination): passes the
+  fine knobs, and chooses `TacOracle` vs `DominationOracle` via `ai:`. This is the
+  only way to get an objective-playing bot.
+
+`skillParams(skill)` (teammatch.ts) is where a single `skill` scalar in [0,1]
+becomes bot behaviour — the one dial that explains most "why is this bot good/bad"
+questions:
+
+| skill → | 0 (worst) | 1 (best) | effect |
+|---|---|---|---|
+| `reactionTime` | 30 ticks (~500 ms) | 3 ticks (~50 ms) | how long you must stay visible before it engages, and how late it notices its own readiness changes |
+| `lambda` | 2.5 | 8.0 | burst length / bravery (`~1/lambda` hit odds at the cutoff) |
+| `aimSigma` | 48 px | 6 px | Gaussian aim wobble — dominant up close, negligible far |
+| `strafeOffsets` | last 2 of the fan (90, 120) | all 6 (15…120) | lane exploration: a low-skill bot only knows how to take *big* sidesteps |
+
+Note the `strafeOffsets` slice takes from the **end** of the fan, so low skill
+means coarse, large strafes — not "stands still". Everything else (engage range,
+run/heal thresholds, cover logic) is identical at every skill.
 
 ---
 
@@ -462,11 +730,13 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `LOW_VISIBILITY` | 2 | ≤ this target points visible = a poor lane |
 | `STRAFE_OFFSETS` | 15…120 | lateral candidate spots |
 | `AXIAL_OFFSETS` | 40, 90 | fwd/back cover spots |
-| `BETA_DIST` | 0.35 | distance weight in target selection |
+| `BETA_DIST` | 0.75 | distance weight in target selection |
 | `OUT_OF_RANGE_PENALTY` | 1e5 | out-of-feasible-range targeting penalty |
 | `NO_LANE_COST` / `LOW_VIS_PENALTY` | 400 / 60 | shootCost surcharges |
 | `FOCUS_STICKINESS` / `FOCUS_MEMORY` | 30 / 120 | anti flip-flop / blind memory |
-| `EVAL_TICKS` / `TARGET_EVAL_TICKS` / `CHASE_EVAL_TICKS` | 10 / 10 / 30 | re-eval cadences |
+| `EVAL_TICKS` / `TARGET_EVAL_TICKS` / `CHASE_EVAL_TICKS` | 10 / 10 / 30 | re-eval cadences (candidate spots / target lock / blind chase) |
+| `ARRIVE` | 2 | "reached the strafe spot" slop |
+| `ON_POINT_REWARD` | 1e6 | flat bonus for a combat spot on the capture point |
 | `DODGE_TICKS` | 30 | dodge flip rhythm |
 | `FRIENDLY_MARGIN` | 60 | friendly-fire lane half-width |
 | `CROWD_DIST` / `CROWD_MARGIN` | 180 / 60 | anti-flag veer trigger |
@@ -475,6 +745,19 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `HEAL_SAFE` / `_SEEK` / `_ALARM` _DISTANCE | 700 / 1200 / 400 | heal enter / back-off-to / abort |
 | `HEAL_COMMIT_TICKS` | 90 | heal entry dwell |
 | `CONTACT_SCAN_K` / `CONTACT_EVAL_TICKS` | 3 / 15 | contact-scan breadth / cadence |
+| `HOLD_COVER_DISTANCE` | 500 | how far the covered-node search may wander |
+| `HOLD_SEARCH_NODES` | 48 | nodes the search may settle before giving up |
+| `HOLD_PATH_HOPS` | 24 | hops of the enemy's route walked for the entry point |
+| `HOLD_PEEK_STEP` / `HOLD_ARRIVE` | 8 / 8 | peek slide granularity / hold waypoint slop |
+| `HOLD_PEEK_MARGIN` | 16 | extra lean past where the sight line first opens |
+| `HOLD_COMMIT_TICKS` / `HOLD_RETRY_TICKS` | 30 / 60 | hold entry dwell / backoff after a failed plan |
+| `HOLD_REPLAN_TICKS` | 60 | parked threat/entry refresh, ~1s (never fires mid-walk) |
+
+Also in `tacoracle.ts`, not constants but easy to miss: `retreatSpot` probes a
+fixed `LOOK = 90` px in 5 directions (away, two 30-ish° diagonals, both pure
+laterals) and prefers the first that **breaks the threat's line of sight**, else
+the first merely walkable one; `lookahead` (oracle.ts) walks at most `MAX_HOPS = 5`
+edges.
 
 **DominationOracle** (`domoracle.ts`)
 | const | val | meaning |
@@ -484,6 +767,39 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 
 ---
 
+## Symptom → where to look
+
+Behaviour you see, and the specific decision that produces it.
+
+| What it looks like | Most likely cause |
+|---|---|
+| Bot stands still with the gun up and won't close | `standToShoot` — heavy gun (`movePenalty ≥ 2`) mid-burst, lane clear, target in `feasibleRange`. It plants until the burst ends. |
+| Bot freezes staring at a far enemy | The `feasibleRange` gate in `standToShoot`/`shouldFire` failing *while* something else holds it — check `mode`, `fireOk`, `burstDone`. |
+| Bot won't shoot a target it's clearly facing | `laneClear` (a teammate within `FRIENDLY_MARGIN` downrange), the aim-settle gate, or `clickIn` on a semi-auto. |
+| Bot aims at someone across the map instead of the enemy in front | Target selection: the near one is lane-blocked (`NO_LANE_COST`) — see the `BETA_DIST` trade in 3f. |
+| Bot keeps swapping targets | `FOCUS_STICKINESS` too small vs the cost gap, or `TARGET_EVAL_TICKS` firing on a genuinely tied board. |
+| Bot backpedals mid-fight for no reason | HEAL entry: `hp < 75`, carrying an item, and `enemyVisDist ≥ 700` held for 90 ticks. Note it keys off the **enemy's** reach, not sight. |
+| Bot holsters and sprints past a live enemy | RUN: `min(visDist, enemyVisDist) ≥ 1000` for 90 ticks. If the enemy is in cover, `enemyVisDist` can stay long even when they're near. |
+| Bot bobs side to side in the open | `coverMove`'s dodge branch — every candidate equally `exposed`, so there's nothing to hide behind. |
+| Bot walks to a corner and just stops, aimed at nothing | HOLD, working as designed — it's aimed at `holdEntry`, the spot an approaching enemy would appear. |
+| Bot holds a spot it can't see the entry point from | Shouldn't happen now: the peek needs a clear centre-to-centre line, and cover that can't offer one is rejected. If it recurs, weigh `HOLD_PEEK_MARGIN` against how far a body-separation shove moves it. |
+| Bot holds an angle nobody is coming from | The refresh runs ~1s while parked, but no-ops when the recomputed entry node is unchanged (anti-jitter). It re-evaluates far more often than it visibly moves — the knob is that equality check in `refreshHold`, not `HOLD_REPLAN_TICKS`. |
+| Bot refuses to hold anywhere on a map | `planHold` failing — no nav route to the threat, or nothing within `HOLD_COVER_DISTANCE` that hides all 5 body points. Check node density. |
+| Dom bot stands in the open on a point instead of using nearby cover | `holdSpotOk` — cover off the ring would stop the capture, so it's refused until the point is owned and reinforced. |
+| Dom bot won't dig in on a point it's standing on | A hostile is inside `radius + CONTEST_PAD` (a contested site is a fight, not a vigil), or `planHold` found no cover satisfying the on-ring `holdSpotOk`. |
+| Whole team digs in and the match stalls | No hold exit timer yet; bots hold until they see someone or contact drifts past `RUN_DISTANCE`. |
+| Bot runs in, digs in, walks back, runs in again | Was the run<->hold ping-pong: `runDwell` stayed charged through the HOLD, plus HOLD committing before knowing it had cover, plus the dom site being re-tested by position every tick. All three fixed. |
+| Bot stands still in RUN, weapon holstered | RUN ends only when something else takes over; on arrival that's HOLD. If it persists, `holdDwell` is being blocked from charging during RUN. |
+| Runner gets shot before drawing its weapon | The contact metrics must use `fightingRange` (the gun it would draw), not `gun.feasibleRange` (the fists it holsters to while sprinting). |
+| Bot peeks out, shoots, ducks back, repeats | Working as designed: the burst/cover cycle. `lambda` controls how long each peek's burst lasts. |
+| Bot walks a weird dogleg instead of straight | Sticky hop (`SWITCH_MARGIN`) holding a committed waypoint, or the graph genuinely has no direct link (check `MOVE_RADIUS` node spacing). |
+| Bot oscillates at a doorway / stair | The anti-flicker rules are being defeated — check `atGoalNode`, and that the direct-step stair guard is firing. |
+| Bot walks into a wall near stairs | `plan`'s fallback to `curr` when the next hop isn't straight-walkable. |
+| Bot ignores a capture point it's standing next to | `bestChase` only runs when **nothing is visible**; a seen enemy always wins. For combat *on* the point, that's `biasObjective` + `OBJ_PULL_MARGIN`. |
+| Bots bunch up / shove each other | `separateCharacters` is deliberately squishy — there is no separation steering. Spacing during approach is only `blockingMate`/`sidestep`. |
+| Bot reacts sluggishly to everything | `reactionTime` (skill), compounded by `stagger` — target changes are only seen on plan ticks. |
+| Bot misses badly at point-blank range | `aimSigma` is a fixed *world-px* offset, so its angular error grows as range shrinks. Low skill = 48 px of it. |
+
 ## Reading order for the code
 
 1. `robot.ts` — the tick pipeline, sight, reaction. Start here.
@@ -492,5 +808,8 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
    `shouldFire`, `selectTarget`/`shootCost`, `candidates`/`scoreAt`, `contactScan`.
 4. `domoracle.ts` — the objective overrides.
 
+5. `enemies.ts` — which class each spawn path builds, and with what options.
+
 Supporting cast: `world/nav.ts` (the graph & `route`/`walkable`/`nearestInSight`),
-`entities/gun.ts` (`feasibleRange`, recoil pattern), `entities/team.ts` (`hostiles`).
+`entities/gun.ts` (`feasibleRange`, recoil pattern), `entities/team.ts` (`hostiles`),
+`gamemodes/teammatch.ts` (`skillParams`), `game.ts` (tick order, `separateCharacters`).

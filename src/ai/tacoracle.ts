@@ -215,6 +215,52 @@ const HEAL_ALARM_DISTANCE = 400;
  *  never turtles, instead of a lockout that expires and re-triggers. */
 const HEAL_COMMIT_TICKS = 90;
 
+// --- HOLD posture (defend an angle from cover) ------------------------------
+/** How far the covered-node search may wander from where we stand (px of walking
+ *  distance). Cover across the map isn't cover we're holding — it's a relocation. */
+const HOLD_COVER_DISTANCE = 500;
+/** Nodes the covered-node search may settle before giving up. Bounds the one
+ *  expensive part of the plan; it only runs on entering HOLD. */
+const HOLD_SEARCH_NODES = 48;
+/** Hops of the enemy's route walked while looking for the entry point. */
+const HOLD_PATH_HOPS = 24;
+/** Step size sliding back out of cover to expose a sliver of body (px). */
+const HOLD_PEEK_STEP = 8;
+/** Once the peek's sight line to the entry point opens up, edge this much
+ *  further out (px). The first step that clears the corner clears it by a hair,
+ *  and a body-separation shove or the arrival slop can close it again — leaving
+ *  a bot parked where it cannot see the very thing it is watching. Cheap
+ *  insurance: well under a body radius, so it costs almost no cover. */
+const HOLD_PEEK_MARGIN = 16;
+/** "At the hold waypoint" slop, px (the route legs are node-to-node). */
+const HOLD_ARRIVE = 8;
+/** The hold conditions must stand this long before the posture commits — the
+ *  same a-priori dwell RUN and HEAL use, so a hostile blinking in and out of
+ *  sight can't flip the bot into cover and back every few ticks. */
+const HOLD_COMMIT_TICKS = 30;
+/** After a failed plan (no entry point, or no cover worth holding), don't retry
+ *  for this long — the geometry won't have changed by next tick, and the search
+ *  is the expensive one. */
+const HOLD_RETRY_TICKS = 60;
+/** Once parked, re-derive the threat and their entry point this often (~1s), so
+ *  a hold doesn't keep guarding a corridor the enemy stopped using. Counted in
+ *  REAL ticks (holdMove advances it by `stagger`). Deliberately gated on being
+ *  parked: the entry point is derived from the route to where we STAND, so
+ *  refreshing it mid-walk would chase its own tail — the plan moves us, which
+ *  moves the plan. Standing still, that loop can't close. */
+const HOLD_REPLAN_TICKS = 60;
+
+/** The reach of the gun `c` would FIGHT with — primary, else secondary, else
+ *  whatever is in hand — independent of what it happens to be holding. A
+ *  holstered sprinter (RUN equips the fists, whose reach is punching distance)
+ *  must still be measured by the weapon it will draw, on both sides of a contact
+ *  calculation: ours decides when we stop running, theirs decides how soon they
+ *  could engage us. */
+function fightingRangeOf(c: Character): number {
+  const weapon = c.slots.primary ?? c.slots.secondary;
+  return weapon ? weapon.feasibleRange : c.gun.feasibleRange;
+}
+
 /** Is teammate `mate` downrange of a shot from `from` at `to` — in front of the
  *  muzzle (not behind it) and within `margin` of the line? Unlike a capsule test
  *  (segmentIntersectsCircle, which caps at the endpoints) this ignores anyone
@@ -270,9 +316,10 @@ export class TacOracle extends Oracle {
    *  HEAL override it (see updatePosture). */
   private combatMode: "shoot" | "cover" = "shoot";
   /** The posture actually fought this tick: normal combat (shoot/cover), RUN
-   *  (holstered sprint to contact), or HEAL (a committed heal — moves exactly
-   *  like cover, but stays put using items instead of re-engaging). */
-  private mode: "shoot" | "cover" | "run" | "heal" = "shoot";
+   *  (holstered sprint to contact), HEAL (a committed heal — moves exactly like
+   *  cover, but stays put using items instead of re-engaging), or HOLD (dug in
+   *  on a pre-aimed angle, waiting for someone to walk into it). */
+  protected mode: "shoot" | "cover" | "run" | "heal" | "hold" = "shoot";
   /** OUR distance-until-visibility to the quarry (route to a spot that sees it),
    *  refreshed each plan tick; drives RUN. */
   private visDist = Infinity;
@@ -291,6 +338,27 @@ export class TacOracle extends Oracle {
   private runDwell = 0;
   /** Consecutive ticks the HEAL entry condition has held (see HEAL_COMMIT_TICKS). */
   private healDwell = 0;
+  /** Consecutive ticks the HOLD entry condition has held (see HOLD_COMMIT_TICKS). */
+  private holdDwell = 0;
+  /** Ticks left before HOLD may be attempted again after a failed plan. */
+  private holdRetryIn = 0;
+  /** The frozen hold plan. `holdEntry` is where the enemy would step into view
+   *  (the angle we're pre-aiming and the eye every exposure test rays from),
+   *  `holdCover` the node it cannot see at all, `holdPeek` the spot just back
+   *  out of that where only a sliver of us shows. Computed ONCE on entering the
+   *  posture: the entry point is derived from the enemy's route to where we
+   *  stand, so recomputing it as we move would chase its own tail. */
+  private holdEntry: Vec2 | null = null;
+  private holdCover: Vec2 | null = null;
+  private holdPeek: Vec2 | null = null;
+  /** Node id of `holdEntry`, so a refresh can tell "same angle, nothing to do"
+   *  from "they're coming another way now". */
+  private holdEntryNode = -1;
+  /** Ticks until the planted refresh (see HOLD_REPLAN_TICKS). */
+  private holdReplanIn = HOLD_REPLAN_TICKS;
+  /** Remaining node-to-node legs of the walk to `holdCover` (movable-linked, so
+   *  each leg is a clear straight line). */
+  private holdPath: Vec2[] = [];
   /** Latched when the envelope crosses burstLimit; cleared when the pattern resets. */
   private burstDone = false;
   /** Reaction-time gating of gun readiness (ready = pattern reset + not
@@ -370,7 +438,7 @@ export class TacOracle extends Oracle {
       this.contactEvalIn = 0;
     }
     this.updateMode(target ?? this.focus);
-    this.updatePosture(); // may override the combat mode with RUN / HEAL
+    this.updatePosture(ai, target); // may override the combat mode with HOLD / RUN / HEAL
     // What capture point (if any) should pull our combat maneuvering this tick —
     // read only by strafe/cover below, so it steers fighting without touching
     // run/heal or target selection.
@@ -385,6 +453,8 @@ export class TacOracle extends Oracle {
 
     if (this.mode === "heal") {
       this.healMove(ai, chase); // back off to grow the enemy's reach, then hold cover
+    } else if (this.mode === "hold") {
+      this.holdMove(ai);
     } else if (this.mode === "cover") {
       this.coverMove(ai, chase);
     } else if (target && dist(this.pos, target.pos) <= this.engageRange) {
@@ -412,11 +482,21 @@ export class TacOracle extends Oracle {
     this.vel = vec(0, 0);
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     this.updateMode(target ?? this.focus);
-    this.updatePosture(); // keep the posture (and heal use) live between plans
+    this.updatePosture(ai, target); // keep the posture (and heal use) live between plans
     // HEAL: follow the committed retreat/cover spot, or hold — never coast toward
     // the enemy (that's the opposite of taking cover to heal).
     if (this.mode === "heal") {
       if (this.strafeTarget) this.stepToward(this.strafeTarget);
+      return;
+    }
+    // HOLD: keep walking the committed route (and keep the gun on the entry
+    // point) between plans. Never re-plans here — the plan is frozen by design.
+    if (this.mode === "hold") {
+      if (this.holdEntry) {
+        const ducked = this.gun.reloading || !this.fireOk;
+        this.followHold(ai, (ducked ? this.holdCover : this.holdPeek) ?? this.holdCover!);
+        this.faceHold();
+      }
       return;
     }
     // Mirror act's stand-to-shoot hold so a heavy gunner doesn't creep mid-burst.
@@ -474,10 +554,15 @@ export class TacOracle extends Oracle {
    *     and safely far (>= HEAL_SAFE_DISTANCE). Aborts — re-arming — the moment
    *     the enemy could see us within HEAL_ALARM_DISTANCE, we top off, or we run
    *     out of items.
+   *   - HOLD (dug in on an angle): nothing in sight but a fight is plausibly
+   *     coming, and there is cover here worth waiting behind (see wantsHold).
+   *     Above RUN so an objective-holder doesn't sprint off the thing it's
+   *     guarding; for the base TacOracle the two are mutually exclusive anyway
+   *     (HOLD wants contact nearer than RUN_DISTANCE, RUN wants it further).
    *   - RUN (holstered sprint): no heal wanted, but contact is far off
    *     (>= RUN_DISTANCE).
    *   - otherwise the combat mode (shoot / cover). */
-  private updatePosture(): void {
+  private updatePosture(ai: AiContext, target: Character | null): void {
     // Entry conditions, and how long each has held continuously (a-priori dwell):
     // the distance must stay safe for the commit period before we hand over to
     // RUN / HEAL, so a peeker whipsawing the distance keeps resetting the dwell
@@ -485,7 +570,13 @@ export class TacOracle extends Oracle {
     const fightDist = Math.min(this.visDist, this.enemyVisDist); // soonest a fight can start
     const runSafe = fightDist >= RUN_DISTANCE;
     const healSafe = this.hp < HEAL_HP && this.canHeal() && this.enemyVisDist >= HEAL_SAFE_DISTANCE;
-    this.runDwell = runSafe ? this.runDwell + 1 : 0;
+    // RUN's dwell does NOT charge while dug in. RUN and HOLD move in opposite
+    // directions, so a HOLD that ends would otherwise hand straight over to a RUN
+    // whose "a-priori commitment" was quietly filling the whole time it was dug in
+    // — the dwell gated nothing between them and the pair ping-ponged: run in, dig
+    // in, walk back to cover, run in again. Now leaving HOLD drops to combat and
+    // RUN has to earn its 90 ticks afresh. (Not mirrored on holdDwell — see below.)
+    this.runDwell = runSafe && this.mode !== "hold" ? this.runDwell + 1 : 0;
     this.healDwell = healSafe ? this.healDwell + 1 : 0;
 
     // HEAL is a committed mode: enter only after the dwell, exit instantly on the
@@ -496,22 +587,92 @@ export class TacOracle extends Oracle {
         ? this.enemyVisDist >= HEAL_ALARM_DISTANCE && this.hp < this.maxHp && this.canHeal()
         : healSafe && this.healDwell >= HEAL_COMMIT_TICKS;
 
+    // HOLD: same dwell-to-enter / condition-to-stay shape. A failed plan parks
+    // it for HOLD_RETRY_TICKS so we don't re-run the search every tick against
+    // geometry that offers nothing.
+    if (this.holdRetryIn > 0) this.holdRetryIn -= 1;
+    const holdSafe = !healing && this.holdRetryIn === 0 && this.wantsHold(ai, target);
+    // NB: this one charges during RUN on purpose. RUN has no completion condition
+    // — arriving doesn't change fightDist, so a bot that reaches its destination
+    // just stands there holstered — and HOLD taking over is exactly what ends it.
+    // Blocking that (the mirror of the runDwell rule below) deadlocks RUN.
+    this.holdDwell = holdSafe ? this.holdDwell + 1 : 0;
+    // Commit only once a plan actually EXISTS. Entering on the dwell alone and
+    // discovering in holdMove that there is no cover here meant the posture was
+    // taken, abandoned, and retaken on a ~90-tick cycle — the bot visibly running
+    // in, stopping, and running off again. Building the plan at the transition
+    // costs nothing extra: holdMove reuses it.
+    const wantHold =
+      holdSafe &&
+      (this.mode === "hold" || (this.holdDwell >= HOLD_COMMIT_TICKS && this.tryPlanHold(ai)));
+
     // RUN: stay while still safe; enter only after the dwell.
-    const wantRun = !healing && runSafe && (this.mode === "run" || this.runDwell >= RUN_COMMIT_TICKS);
+    const wantRun =
+      !healing && !wantHold && runSafe && (this.mode === "run" || this.runDwell >= RUN_COMMIT_TICKS);
     // Reloading is a self-known, vulnerable moment: drop to cover at once
     // (reflexively, like the burst cutoff) instead of holding a firing lane while
     // the mag swaps — don't wait out the reaction delay that gates the normal
     // shoot<->cover flip. combatMode still catches up on its own timer underneath.
+    // HOLD does its own ducking (it falls back to full cover while the gun is
+    // out of action), so it doesn't want the generic reload->cover override
+    // dragging it off its angle.
     const combat = this.gun.reloading ? "cover" : this.combatMode;
-    const mode: "shoot" | "cover" | "run" | "heal" = healing ? "heal" : wantRun ? "run" : combat;
+    const mode: "shoot" | "cover" | "run" | "heal" | "hold" = healing
+      ? "heal"
+      : wantHold
+        ? "hold"
+        : wantRun
+          ? "run"
+          : combat;
 
     if (mode !== this.mode) {
       if (this.mode === "heal") this.cancelUse(); // leaving a heal drops a half-finished use
+      if (this.mode === "hold") this.clearHold(); // the plan is only valid for the spot it was made at
       this.mode = mode;
       this.strafeTarget = null;
       this.evalIn = 0;
     }
     this.applyPostureSlot();
+  }
+
+  /** Is there a hold to be had here? Builds the plan if there isn't one yet, and
+   *  on failure parks the posture for HOLD_RETRY_TICKS instead of letting the
+   *  caller commit to something it can't do. Called only at the moment of
+   *  entering HOLD, so the search runs at most once per retry window. */
+  private tryPlanHold(ai: AiContext): boolean {
+    if (this.holdEntry) return true; // a plan is already standing
+    const threat = this.holdThreat(ai);
+    if (threat && this.planHold(ai, threat)) return true;
+    this.holdRetryIn = HOLD_RETRY_TICKS;
+    this.holdDwell = 0;
+    return false;
+  }
+
+  /** Should this tick be spent dug in on an angle? The base soldier holds when
+   *  nothing is in sight but contact is near enough to be worth waiting for —
+   *  nearer than the RUN threshold, which is what separates "they're coming"
+   *  from "they're nowhere near, go find them". Whether there is actually cover
+   *  to hold is settled by planHold; a failure parks the posture (holdRetryIn).
+   *  DominationOracle overrides this to hold the point it's standing on. */
+  protected wantsHold(_ai: AiContext, target: Character | null): boolean {
+    if (target) return false; // someone in sight: fight, don't dig in
+    const fightDist = Math.min(this.visDist, this.enemyVisDist);
+    return fightDist > 0 && fightDist < RUN_DISTANCE;
+  }
+
+  /** May a hold spot sit here? Unrestricted for a plain soldier; the objective
+   *  AI uses it to refuse cover that would take it off a capture point. */
+  protected holdSpotOk(_ai: AiContext, _pos: Vec2, _z: number): boolean {
+    return true;
+  }
+
+  private clearHold(): void {
+    this.holdEntry = null;
+    this.holdCover = null;
+    this.holdPeek = null;
+    this.holdEntryNode = -1;
+    this.holdPath = [];
+    this.holdReplanIn = HOLD_REPLAN_TICKS;
   }
 
   /** Hold the slot the posture wants: the healing item (and keep using it) while
@@ -526,6 +687,20 @@ export class TacOracle extends Oracle {
     } else {
       this.equipWeapon();
     }
+  }
+
+  /** The reach of the gun this soldier would actually FIGHT with — the same slot
+   *  equipWeapon picks — regardless of what happens to be in its hands right now.
+   *
+   *  The contact metrics have to use this, not `gun.feasibleRange`. RUN holsters
+   *  to the fists, whose reach is punching distance (~138px), so measuring with
+   *  the held weapon told a sprinting bot "you are not in contact until you can
+   *  touch them" — its own distance-until-contact stayed enormous all the way in,
+   *  and the only thing ending the sprint was the ENEMY's reach-to-us. That's why
+   *  a runner got surprised: it re-armed on seeing someone rather than on being
+   *  about to be in a fight, which is the entire point of the metric. */
+  private get fightingRange(): number {
+    return fightingRangeOf(this);
   }
 
   /** Re-equip the best available weapon (primary, else secondary, else fists). */
@@ -557,6 +732,302 @@ export class TacOracle extends Oracle {
       this.strafeTarget = this.retreatSpot(ai, threat);
     }
     if (this.strafeTarget) this.stepToward(this.strafeTarget);
+  }
+
+  /** HOLD movement: get to the committed spot and sit on it, gun already on the
+   *  entry point. While the gun is out of action (reloading, or the burst is
+   *  spent) it ducks all the way behind cover and slides back out to the peek
+   *  once it's ready again — the same peek cycle COVER has, but rehearsed
+   *  against a doorway instead of reacting to a body. */
+  private holdMove(ai: AiContext): void {
+    if (!this.holdEntry) {
+      const threat = this.holdThreat(ai);
+      if (!threat || !this.planHold(ai, threat)) {
+        // Nothing here worth holding: park the posture and let the normal
+        // approach take over next tick.
+        this.holdRetryIn = HOLD_RETRY_TICKS;
+        this.holdDwell = 0;
+        return;
+      }
+    }
+    const ducked = this.gun.reloading || !this.fireOk;
+    const dest = () => (ducked ? this.holdCover : this.holdPeek) ?? this.holdCover!;
+    // On station? Then it's safe to re-check who's coming and from where. "On
+    // station" means parked at EITHER end of the cover<->peek slide, not just at
+    // whichever one the gun state currently wants: a reload flips `dest` under
+    // us, and gating on that alone starved the timer.
+    const parked =
+      this.holdPath.length === 0 &&
+      (dist(this.pos, this.holdCover!) <= HOLD_ARRIVE || dist(this.pos, this.holdPeek!) <= HOLD_ARRIVE);
+    if (parked) {
+      // Advance by `stagger`, not 1: holdMove only runs on plan ticks, so a raw
+      // decrement makes the period stagger times longer than it reads (10s at the
+      // default 5, which is why this looked like it never refreshed at all).
+      // Same trick decide() uses to keep its tick-denominated clocks in real time.
+      this.holdReplanIn -= this.stagger;
+      if (this.holdReplanIn <= 0) {
+        this.holdReplanIn = HOLD_REPLAN_TICKS;
+        const threat = this.holdThreat(ai);
+        if (threat) this.refreshHold(ai, threat);
+      }
+    }
+    this.followHold(ai, dest());
+    this.faceHold();
+  }
+
+  /** Planted refresh: re-derive where the nearest enemy would now enter view.
+   *  If it's the same node the plan is already built around, nothing happens at
+   *  all — so a settled soldier can't be jittered between two equally good spots
+   *  by a timer. A genuinely different approach rebuilds cover and peek around
+   *  it, and a rebuild that fails leaves the old plan untouched (planFromEntry
+   *  only commits on success). */
+  private refreshHold(ai: AiContext, threat: Character): void {
+    const entry = this.findEntry(ai, threat);
+    if (entry < 0 || entry === this.holdEntryNode) return;
+    this.planFromEntry(ai, entry);
+  }
+
+  /** Build the hold plan and freeze it. Three steps, in the order they depend on
+   *  each other:
+   *
+   *   1. ENTRY POINT — walk the route the enemy would take to reach us and stop
+   *      at the first node we can see. That's where they step into view, so
+   *      it's the angle worth pre-aiming.
+   *   2. COVERED POINT — the nearest node (by walking distance from our own,
+   *      searched outward) that the entry point CANNOT see. Because the search
+   *      settles nodes in distance order, every node reached before it was
+   *      rejected for being visible from the entry — including its own
+   *      predecessor on the route, which is what makes step 3 well-defined.
+   *   3. PEEK SPOT — slide from the covered node back toward that predecessor
+   *      until a sliver of us is exposed to the entry point.
+   *
+   *  Returns false when the level offers no such geometry (no graph, no route,
+   *  no cover in range), leaving HOLD to lapse. */
+  private planHold(ai: AiContext, threat: Character): boolean {
+    const entry = this.findEntry(ai, threat);
+    return entry >= 0 && this.planFromEntry(ai, entry);
+  }
+
+  /** STEP 1 — the entry point: walk the route from the threat's node toward ours
+   *  and return the first node on it we can see. Walking from THEIR end means the
+   *  first hit is where they'd come into view earliest, which is the angle worth
+   *  covering. -1 if there's no graph, no route, or nothing on it in sight. */
+  private findEntry(ai: AiContext, threat: Character): number {
+    return profiler.measure("ai.hold", () => {
+      const nav = ai.nav;
+      if (!nav || nav.nodes.length === 0) return -1;
+      const myNode = nav.nearestWalkable(ai.world, this.pos, this.z);
+      const enemyNode = nav.nearestWalkable(ai.world, threat.pos, threat.z);
+      if (myNode < 0 || enemyNode < 0) return -1;
+      let cur = enemyNode;
+      for (let hop = 0; hop <= HOLD_PATH_HOPS; hop++) {
+        const nd = nav.nodes[cur];
+        // A lane a teammate is stood in isn't an angle worth holding — walking on
+        // to the next node picks the first spot we could actually engage them at.
+        if (nd.z === this.z && this.shootingLaneClear(ai, this.pos, nd.pos)) return cur;
+        if (cur === myNode) break;
+        const step = nav.route(cur, myNode);
+        if (!step) break;
+        cur = step.next;
+      }
+      return -1;
+    });
+  }
+
+  /** STEPS 2 & 3 — given the entry point, find the cover that beats it and the
+   *  peek back out of that cover, and commit the plan. Only mutates on success,
+   *  so a failed refresh leaves the working plan in place. */
+  private planFromEntry(ai: AiContext, entry: number): boolean {
+    return profiler.measure("ai.hold", () => {
+      const nav = ai.nav;
+      if (!nav || entry < 0 || entry >= nav.nodes.length) return false;
+      const myNode = nav.nearestWalkable(ai.world, this.pos, this.z);
+      if (myNode < 0) return false;
+      const entryNode = nav.nodes[entry];
+
+      // 2. Nearest node the entry point can't see, Dijkstra'd outward from ours
+      //    over movable links. Two-stage test, because the baked `visible` set
+      //    is centre-to-centre while what has to be hidden is a BODY: a node
+      //    whose centre is behind the corner still hangs a shoulder out past it.
+      //    So the map is only a cheap reject (centre visible => body certainly
+      //    is), and a candidate that survives it pays 5 rays to confirm all five
+      //    body points are hidden. The map is static geometry, so it can only
+      //    under-report cover (a parked car it doesn't know about), never invent
+      //    it — and the confirming rays are live, which covers that gap too.
+      const distTo = new Map<number, number>([[myNode, 0]]);
+      const prev = new Map<number, number>();
+      const settled = new Set<number>();
+      let covered = -1;
+      let peek: Vec2 | null = null;
+      for (let i = 0; i < HOLD_SEARCH_NODES; i++) {
+        let pick = -1;
+        let pickD = Infinity;
+        for (const [id, d] of distTo) {
+          if (!settled.has(id) && d < pickD) {
+            pickD = d;
+            pick = id;
+          }
+        }
+        if (pick < 0 || pickD > HOLD_COVER_DISTANCE) break;
+        settled.add(pick);
+        const node = nav.nodes[pick];
+        if (
+          pick !== entry &&
+          !entryNode.visible.has(pick) &&
+          this.holdSpotOk(ai, node.pos, node.z) &&
+          !this.mateHolding(ai, node.pos) &&
+          // Raw geometry here, deliberately: a teammate blocks a FIRING lane but
+          // is never cover (same rule scoreAt applies), so the shooting-lane test
+          // used for the entry and the peek must not be used for hiding.
+          !losClear(ai.world, node.pos, entryNode.pos, this.z)
+        ) {
+          // 3. Cover is only worth taking if there's a spot on the way in that
+          //    still SEES the door. Scan the last leg — from the node we'd come
+          //    in on (which can see it) toward this one (which can't) — and take
+          //    the deepest spot before the line closes. If this cover can't
+          //    produce one, keep searching rather than commit to a blind vigil.
+          const back = prev.get(pick);
+          const from = back !== undefined ? nav.nodes[back].pos : this.pos;
+          const p = this.peekSpot(ai, from, node.pos, entryNode.pos);
+          if (p) {
+            covered = pick;
+            peek = p;
+            break;
+          }
+        }
+        for (const [nb, w] of node.movable) {
+          if (nav.nodes[nb].z !== this.z) continue; // an angle is held on one level
+          const alt = pickD + w;
+          if (alt < (distTo.get(nb) ?? Infinity)) {
+            distTo.set(nb, alt);
+            prev.set(nb, pick);
+          }
+        }
+      }
+      if (covered < 0 || !peek) return false;
+
+      // The legs from here to cover, in walking order — but ending at the PEEK,
+      // not at the covered node. The peek sits on the final leg (between the node
+      // we come in on and the cover), so walking all the way in and then back out
+      // to it is a visible wasted trip. The cover itself is still where a reload
+      // ducks to; it just isn't on the way in any more.
+      const path: Vec2[] = [];
+      for (let at = covered; at !== myNode; ) {
+        path.push(nav.nodes[at].pos);
+        const p = prev.get(at);
+        if (p === undefined) break;
+        at = p;
+      }
+      path.reverse();
+      if (path.length > 0) path[path.length - 1] = peek;
+
+      const coverPos = nav.nodes[covered].pos;
+      this.holdEntry = vec(entryNode.pos.x, entryNode.pos.y);
+      this.holdEntryNode = entry;
+      this.holdCover = vec(coverPos.x, coverPos.y);
+      this.holdPeek = peek;
+      this.holdPath = path;
+      return true;
+    });
+  }
+
+  /** Is this cover spot already taken by a teammate — either standing on it, or
+   *  committed to it and still walking there? One node fits one body, so without
+   *  this two soldiers holding the same corridor both pick the same best node and
+   *  spend the fight shoving each other off it (the squishy body separation keeps
+   *  pushing them apart, and both keep walking back).
+   *
+   *  Checking only bodies wasn't enough: the spot is claimed the moment a mate
+   *  PLANS it, and the walk there can take a second, so a bot planning in that
+   *  window would pick the same node and both would arrive on top of each other.
+   *  A hold's cover and peek are both reserved — the peek is where the body
+   *  actually ends up. Claims are released by clearHold when the posture ends.
+   *
+   *  Cheap enough per candidate: it only runs for spots that already passed the
+   *  visibility filters. */
+  private mateHolding(ai: AiContext, spot: Vec2): boolean {
+    const taken = (p: Vec2 | null): boolean => p !== null && dist(p, spot) < 2 * BODY_RADIUS;
+    for (const c of ai.characters) {
+      if (c === this || c.hp <= 0 || c.z !== this.z || areHostile(this.team, c.team)) continue;
+      if (dist(c.pos, spot) < 2 * BODY_RADIUS) return true; // standing on it
+      // `private` is class-scoped in TS, so a TacOracle may read another's plan.
+      if (c instanceof TacOracle && c.mode === "hold" && (taken(c.holdCover) || taken(c.holdPeek))) {
+        return true; // claimed by a mate already on their way
+      }
+    }
+    return false;
+  }
+
+  /** Slide from full cover toward `toward` in small steps and stop where we can
+   *  actually WATCH the entry point: a clear line from our centre to `eye`.
+   *
+   *  The centre specifically, not "any part of us exposed". Every sight and
+   *  firing check this AI makes rays from `this.pos` — the centre is the eye — so
+   *  a spot that only pokes a bounding-box corner past the corner of a wall is
+   *  the worst of both worlds: they can see our shoulder and we can see nothing.
+   *  That is a bot standing guard over a door it cannot see.
+   *
+   *  Partial cover still falls out of it: the first step whose centre clears the
+   *  corner is by construction the least-exposed one that can see, so the body is
+   *  typically still half behind the wall. Null if the whole way out stays blind,
+   *  which disqualifies this cover entirely (see planFromEntry). */
+  private peekSpot(ai: AiContext, from: Vec2, toward: Vec2, eye: Vec2): Vec2 | null {
+    const total = dist(from, toward);
+    if (total < 1e-3) return null;
+    const dir = norm(sub(toward, from));
+    // Advance INTO cover and stop the step before the sight line breaks. `from`
+    // is always a spot that can see `eye` (the predecessor was rejected for being
+    // visible, and our own position had to see the entry for it to be chosen), so
+    // the scan starts seeing and ends blind — the last seeing step is the
+    // deepest-in-cover spot that still watches the door. Scanning this way round
+    // also guarantees the spot is contiguously visible from the side we approach
+    // on, instead of one that happens to see past a blind stretch.
+    let best: Vec2 | null = null;
+    for (let d = 0; d <= total; d += HOLD_PEEK_STEP) {
+      const p = add(from, scale(dir, d));
+      if (!walkable(ai.world, from, this.z, p, this.z)) break;
+      if (!this.holdSpotOk(ai, p, this.z)) break;
+      if (!this.shootingLaneClear(ai, p, eye)) break; // line closed, or a mate stepped into it
+      best = p;
+    }
+    if (!best) return null;
+    // Give the line a little slack, back the way we came (toward more exposure),
+    // so a body-separation shove doesn't close it again.
+    const backOff = Math.min(HOLD_PEEK_MARGIN, dist(from, best));
+    if (backOff < HOLD_PEEK_STEP) return best;
+    const relaxed = add(best, scale(dir, -backOff));
+    return walkable(ai.world, from, this.z, relaxed, this.z) &&
+      this.holdSpotOk(ai, relaxed, this.z) &&
+      this.shootingLaneClear(ai, relaxed, eye)
+      ? relaxed
+      : best;
+  }
+
+  /** Walk the committed hold route hop by hop, then onto `dest`. Consecutive
+   *  nodes are movable-linked so each leg is a clear straight line; if a shove
+   *  has pushed us somewhere that isn't true any more, drop the plan and rebuild
+   *  from wherever we actually ended up. */
+  private followHold(ai: AiContext, dest: Vec2): void {
+    while (this.holdPath.length > 0 && dist(this.pos, this.holdPath[0]) <= HOLD_ARRIVE) {
+      this.holdPath.shift();
+    }
+    const next = this.holdPath.length > 0 ? this.holdPath[0] : dest;
+    const d = dist(this.pos, next);
+    if (d <= (this.holdPath.length > 0 ? HOLD_ARRIVE : 1)) return; // there: sit still
+    if (!walkable(ai.world, this.pos, this.z, next, this.z)) {
+      this.clearHold();
+      return;
+    }
+    this.stepToward(next);
+  }
+
+  /** HOLD owns its facing outright — the gun sits on the entry point the whole
+   *  time, including while still walking to cover (the approach's blind
+   *  lookahead would otherwise point it down the travel direction). */
+  private faceHold(): void {
+    if (!this.holdEntry) return;
+    const d = sub(this.holdEntry, this.pos);
+    if (Math.hypot(d.x, d.y) > 1e-3) this.aimAngle = angleOf(d);
   }
 
   /** A walkable lookahead point that backs away from `threat`, preferring one
@@ -654,12 +1125,14 @@ export class TacOracle extends Oracle {
     let myMin = Infinity;
     let enemyMin = Infinity;
     let threat: Character | null = null;
-    const myRange = this.gun.feasibleRange;
+    const myRange = this.fightingRange; // not what's in hand — see fightingRange
     for (const h of near) {
       const my = this.routeUntilSight(ai, this.pos, this.z, h, myRange, myNode, undefined);
       if (my < myMin) myMin = my;
       // The enemy shoots us with ITS weapon, so its reach gates its contact.
-      const en = this.routeUntilSight(ai, h.pos, h.z, this, h.gun.feasibleRange, undefined, mySightGoal);
+      // Their FIGHTING range too — a hostile sprinting at us with its weapon
+      // holstered is not actually a punching-only threat.
+      const en = this.routeUntilSight(ai, h.pos, h.z, this, fightingRangeOf(h), undefined, mySightGoal);
       if (en < enemyMin) {
         enemyMin = en;
         threat = h;
@@ -673,6 +1146,28 @@ export class TacOracle extends Oracle {
    *  scaled by lambda (see DEFAULT_LAMBDA). */
   private aimWidth(d: number): number {
     return (this.lambda * BODY_RADIUS) / (Math.PI * Math.max(d, 1));
+  }
+
+  /** Can we not just SEE from `from` to `to`, but shoot it — geometry clear AND
+   *  no teammate standing in the line? Used for the hold's angle, so a bot never
+   *  digs in watching a door one of its own squad is stood in front of. Same
+   *  friendly-lane rule the trigger uses (laneClear), against a position rather
+   *  than a body.
+   *
+   *  NB teammates move and the hold plan is frozen between refreshes, so a mate
+   *  wandering through at plan time can bias the angle for the ~1s until the next
+   *  refresh. That's the same tradeoff `mateHolding` makes for cover, and far
+   *  cheaper than re-planning whenever someone walks past. */
+  private shootingLaneClear(ai: AiContext, from: Vec2, to: Vec2): boolean {
+    if (!losClear(ai.world, from, to, this.z)) return false;
+    return !ai.characters.some(
+      (c) =>
+        c !== this &&
+        c.hp > 0 &&
+        c.z === this.z &&
+        !areHostile(this.team, c.team) &&
+        friendInLine(from, to, c.pos, FRIENDLY_MARGIN),
+    );
   }
 
   /** No teammate downrange within FRIENDLY_MARGIN of the line of fire at `target`
@@ -791,9 +1286,34 @@ export class TacOracle extends Oracle {
   protected inContact(ai: AiContext, chase: Character): boolean {
     return (
       chase.z === this.z &&
-      dist(this.pos, chase.pos) <= this.gun.feasibleRange &&
+      dist(this.pos, chase.pos) <= this.fightingRange && // the weapon we'd fight with
       this.canSee(ai.world, chase)
     );
+  }
+
+  /** Who a HOLD is dug in against: the hostile with the shortest walk to us,
+   *  measured over the nav graph and nothing else. No straight-line distance, no
+   *  in-sight shortcut, no cache — the entry point is derived from this enemy's
+   *  route in, so a wrong pick makes the whole plan wrong. Only called when a
+   *  plan is actually being built or refreshed, so the per-hostile node lookup
+   *  is paid at most once per HOLD_REPLAN_TICKS. */
+  private holdThreat(ai: AiContext): Character | null {
+    const nav = ai.nav;
+    if (!nav || nav.nodes.length === 0) return null;
+    const me = nav.nearestWalkable(ai.world, this.pos, this.z);
+    if (me < 0) return null;
+    let best: Character | null = null;
+    let bestDist = Infinity;
+    for (const h of this.hostiles(ai)) {
+      const from = nav.nearestWalkable(ai.world, h.pos, h.z);
+      if (from < 0) continue;
+      const step = nav.route(from, me);
+      if (step && step.dist < bestDist) {
+        bestDist = step.dist;
+        best = h;
+      }
+    }
+    return best;
   }
 
   protected bestChase(ai: AiContext): Character | null {
