@@ -52,7 +52,7 @@ const EDIT = params.get("edit") === "true";
 
 // The map: ?level=<name> picks a JSON from src/world/levels/; with no param the
 // arena-teamfight map loads. (?edit composes: ?edit=true&level=foo edits it.)
-const DEFAULT_LEVEL = "dom-arena-big";
+const DEFAULT_LEVEL = "dom-arena-big-fix";
 
 const levelName = params.get("level");
 if (levelName && !(levelName in LEVELS)) {

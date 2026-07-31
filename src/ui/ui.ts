@@ -30,7 +30,7 @@ const uiFont = (sizeWeight: string): string => `${sizeWeight} ${UI_FONT_FAMILY}`
  *  the reading means the same thing wherever you point. Real guns span roughly
  *  0.01 rad (rifle at rest) to 0.28 rad (Desert Eagle mid-spray), so this maps
  *  the useful range onto about +1 to +31 px. */
-const SPREAD_PX_PER_RAD = 110;
+const SPREAD_PX_PER_RAD = 75;
 /** Ceiling on that retreat, so a future spec can't fling the marks off-screen. */
 const MAX_SPREAD_PX = 60;
 
@@ -46,7 +46,7 @@ export function drawCrosshair(
   cy: number,
   spread = 0,
 ): void {
-  const gap = 5 + Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
+  const gap = Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
   const len = 9; // length of each tick
   ctx.save();
   ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
