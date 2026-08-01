@@ -172,26 +172,33 @@ if (EDIT) {
   game = new Game(loaded, makeMode(meta));
 }
 
-// Stable references for the renderer: the game's live arrays/objects (mutated in
-// place, never reassigned), or the editor's lone player when editing.
-const world = game ? game.world : loaded.world;
-const player = game ? game.player : editorPlayer!;
-const characters = game ? game.characters : [editorPlayer!];
-const bodies = game ? game.bodies : editorBodies;
-const camera = game ? game.camera : { size: editorPlayer!.gun.spec.zoom };
+// References the renderer reads every frame. Normally bound once (the game's live
+// arrays, or the editor's lone player), but the editor's playtest toggle swaps
+// them between the edit session and a throwaway live match — every render helper
+// closes over these module bindings by name, so reassigning here is all it takes.
+// See startPlaytest / stopPlaytest.
+let world = game ? game.world : loaded.world;
+let player = game ? game.player : editorPlayer!;
+let characters = game ? game.characters : [editorPlayer!];
+let bodies = game ? game.bodies : editorBodies;
+let camera = game ? game.camera : { size: editorPlayer!.gun.spec.zoom };
 
 const healthBar = new HealthBar({ width: 450, height: 35 });
 // Slightly shorter cyan bar for armor, stacked above the health bar.
 const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", radius: 0, displayLoss: false });
 // Bottom-left minimap: baked once from the (static) world, sized by the level's
 // meta or auto-fit. Play mode only — the editor has its own world overview.
-const minimap = game ? new Minimap(world, meta.minimapSize) : null;
+let minimap = game ? new Minimap(world, meta.minimapSize) : null;
 
 /**
  * The respawn-screen loadout dropdown (TDM): a small DOM panel with primary /
  * secondary / armor selects, shown only while the player is dead and choosing
  * their next kit. Built once (for modes that support it) and toggled by the HUD.
  */
+// The single respawn-loadout panel in the DOM. buildRespawnMenu removes any
+// prior one before appending its own, so repeated playtests don't stack panels.
+let respawnPanelEl: HTMLElement | null = null;
+
 function buildRespawnMenu(g: Game): (hud: GamemodeHud | null) => void {
   const SELECT_CSS =
     "background:#23262c;color:#dfe2e8;border:1px solid #3a3e46;border-radius:4px;font:inherit;padding:3px 6px;min-width:150px;";
@@ -235,6 +242,8 @@ function buildRespawnMenu(g: Game): (hud: GamemodeHud | null) => void {
     return r;
   };
   panel.append(row("Primary", primary), row("Secondary", secondary), row("Armor", armor));
+  respawnPanelEl?.remove(); // a previous playtest's menu, if any — don't leak it
+  respawnPanelEl = panel;
   document.body.append(panel);
 
   const apply = (): void =>
@@ -261,8 +270,105 @@ function buildRespawnMenu(g: Game): (hud: GamemodeHud | null) => void {
   };
 }
 
-// Only modes with a customizable respawn (TDM) build the menu.
-const updateRespawnMenu = game && game.gamemode.setPlayerLoadout ? buildRespawnMenu(game) : null;
+// Only modes with a customizable respawn (TDM) build the menu. Rebound per
+// playtest, so the throwaway match gets its own respawn dropdown (or none).
+let updateRespawnMenu = game && game.gamemode.setPlayerLoadout ? buildRespawnMenu(game) : null;
+
+// --- editor playtest ---------------------------------------------------------
+// The editor hands the level as it stands to a live match with no reload: build a
+// Game on a THROWAWAY copy (the sim rebuilds items/vehicles/bodies and moves the
+// player, so it must never touch the authored world), point the renderer's
+// bindings at it, and suspend the editor. Esc tears the match down and restores
+// editing exactly where it left off (the editorPlayer camera never moved). All of
+// this is inert outside an editor session — `editor` is null in pure play mode.
+
+/** A gamemode meta resolved from a level's own meta alone — no URL overrides, so
+ *  a playtest reflects exactly the mode + params the editor has set/would save. */
+function playtestMeta(base: LevelMeta): LevelMeta {
+  const mId = base.mode ?? DEFAULT_MODE;
+  const m: LevelMeta = { ...base, mode: mId };
+  if (mId === "tdm") m.tdm = resolveTdm({ ...base.tdm });
+  else if (mId === "domination") m.domination = resolveDom({ ...base.domination });
+  return m;
+}
+
+// A transient bottom-center message (e.g. "place a spawn"), auto-hiding.
+let toastEl: HTMLElement | null = null;
+let toastTimer = 0;
+function toast(msg: string): void {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.style.cssText =
+      "position:fixed;left:50%;bottom:40px;transform:translateX(-50%);background:rgba(150,40,40,0.94);" +
+      "color:#fff;font:13px system-ui,sans-serif;padding:8px 14px;border-radius:8px;z-index:40;pointer-events:none;";
+    document.body.append(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.style.display = "";
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl && (toastEl.style.display = "none"), 2200);
+}
+
+// The "▶ PLAYTEST — Esc to stop" chip shown while a match is running from the editor.
+let playChip: HTMLElement | null = null;
+function showPlayChip(on: boolean): void {
+  if (on && !playChip) {
+    playChip = document.createElement("div");
+    playChip.textContent = "▶ PLAYTEST — Esc to stop";
+    playChip.style.cssText =
+      "position:fixed;top:8px;right:8px;background:rgba(31,111,58,0.92);color:#eaffef;" +
+      "font:bold 12px ui-monospace,Consolas,monospace;padding:6px 10px;border-radius:8px;z-index:30;pointer-events:none;";
+    document.body.append(playChip);
+  }
+  if (playChip) playChip.style.display = on ? "" : "none";
+}
+
+function startPlaytest(): void {
+  if (!editor || game) return; // only from an idle editor session
+  if (loaded.playerSpawn.length === 0) {
+    toast("Place a player spawn before playtesting");
+    return;
+  }
+  const copy = loadLevel(editor.currentLevel()); // deep copy — the match owns this world
+  const pmeta = playtestMeta(copy.meta);
+  const makePlay = GAMEMODES[pmeta.mode ?? DEFAULT_MODE] ?? GAMEMODES[DEFAULT_MODE];
+  const g = new Game(copy, makePlay(pmeta));
+  game = g;
+  world = g.world;
+  player = g.player;
+  characters = g.characters;
+  bodies = g.bodies;
+  camera = g.camera;
+  minimap = new Minimap(g.world, pmeta.minimapSize);
+  updateRespawnMenu = g.gamemode.setPlayerLoadout ? buildRespawnMenu(g) : null;
+  editor.setSuspended(true);
+  showPlayChip(true);
+}
+
+function stopPlaytest(): void {
+  if (!editor || !game) return;
+  game = null;
+  world = loaded.world;
+  player = editorPlayer!;
+  characters = [editorPlayer!];
+  bodies = editorBodies;
+  camera = { size: editorPlayer!.gun.spec.zoom };
+  minimap = null;
+  updateRespawnMenu = null;
+  respawnPanelEl?.remove(); // drop the match's respawn menu if it built one
+  respawnPanelEl = null;
+  showPlayChip(false);
+  editor.setSuspended(false);
+}
+
+if (editor) {
+  editor.onPlaytest = startPlaytest;
+  // Esc ends a playtest and returns to editing (the editor's own Esc is gated
+  // off while suspended, so this is the only Esc handler active during a match).
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && game) stopPlaytest();
+  });
+}
 
 const screenCenter = (): Vec2 => vec(window.innerWidth / 2, window.innerHeight / 2);
 
@@ -659,7 +765,10 @@ function render(): void {
   const w = window.innerWidth;
   const h = window.innerHeight;
   const center = screenCenter();
-  const zoom = editor ? editor.zoom : camera.size; // editor: free wheel-zoom
+  // A match (booted-in OR a playtest) drives the gun/floor zoom; a bare editor
+  // session uses its own free wheel-zoom. `game` is the "a match is live"
+  // discriminator everywhere below — during a playtest both game and editor exist.
+  const zoom = game ? camera.size : editor!.zoom;
   const camPos = player.pos; // camera centers on the player
 
   // The enclosure cap: inside a sealed room (a bunker under its ceiling), the
@@ -718,7 +827,7 @@ function render(): void {
 
   // The active gamemode's HUD data, computed once and reused for the in-world
   // overlay (domination points), the minimap, and the HUD panel.
-  const gh: GamemodeHud | null = editor ? null : game!.gamemode.hud(game!);
+  const gh: GamemodeHud | null = game ? game.gamemode.hud(game) : null;
 
   // Painter's order by level, lowest first: higher floors composite over lower
   // ones, so walking under a balcony puts it over your head for free.
@@ -836,12 +945,13 @@ function render(): void {
 
   profiler.end("render.levels");
 
-  // Editor overlay: snap grid, spawn markers, selection outline + handles.
-  editor?.drawWorld(ctx);
+  // Editor overlay: snap grid, spawn markers, selection outline + handles. Only
+  // while actually editing — a playtest suppresses it (editor exists but game is live).
+  if (editor && !game) editor.drawWorld(ctx);
 
   ctx.restore();
 
-  if (!editor) {
+  if (game) {
     profiler.begin("render.hud");
     drawHud(ctx, {
       w,
@@ -851,13 +961,13 @@ function render(): void {
       healthBar,
       armorBar,
       mouse,
-      spread: game!.crosshairSpread,
-      interactableLabel: game!.interactLabel(),
+      spread: game.crosshairSpread,
+      interactableLabel: game.interactLabel(),
       gamemode: gh ?? undefined,
       showScoreboard: isDown("tab"),
       minimap: minimap ?? undefined,
       characters,
-      deaths: game!.minimapDeaths,
+      deaths: game.minimapDeaths,
     });
     profiler.end("render.hud");
     updateRespawnMenu?.(gh);
@@ -918,8 +1028,9 @@ function frame(now: number): void {
 
   profiler.begin("update");
   while (accumulator >= STEP) {
-    if (editor) editor.update();
-    else game!.update();
+    // A live match (booted-in or a playtest) steps the game; otherwise the editor.
+    if (game) game.update();
+    else editor!.update();
     accumulator -= STEP;
   }
   profiler.end("update");

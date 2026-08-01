@@ -89,6 +89,14 @@ export class Editor {
   /** Camera scale (world px per screen px); main.ts reads this instead of the gun zoom. */
   zoom = 2.2;
 
+  /** Set by main.ts: start a playtest of the level as it stands. Wired to the
+   *  Play button; if unset the button does nothing. */
+  onPlaytest?: () => void;
+
+  /** While suspended the editor ignores every input and hides its panel — main
+   *  has swapped a live playtest onto the same canvas. Toggled by setSuspended. */
+  private suspended = false;
+
   private readonly state: LevelState;
   private readonly player: Character;
 
@@ -109,6 +117,7 @@ export class Editor {
   private prevZDown = false;
 
   // DOM
+  private panel!: HTMLElement;
   private status!: HTMLElement;
   private inspector!: HTMLElement;
   private matchFields!: HTMLElement;
@@ -125,23 +134,32 @@ export class Editor {
     this.player = player;
     this.buildPanel();
 
+    // Every listener short-circuits while suspended, so a live playtest owns the
+    // canvas + keyboard without the editor stealing clicks or shortcuts.
     canvas.addEventListener("mousedown", (e) => {
+      if (this.suspended) return;
       if (e.button === 0) this.onDown();
       else if (e.button === 2) this.cancel(); // right click: drop tool + selection
     });
-    window.addEventListener("mousemove", () => this.onMove());
+    window.addEventListener("mousemove", () => {
+      if (!this.suspended) this.onMove();
+    });
     window.addEventListener("mouseup", (e) => {
+      if (this.suspended) return;
       if (e.button === 0) this.onUp();
     });
     canvas.addEventListener(
       "wheel",
       (e) => {
+        if (this.suspended) return;
         e.preventDefault();
         this.zoom = Math.min(14, Math.max(0.4, this.zoom * Math.exp(e.deltaY * 0.0012)));
       },
       { passive: false },
     );
-    window.addEventListener("keydown", (e) => this.onKey(e));
+    window.addEventListener("keydown", (e) => {
+      if (!this.suspended) this.onKey(e);
+    });
   }
 
   // --- per-tick (called from main's update in edit mode) ----------------------
@@ -166,6 +184,22 @@ export class Editor {
     this.status.textContent =
       `z ${this.player.z}   zoom ${this.zoom.toFixed(2)}   ` +
       `grid ${this.snapOn ? this.gridSize : "off"}`;
+  }
+
+  /** The level as it stands right now, as a level string — main deep-copies this
+   *  (via loadLevel) so a playtest runs on a throwaway world and never mutates
+   *  the authored one. */
+  currentLevel(): string {
+    return serializeLevel(this.state);
+  }
+
+  /** Suspend/resume editing. While suspended the panel is hidden and all input
+   *  is ignored (main runs a playtest); resuming restores the panel and snaps
+   *  the edited world's surface visibility back to the editor camera. */
+  setSuspended(on: boolean): void {
+    this.suspended = on;
+    this.panel.style.display = on ? "none" : "";
+    if (!on) updateSurfaceAlphas(this.state.world, this.player.z, this.player.pos, true);
   }
 
   private setZ(z: number): void {
@@ -750,9 +784,16 @@ export class Editor {
         "display:flex;flex-direction:column;gap:6px;z-index:10;",
     );
 
+    this.panel = panel;
     panel.append(this.mk("div", "font-weight:bold;font-size:13px;", "LEVEL EDITOR"));
     this.status = this.mk("div", "opacity:0.8;");
     panel.append(this.status);
+
+    // Playtest: hand the level as it stands to a live match; Esc returns here.
+    const play = this.btn("▶ Playtest", () => this.onPlaytest?.());
+    play.style.cssText +=
+      "background:#1f6f3a;border-color:#2f9b53;color:#eaffef;font-weight:bold;width:100%;";
+    panel.append(play);
     panel.append(
       this.mk(
         "div",
