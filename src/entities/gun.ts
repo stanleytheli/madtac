@@ -318,6 +318,8 @@ export class Gun implements Droppable {
         pj.color,
         pj.trailColor,
         owner.z,
+        pj.sprite,
+        pj.spriteScale,
       );
       return true;
     }

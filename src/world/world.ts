@@ -396,8 +396,10 @@ export interface Projectile {
   radius: number; // blast radius (world px)
   armorPen: ArmorPen; // per-tier penetration, applied to each body caught in the blast
   bodyRadius: number; // the round's own collision + draw radius
-  color: string; // body color "#rrggbb"
+  color: string; // body color "#rrggbb" (fallback when sprite is unset/undecoded)
   trailColor: string; // exhaust-trail color "#rrggbb"
+  sprite?: string; // optional /assets basename drawn in place of the body disc
+  spriteScale?: number; // sprite native px -> world px (aspect preserved)
 }
 
 /** Static map data plus live projectiles, particle debris, and ground items. */
@@ -1025,6 +1027,8 @@ export function spawnProjectile(
   color: string,
   trailColor: string,
   z: number,
+  sprite?: string,
+  spriteScale?: number,
 ): void {
   w.projectiles.push({
     pos: origin,
@@ -1041,5 +1045,7 @@ export function spawnProjectile(
     bodyRadius,
     color,
     trailColor,
+    sprite,
+    spriteScale,
   });
 }

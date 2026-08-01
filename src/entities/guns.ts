@@ -56,10 +56,18 @@ export interface ProjectileSpec {
   radius: number;
   /** The round's own collision + draw radius (world px). */
   bodyRadius: number;
-  /** Projectile body color "#rrggbb". */
+  /** Projectile body color "#rrggbb". Also the fallback body when no `sprite`
+   *  is set (or its image hasn't decoded yet). */
   color: string;
   /** Exhaust-trail color "#rrggbb". */
   trailColor: string;
+  /** Optional sprite basename in /assets (e.g. "rocket" -> /assets/rocket.png),
+   *  drawn in place of the plain body disc, rotated to the round's heading. The
+   *  art should point +x (nose to the right). */
+  sprite?: string;
+  /** Sprite native px -> world px, applied to both axes (aspect preserved). Only
+   *  meaningful with `sprite` set; defaults to DEFAULT_PROJECTILE_SPRITE_SCALE. */
+  spriteScale?: number;
 }
 
 /** Fraction of damage that passes through each armor tier (0..1). Indexed by the
@@ -590,6 +598,8 @@ export const RPG: GunSpec = {
     bodyRadius: 9,
     color: "#d6d6d6",
     trailColor: "#ffb454",
+    sprite: "rocket",
+    spriteScale: 1.0, // 115px art -> ~58px long in world
   },
   visualRecoil: 14,
   recoilRecovery: 1,

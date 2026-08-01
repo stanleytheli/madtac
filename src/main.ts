@@ -18,7 +18,8 @@ import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
 import { domPointStyle, Minimap } from "./ui/minimap.ts";
-import { dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { angleOf, dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { assetImage } from "./entities/item.ts";
 import {
   enclosureCap,
   floorVisible,
@@ -499,12 +500,31 @@ function drawProjectiles(z: number): void {
     ctx.lineTo(p.pos.x, p.pos.y);
     ctx.stroke();
 
-    ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(p.pos.x, p.pos.y, p.bodyRadius, 0, Math.PI * 2);
-    ctx.fill();
+    // Sprite body if the round carries one and it's decoded; otherwise a plain
+    // disc in the body colour. The sprite art points +x, so rotating by the
+    // heading aims its nose down-range.
+    const img = p.sprite ? assetImage(`${p.sprite}.png`) : null;
+    if (img) {
+      const k = p.spriteScale ?? DEFAULT_PROJECTILE_SPRITE_SCALE;
+      const w = img.naturalWidth * k;
+      const h = img.naturalHeight * k;
+      ctx.save();
+      ctx.translate(p.pos.x, p.pos.y);
+      ctx.rotate(angleOf(p.vel));
+      ctx.drawImage(img, -w / 2, -h / 2, w, h);
+      ctx.restore();
+    } else {
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.pos.x, p.pos.y, p.bodyRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
 }
+
+// Fallback sprite scale (native px -> world px) when a projectile sets a sprite
+// but no spriteScale.
+const DEFAULT_PROJECTILE_SPRITE_SCALE = 0.5;
 
 // The backdrop when the surface world isn't visible: dark-brown "underground"
 // dirt for below-ground levels, near-black void otherwise (shouldn't happen).
