@@ -185,13 +185,23 @@ export interface GunSpec {
   movingFirstShotRecoilMax: number;
 }
 
-const DEFAULT_AP_MELEE     = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
-const DEFAULT_AP_12GA_BUCK = { l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.28 }
-const DEFAULT_AP_9MM       = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
-const DEFAULT_AP_45ACP     = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
-const DEFAULT_AP_556       = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
-const DEFAULT_AP_762       = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
-const DEFAULT_AP_50AE      = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
+// const DEFAULT_AP_MELEE     = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
+// const DEFAULT_AP_12GA_BUCK = { l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.28 }
+// const DEFAULT_AP_9MM       = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
+// const DEFAULT_AP_45ACP     = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
+// const DEFAULT_AP_556       = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
+// const DEFAULT_AP_762       = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
+// const DEFAULT_AP_50AE      = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
+
+const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.28}
+const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
+const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
+const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
+const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
+const DEFAULT_AP_HIGH = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
+const DEFAULT_AP_XHIGH =  { l1: 0.975, l2: 0.85, l3: 0.70, l4: 0.45 }
+
+
 
 export const M16: GunSpec = {
   name: "M-16",
@@ -222,7 +232,7 @@ export const M16: GunSpec = {
     { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#26292e", over: false },
   ],
   damage: 20,
-  armorPen: DEFAULT_AP_556,
+  armorPen: DEFAULT_AP_MED,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -276,7 +286,7 @@ export const AK47: GunSpec = {
     { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#53360b", over: false },
   ],
   damage: 25,
-  armorPen: DEFAULT_AP_762,
+  armorPen: DEFAULT_AP_MHIGH,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -356,7 +366,7 @@ export const Scout: GunSpec = {
     { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 9, color: "#877d6e", over: false },
   ],
   damage: 65,
-  armorPen: DEFAULT_AP_762,
+  armorPen: DEFAULT_AP_MHIGH,
   zoom: 2.7,
   speed: 0.75,
   fire: {
@@ -417,7 +427,7 @@ export const MP220: GunSpec = {
 
   ],
   damage: 10,
-  armorPen: DEFAULT_AP_12GA_BUCK,
+  armorPen: DEFAULT_AP_XLOW,
   shotgunPellets: 9,
   shotgunSpread: 2.5,
   zoom: 1.9,
@@ -493,7 +503,7 @@ export const M249: GunSpec = {
   },
 
   damage: 18,
-  armorPen: DEFAULT_AP_556,
+  armorPen: DEFAULT_AP_MED,
   zoom: 2.3,
   speed: 0.75,
   fire: {
@@ -532,34 +542,41 @@ export const M249: GunSpec = {
 export const RPG: GunSpec = {
   name: "RPG-7",
   primary: true,
-  icon: "ak47",
-  rightGrip: { f: 30, l: 40 },
-  leftGrip: { f: 50, l: 10 },
+  icon: "rpg_large",
+  rightGrip: { f: 30, l: 35 },
+  leftGrip: { f: 50, l: 5 },
   muzzle: { f: 90, l: 20 },
 
   parts: [
-    { p0: { f: -35, l: 37 }, p1: { f: 90, l: 20 }, width: 18, color: "#1f1f1f", over: false },
+    { p0: { f: -35, l: 37 }, p1: { f: 57, l: 17 }, width: 14, color: "#3d1500", over: false },
+    { p0: { f: -38, l: 22 }, p1: { f: -32, l: 52 }, width: 5, color: "#181818", over: false },
+    { p0: { f: 57, l: 17 }, p1: { f: 76, l: 13 }, width: 11, color: "#123f0c", over: false },
+    { p0: { f: 76, l: 13 }, p1: { f: 90, l: 10 }, width: 16, color: "#123f0c", over: false },
+    { p0: { f: 90, l: 10 }, p1: { f: 104, l: 7 }, width: 10, color: "#123f0c", over: false },
+    { p0: { f: 104, l: 7 }, p1: { f: 114, l: 5 }, width: 6, color: "#123f0c", over: false },
   ],
 
-  /** 
-  parts: [
-    { p0: { f: 2, l: 0 }, p1: { f: 16, l: 0 }, width: 30, color: "#2a331f", over: false }, // rear cone
-    { p0: { f: 10, l: 0 }, p1: { f: 150, l: 0 }, width: 20, color: "#3b4a2f", over: false }, // launch tube
-    { p0: { f: 150, l: 0 }, p1: { f: 176, l: 0 }, width: 32, color: "#8a1f1f", over: false }, // warhead
-    { p0: { f: 176, l: 0 }, p1: { f: 192, l: 0 }, width: 14, color: "#8a1f1f", over: false }, // nose tip
-    { p0: { f: 66, l: 2 }, p1: { f: 66, l: -20 }, width: 5, color: "#1f1f1f", over: true }, // iron sight
-  ], */
+  reloadAnim: {
+    leftPositions: [{ f : 50, l : 5}, // 0
+                    { f : 20, l : -27}, // 40
+                    { f : 20, l : -27}, // 60
+                    { f : 90, l : 10}, // 110
+                    { f : 90, l : 10}, // 130
+                    { f : 50, l : 5}, // 150
+    ],
+    leftTimes: [0, 40, 60, 110, 130, 150]
+  },
 
-  damage: 95,
-  armorPen: DEFAULT_AP_50AE,
-  zoom: 2.2,
-  speed: 0.7,
+  damage: 120,
+  armorPen: DEFAULT_AP_XHIGH,
+  zoom: 2.3,
+  speed: 0.65,
   fire: {
     delay: 75,
-    bulletSpeed: 24, // projectile travel speed (px/tick)
+    bulletSpeed: 30, // projectile travel speed (px/tick)
     bulletLife: 70, // range/fuse ~1680 px
     auto: false,
-    spread: 0.006,
+    spread: 0.025,
     magSize: 1,
     reserveMags: 4,
     reloadTime: 150,
@@ -576,12 +593,12 @@ export const RPG: GunSpec = {
   },
   visualRecoil: 14,
   recoilRecovery: 1,
-  recoilCoef: 0.1,
+  recoilCoef: 0.25,
   recoilGain: 4,
   recoilDelay: 60,
-  movePenalty: 2.5,
-  movingFirstShotRecoilMin: 3.0,
-  movingFirstShotRecoilMax: 6.0,
+  movePenalty: 2.0,
+  movingFirstShotRecoilMin: 32.0,
+  movingFirstShotRecoilMax: 48.0,
 };
 
 export const Golden_M249: GunSpec = {
@@ -633,7 +650,7 @@ export const Golden_M249: GunSpec = {
   shotgunSpread: 1.25,
 
   damage: 15,
-  armorPen: DEFAULT_AP_556,
+  armorPen: DEFAULT_AP_MED,
   zoom: 2.3,
   speed: 0.75,
   fire: {
@@ -688,7 +705,7 @@ export const M9: GunSpec = {
     { p0: { f: 50, l: 0 }, p1: { f: 100, l: 0 }, width: 8, color: "#33373d", over: false },
   ],
   damage: 17,
-  armorPen: DEFAULT_AP_9MM,
+  armorPen: DEFAULT_AP_LOW,
   zoom: 1.9,
   speed: 0.925,
   fire: {
@@ -743,7 +760,7 @@ export const Skorpion: GunSpec = {
     { p0: { f: 50, l: 0 }, p1: { f: 100, l: 0 }, width: 8, color: "#464a51", over: false },
   ],
   damage: 17,
-  armorPen: DEFAULT_AP_9MM,
+  armorPen: DEFAULT_AP_LOW,
   zoom: 1.9,
   speed: 0.925,
   fire: {
@@ -803,7 +820,7 @@ export const USPS: GunSpec = {
   ],
 
   damage: 22,
-  armorPen: DEFAULT_AP_45ACP,
+  armorPen: DEFAULT_AP_MLOW,
   zoom: 2.1,
   speed: 0.925,
   fire: {
@@ -857,7 +874,7 @@ export const Deagle: GunSpec = {
     { p0: { f: 55, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#7e858f", over: false },
   ],
   damage: 40,
-  armorPen: DEFAULT_AP_50AE,
+  armorPen: DEFAULT_AP_HIGH,
   zoom: 2.1,
   speed: 0.85,
   fire: {
@@ -910,7 +927,7 @@ export const Golden_Deagle: GunSpec = {
     { p0: { f: 55, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#f0d313", over: false },
   ],
   damage: 50,
-  armorPen: DEFAULT_AP_50AE,
+  armorPen: DEFAULT_AP_HIGH,
   zoom: 2.2,
   speed: 0.8,
   fire: {
@@ -950,7 +967,7 @@ export const UNARMED: GunSpec = {
   rightGrip: { f: 50, l: 15 },
   leftGrip: { f: 70, l: -20 },
   damage: 20,
-  armorPen: DEFAULT_AP_MELEE,
+  armorPen: DEFAULT_AP_MHIGH,
   zoom: 1.9,
   speed: 1.0,
   fire: {
