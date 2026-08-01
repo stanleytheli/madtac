@@ -326,12 +326,12 @@ export class TacOracle extends Oracle {
   protected mode: "shoot" | "cover" | "run" | "heal" | "hold" = "shoot";
   /** OUR distance-until-visibility to the quarry (route to a spot that sees it),
    *  refreshed each plan tick; drives RUN. */
-  private visDist = Infinity;
+  protected visDist = Infinity;
   /** The ENEMY's distance-until-visibility to US, minimised over ALL hostiles
    *  (the soonest ANYONE could see us) — what gates healing: it stays long while
    *  we're tucked in cover, whereas our own visDist snaps to 0 the instant they
-   *  peek a lane we can see. */
-  private enemyVisDist = Infinity;
+   *  peek a lane we can see. Also gates the DominationOracle's HOLD_MAX vigil. */
+  protected enemyVisDist = Infinity;
   /** The hostile that owns `enemyVisDist` (can see us soonest) — the one a heal
    *  retreat backs away from. Null when out of the scan. */
   private threat: Character | null = null;

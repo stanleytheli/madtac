@@ -42,6 +42,21 @@ const CONTEST_PAD = 4 * BODY_RADIUS;
  *  shoot/cover, so a large trigger just means "fight on the point when near it". */
 const OBJ_PULL_MARGIN = 10 * BODY_RADIUS; // ~300px past the ring
 
+/** How long (ticks, 60/s) a defender will keep vigil on a site that is fully
+ *  ours AND quiet before releasing the hold so bestChase can send it to a point
+ *  that still needs work. ~8s. Camping a won, uncontested point indefinitely
+ *  wins nothing; the timer breaks that. */
+const HOLD_MAX = 8 * 60;
+
+/** "No enemy near enough to be worth defending this point against" for the
+ *  HOLD_MAX vigil: no hostile is within this distance-until-they-see-us
+ *  (enemyVisDist). Deliberately well BELOW RUN_DISTANCE (1000): RUN_DISTANCE
+ *  answers "am I safe?", but this answers "am I doing anything useful by
+ *  staying?" — and a defender stops earning its keep long before the point is
+ *  provably safe. A threat inside this range resets the vigil (there's a contest
+ *  brewing, hold); beyond it the bot is more useful working another point. */
+const HOLD_MAX_SAFE_DIST = 500;
+
 export class DominationOracle extends TacOracle {
   /** A throwaway waypoint (never in the world/roster) parked on the target
    *  objective, so the base's navChase can steer toward a position. */
@@ -52,6 +67,12 @@ export class DominationOracle extends TacOracle {
    *  entering HOLD and consulted for the rest of it, so walking to cover a step
    *  outside the ring doesn't drop the posture. */
   private holdSite: { pos: Vec2; z: number } | null = null;
+
+  /** Consecutive ticks the current hold has been "secure" — the site fully ours
+   *  and no enemy near (see HOLD_MAX / HOLD_MAX_SAFE_DIST). At HOLD_MAX the hold
+   *  is released so the bot goes to work another point; reset whenever security
+   *  lapses or the bot leaves the ring. */
+  private secureTicks = 0;
 
   /** Never treat the objective marker as a live enemy contact (that would zero
    *  the contact metrics and stop the bot healing/running on the way there). */
@@ -97,12 +118,16 @@ export class DominationOracle extends TacOracle {
    *  and defends in the same motion. An enemy on the site is the one exclusion —
    *  that's a contest to be fought, not a vigil to be kept.
    *
-   *  Unlike the base soldier this ignores how far off contact is — the site is
-   *  worth holding whether or not anyone is nearby — and since HOLD outranks RUN
-   *  in updatePosture it won't sprint away from it. */
+   *  Unlike the base soldier this mostly ignores how far off contact is — the
+   *  site is worth holding whether or not anyone is nearby — and since HOLD
+   *  outranks RUN in updatePosture it won't sprint away from it. The one time
+   *  distance matters is the HOLD_MAX vigil: a fully-captured, quiet point is
+   *  released after ~8s so the bot goes and works a point that still needs it,
+   *  rather than camping a won objective forever. */
   protected override wantsHold(ai: AiContext, target: Character | null): boolean {
     if (target) {
       this.holdSite = null;
+      this.secureTicks = 0;
       return false;
     }
     // Once dug in, stay committed to the site we dug in ON, rather than re-asking
@@ -114,8 +139,24 @@ export class DominationOracle extends TacOracle {
     const site = this.mode === "hold" && this.holdSite ? this.siteAt(ai, this.holdSite) : this.pointUnderfoot(ai);
     if (!site || this.contested(ai, site)) {
       this.holdSite = null;
+      this.secureTicks = 0;
       return false;
     }
+
+    // HOLD_MAX vigil: while the site is fully ours AND no enemy is near, there is
+    // nothing to defend against, so count down and hand the bot back to bestChase
+    // (which routes it to whatever point still needs work). Anything that makes
+    // staying useful again — an enemy drawing near, or the point slipping below
+    // full strength — resets the clock. Note we DON'T reset secureTicks when the
+    // timer fires: it stays high so the bot keeps releasing on the walk out; only
+    // physically leaving the ring (the !site branch above) rearms a fresh vigil.
+    const secured = site.owner === this.team && site.progress >= 2 && this.enemyVisDist >= HOLD_MAX_SAFE_DIST;
+    this.secureTicks = secured ? this.secureTicks + 1 : 0;
+    if (this.secureTicks >= HOLD_MAX) {
+      this.holdSite = null;
+      return false;
+    }
+
     this.holdSite = { pos: site.pos, z: site.z };
     return true;
   }

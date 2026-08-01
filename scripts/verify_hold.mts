@@ -236,6 +236,43 @@ function dominationSuite(level: string): void {
     okAny.holdSpotOk(aiOwned, vec(1200, 1200), 0));
   check("un-reinforced point still refuses cover outside the ring",
     !okAny.holdSpotOk(ai, vec(1200, 1200), 0));
+
+  // HOLD_MAX vigil: a fully-ours, quiet point is held for ~8s then released so
+  // the bot goes to work elsewhere. Called directly, enemyVisDist sits at its
+  // Infinity default (no scan run), so "enemies far" holds every tick and the
+  // clock is what ends it.
+  const timed = new DominationOracle(vec(20, 20), { team: "player", z: 0 });
+  const timedAny = timed as unknown as { wantsHold(ai: AiContext, target: null): boolean };
+  const ownedCtx = (b: DominationOracle): AiContext => ({
+    world, characters: [b, farFoe], nav, tick: 0, objectives: ring("player", 2),
+  });
+  let held = 0;
+  while (held < 1200 && timedAny.wantsHold(ownedCtx(timed), null)) held++;
+  // ~8s == 480 ticks; allow a tick of slack around the boundary.
+  check("a won, quiet point is released after ~8s", held >= 479 && held <= 481,
+    `held ${held} ticks (~${(held / 60).toFixed(1)}s) before release`);
+  check("and stays released while still on the ring",
+    !timedAny.wantsHold(ownedCtx(timed), null));
+
+  // Leaving the ring rearms a fresh vigil: off-point resets, back on-point holds.
+  timed.pos = vec(4000, 4000);
+  check("off the ring clears the vigil", !timedAny.wantsHold(ownedCtx(timed), null));
+  timed.pos = vec(20, 20);
+  let heldAgain = 0;
+  while (heldAgain < 1200 && timedAny.wantsHold(ownedCtx(timed), null)) heldAgain++;
+  check("returning to the point rearms a full vigil", heldAgain >= 479 && heldAgain <= 481,
+    `held ${heldAgain} ticks on the second visit`);
+
+  // A nearby enemy (enemyVisDist inside the safe distance) suspends the clock —
+  // the point is worth defending, so it holds indefinitely. Simulate by forcing
+  // enemyVisDist below the threshold on a fresh bot.
+  const defended = new DominationOracle(vec(20, 20), { team: "player", z: 0 });
+  (defended as unknown as { enemyVisDist: number }).enemyVisDist = 200;
+  const defAny = defended as unknown as { wantsHold(ai: AiContext, target: null): boolean };
+  let defHeld = 0;
+  for (let i = 0; i < 1200; i++) if (defAny.wantsHold(ownedCtx(defended), null)) defHeld++;
+  check("a threat near a won point suspends the vigil (holds indefinitely)",
+    defHeld === 1200, `held ${defHeld}/1200 ticks`);
 }
 
 // ------------------------------------------------------------------ threat --
