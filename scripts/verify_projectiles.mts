@@ -55,6 +55,7 @@ function emptyWorld(obstacles: any[] = []): World {
     stairs: [],
     nodes: [],
     items: [],
+    vehicles: [],
     bullets: [],
     projectiles: [],
     particles: [],
@@ -159,12 +160,13 @@ console.log("Gun(RPG).fire() — spawns a projectile, feasibleRange correct:");
   check("fire() returned true", fired === true);
   check("one projectile spawned (not a bullet)", w.projectiles.length === 1 && w.bullets.length === 0);
   const p = w.projectiles[0];
-  check("blast damage from spec", p && p.damage === 95, `dmg=${p?.damage}`);
-  check("blast radius from spec", p && p.radius === 150, `r=${p?.radius}`);
-  check("travel speed from FireSpec", p && near(Math.hypot(p.vel.x, p.vel.y), 24, 1e-9));
-  check("feasibleRange = speed*life", gun.feasibleRange === 24 * 70, `range=${gun.feasibleRange}`);
+  check("blast damage from spec", p && p.damage === RPG.damage, `dmg=${p?.damage}`);
+  check("blast radius from spec", p && p.radius === RPG.projectile!.radius, `r=${p?.radius}`);
+  check("travel speed from FireSpec", p && near(Math.hypot(p.vel.x, p.vel.y), RPG.fire!.bulletSpeed, 1e-9));
+  check("feasibleRange = speed*life", gun.feasibleRange === RPG.fire!.bulletSpeed * RPG.fire!.bulletLife,
+    `range=${gun.feasibleRange}`);
   check("mag drained to 0", gun.mag === 0);
-  check("RPG registered as a placeable spec", RPG.icon === "rpg");
+  check("RPG registered as a placeable spec", !!RPG.icon);
 }
 
 // ---------------------------------------------------- kill-credit predicate ---

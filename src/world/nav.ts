@@ -15,7 +15,7 @@
  * why CCH rather than the old all-pairs Dijkstra table.
  */
 import { BODY_RADIUS } from "../entities/character.ts";
-import { circleIntersectsBox } from "../engine/collision.ts";
+import { circleIntersectsObstacle } from "../engine/collision.ts";
 import { profiler } from "../engine/profiler.ts";
 import { dist, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, stairZ, type PathNode, type World } from "./world.ts";
@@ -65,7 +65,7 @@ export function walkable(world: World, from: Vec2, fromZ: number, to: Vec2, toZ:
       } else {
         for (const o of world.obstacles) {
           if (o.z !== z) continue;
-          if (circleIntersectsBox(p, BODY_RADIUS, o)) return false;
+          if (circleIntersectsObstacle(p, BODY_RADIUS, o)) return false;
         }
       }
       // Vehicle hulls are solid to bodies too, so a parked one blocks the march.

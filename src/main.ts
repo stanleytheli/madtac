@@ -367,12 +367,36 @@ function drawObstacle(o: Obstacle): void {
   ctx.save();
   ctx.translate(o.pos.x, o.pos.y);
   ctx.rotate(o.angle ?? 0);
-  const x = -o.w / 2;
-  const y = -o.h / 2;
   ctx.fillStyle = o.fill;
-  ctx.fillRect(x, y, o.w, o.h);
   ctx.strokeStyle = o.stroke;
   ctx.lineWidth = o.strokeWidth;
+  if (o.round) {
+    // Barrel: a filled disc (radius = half the smaller extent, matching the
+    // collider) with a concentric rim for the lid. Wood barrels (cross) get a
+    // plank cross on the lid; metal ones stay bare.
+    const r = Math.min(o.w, o.h) / 2;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(0, 0, r * 0.62, 0, Math.PI * 2);
+    ctx.stroke();
+    if (o.cross) {
+      const d = r * 0.62;
+      ctx.beginPath();
+      ctx.moveTo(-d, 0);
+      ctx.lineTo(d, 0);
+      ctx.moveTo(0, -d);
+      ctx.lineTo(0, d);
+      ctx.stroke();
+    }
+    ctx.restore();
+    return;
+  }
+  const x = -o.w / 2;
+  const y = -o.h / 2;
+  ctx.fillRect(x, y, o.w, o.h);
   ctx.strokeRect(x, y, o.w, o.h);
   if (o.cross) {
     // plank "X" detail

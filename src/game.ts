@@ -17,7 +17,7 @@ import * as Armors from "./entities/armor.ts";
 import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
 import { startingUtilities } from "./entities/consumable.ts";
-import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox } from "./engine/collision.ts";
+import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsObstacle } from "./engine/collision.ts";
 import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
@@ -230,7 +230,7 @@ export class Game implements GameCtx {
     const sin = Math.sin(a);
     let pos = vec(zone.pos.x + lx * cos - ly * sin, zone.pos.y + lx * sin + ly * cos);
     for (const o of this.world.obstacles) {
-      if (o.z === zone.z) pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+      if (o.z === zone.z) pos = resolveCircleVsObstacle(pos, BODY_RADIUS, o);
     }
     return { pos, z: zone.z };
   }
@@ -326,11 +326,11 @@ export class Game implements GameCtx {
     for (let i = 0; i < WALL_PASSES; i++) {
       if (grid) {
         grid.eachNear(pos, BODY_RADIUS, z, (o) => {
-          pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+          pos = resolveCircleVsObstacle(pos, BODY_RADIUS, o);
         });
       } else {
         for (const o of this.world.obstacles) {
-          if (o.z === z) pos = resolveCircleVsBox(pos, BODY_RADIUS, o);
+          if (o.z === z) pos = resolveCircleVsObstacle(pos, BODY_RADIUS, o);
         }
       }
     }

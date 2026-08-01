@@ -138,6 +138,45 @@ export function segmentIntersectsCircle(a: Vec2, b: Vec2, c: Vec2, r: number): b
   return dx * dx + dy * dy < r * r;
 }
 
+// --- obstacle-shape dispatch -------------------------------------------------
+// An obstacle is a box UNLESS it is `round` (a barrel), in which case its
+// footprint is a circle centered on `pos` with radius = half its smaller extent
+// (the factories keep w === h, so this is just w/2). These wrappers pick the box
+// or circle test per obstacle; every obstacle geometry query in the game routes
+// through them, so nothing else has to know a barrel from a wall.
+
+/** A round obstacle's collision radius. */
+export const obstacleRadius = (o: Obstacle): number => Math.min(o.w, o.h) / 2;
+
+/** Push a body-circle out of an obstacle (box or barrel). */
+export function resolveCircleVsObstacle(pos: Vec2, r: number, o: Obstacle): Vec2 {
+  return o.round ? resolveCircleVsCircle(pos, r, o.pos, obstacleRadius(o)) : resolveCircleVsBox(pos, r, o);
+}
+
+/** Does a body-circle overlap an obstacle (box or barrel)? Strict, like the box
+ *  and circle primitives it delegates to. */
+export function circleIntersectsObstacle(pos: Vec2, r: number, o: Obstacle): boolean {
+  if (!o.round) return circleIntersectsBox(pos, r, o);
+  const rr = r + obstacleRadius(o);
+  const dx = pos.x - o.pos.x;
+  const dy = pos.y - o.pos.y;
+  return dx * dx + dy * dy < rr * rr;
+}
+
+/** Is a point inside an obstacle (box or barrel)? */
+export function pointInObstacle(p: Vec2, o: Obstacle): boolean {
+  if (!o.round) return pointInBox(p, o);
+  const r = obstacleRadius(o);
+  const dx = p.x - o.pos.x;
+  const dy = p.y - o.pos.y;
+  return dx * dx + dy * dy <= r * r;
+}
+
+/** Does the segment a->b cross an obstacle (box or barrel)? */
+export function segmentIntersectsObstacle(a: Vec2, b: Vec2, o: Obstacle): boolean {
+  return o.round ? segmentIntersectsCircle(a, b, o.pos, obstacleRadius(o)) : segmentIntersectsBox(a, b, o);
+}
+
 /** Point-in-centered-rect test. Works for any Box shape (obstacles, floors). */
 export function pointInBox(p: Vec2, o: Box): boolean {
   const lp = toLocal(p, o);
@@ -198,8 +237,9 @@ export function hasLineOfSight(
     if (z !== undefined && o.z !== z) continue;
     if (o.permeable) continue; // fences don't block sight
     // Rotated walls: run the slab test in the wall's own frame (both segment
-    // endpoints rotate with it — a straight line stays straight).
-    if (segmentIntersectsAabb(toLocal(a, o), toLocal(b, o), boxAabb(o))) return false;
+    // endpoints rotate with it — a straight line stays straight). Barrels test
+    // as a circle instead.
+    if (segmentIntersectsObstacle(a, b, o)) return false;
   }
   return true;
 }
@@ -285,7 +325,7 @@ export class ObstacleGrid {
     for (const idx of bucket) {
       const o = this.all[idx];
       if (o.permeable) continue;
-      if (pointInBox(p, o)) return o;
+      if (pointInObstacle(p, o)) return o;
     }
     return null;
   }
@@ -310,7 +350,7 @@ export class ObstacleGrid {
         for (const idx of bucket) {
           if (this.stamp[idx] === q) continue;
           this.stamp[idx] = q;
-          if (circleIntersectsBox(p, r, this.all[idx])) return true;
+          if (circleIntersectsObstacle(p, r, this.all[idx])) return true;
         }
       }
     }
@@ -358,7 +398,7 @@ export class ObstacleGrid {
         this.stamp[idx] = q;
         const o = this.all[idx];
         if (o.permeable) continue; // fences don't block sight
-        if (segmentIntersectsAabb(toLocal(a, o), toLocal(b, o), boxAabb(o))) return true;
+        if (segmentIntersectsObstacle(a, b, o)) return true;
       }
       return false;
     };

@@ -1,10 +1,11 @@
 import { BODY_RADIUS } from "../entities/character.ts";
-import { hasLineOfSight, pointInBox, type Box, type ObstacleGrid } from "../engine/collision.ts";
+import { hasLineOfSight, pointInBox, pointInObstacle, type Box, type ObstacleGrid } from "../engine/collision.ts";
 import {
   BLOOD,
   CRATE_SHRAPNEL,
   EXPLOSION,
   EXPLOSION_SMOKE,
+  METAL_SHRAPNEL,
   WALL_SHRAPNEL,
   spawnParticles,
   updateParticles,
@@ -61,6 +62,11 @@ export interface Obstacle {
   /** Rotation about `pos` in radians (absent/0 = axis-aligned). Collision,
    *  sight, and rendering all honor it — see collision.ts's local-frame Box. */
   angle?: number;
+  /** Barrel-like: a CIRCLE (radius = half the smaller of w/h; the factories keep
+   *  w === h) instead of a box, for collision, sight, bullets, and rendering. See
+   *  collision.ts's obstacle-shape dispatch. `cross` still splits the two barrel
+   *  looks (wood planks vs bare metal), exactly as it splits crate from wall. */
+  round?: boolean;
   z: number; // the level it sits on
   /** Fence-like: still solid to movement, but bullets and sight pass through, so
    *  same-level firefights work across it. (Bullets stay z-bound regardless —
@@ -216,6 +222,20 @@ export function makeWall(pos: Vec2, w: number, h: number, z = 0): Obstacle {
 /** A fence/railing: blocks movement, but bullets and sight pass through it. */
 export function makeFence(pos: Vec2, w: number, h: number, z = 0): Obstacle {
   return { pos, w, h, z, permeable: true, fill: "#a9946e", stroke: "#615139", strokeWidth: 5, cross: false, particle: WALL_SHRAPNEL };
+}
+
+/** A metal barrel: a solid CIRCLE (radius `r`) that blocks like a wall and
+ *  showers steel sparks when shot. `cross: false` marks the bare-metal look. */
+export function makeBarrelMetal(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
+  const d = 2 * r;
+  return { pos, w: d, h: d, z, round: true, fill: "#8a929b", stroke: "#3f474d", strokeWidth: 5, cross: false, particle: METAL_SHRAPNEL };
+}
+
+/** A wooden barrel: same circular collider, but splinters like a crate.
+ *  `cross: true` marks the planked-wood look (as it does for crates). */
+export function makeBarrelWood(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
+  const d = 2 * r;
+  return { pos, w: d, h: d, z, round: true, fill: "#9a6a2f", stroke: "#4a300f", strokeWidth: 5, cross: true, particle: CRATE_SHRAPNEL };
 }
 
 /**
@@ -433,6 +453,7 @@ export function losClear(world: World, a: Vec2, b: Vec2, z: number): boolean {
 }
 
 export const WALL_T = 26; // shared wall thickness (demo map + editor defaults)
+export const BARREL_R = 32; // default barrel radius (editor + factories)
 
 export function createWorld(): World {
   const obstacles: Obstacle[] = [
@@ -786,14 +807,14 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       } else {
         for (const o of w.obstacles) {
           if (o.z !== b.z || o.permeable) continue;
-          if (pointInBox(sample, o)) {
+          if (pointInObstacle(sample, o)) {
             struck = o;
             break;
           }
         }
       }
       if (struck) {
-        const at = backOut(sample, backDir, (p) => pointInBox(p, struck!));
+        const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
         spawnParticles(w.particles, at, backDir, struck.particle, b.z);
         consumed = true;
         break;
@@ -953,7 +974,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
       } else {
         for (const o of w.obstacles) {
           if (o.z !== p.z || o.permeable) continue;
-          if (pointInBox(sample, o)) {
+          if (pointInObstacle(sample, o)) {
             struck = o;
             break;
           }
@@ -963,7 +984,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
         // Detonate at the wall's face, not embedded in it — otherwise the blast's
         // own cover check would read the struck wall as shielding everything in
         // front of it. (Same back-out updateBullets does for its impact debris.)
-        const at = backOut(sample, backDir, (pt) => pointInBox(pt, struck!));
+        const at = backOut(sample, backDir, (pt) => pointInObstacle(pt, struck!));
         explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
         detonated = true;
         break;

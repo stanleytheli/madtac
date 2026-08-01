@@ -1,6 +1,6 @@
 import type { Character } from "./actor.ts";
 import { BODY_RADIUS, drawCharacter, type Skin } from "./character.ts";
-import { resolveCircleVsBox } from "../engine/collision.ts";
+import { resolveCircleVsObstacle } from "../engine/collision.ts";
 import { UNARMED } from "./guns.ts";
 import { add, angleOf, fromAngle, perp, scale, type Vec2 } from "../engine/vec.ts";
 import type { Obstacle } from "../world/world.ts";
@@ -117,7 +117,7 @@ export class Body {
     this.angularVel *= ANG_FRICTION;
     for (const o of obstacles) {
       if (o.z !== this.z) continue;
-      this.pos = resolveCircleVsBox(this.pos, BODY_RADIUS, o);
+      this.pos = resolveCircleVsObstacle(this.pos, BODY_RADIUS, o);
     }
   }
 

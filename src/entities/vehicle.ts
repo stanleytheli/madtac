@@ -23,7 +23,7 @@
  * The spec/instance split mirrors gun.ts/guns.ts: immutable `VehicleSpec` data
  * lives in vehicles.ts; this file is the live class.
  */
-import { circleIntersectsBox, pointInBox, resolveCircleVsBox, segmentIntersectsBox, worldAabb, type AABB, type Box } from "../engine/collision.ts";
+import { circleIntersectsBox, pointInBox, resolveCircleVsBox, resolveCircleVsObstacle, segmentIntersectsBox, worldAabb, type AABB, type Box } from "../engine/collision.ts";
 import { add, dot, fromAngle, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { Gun } from "./gun.ts";
 import { GUN_SPECS } from "./specs.ts";
@@ -323,11 +323,11 @@ export class Vehicle {
         let p = c;
         if (grid) {
           grid.eachNear(c, lc.r, this.z, (o) => {
-            p = resolveCircleVsBox(p, lc.r, o);
+            p = resolveCircleVsObstacle(p, lc.r, o);
           });
         } else {
           for (const o of world.obstacles) {
-            if (o.z === this.z) p = resolveCircleVsBox(p, lc.r, o);
+            if (o.z === this.z) p = resolveCircleVsObstacle(p, lc.r, o);
           }
         }
         this.pos = add(this.pos, sub(p, c));

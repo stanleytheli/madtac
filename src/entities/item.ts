@@ -1,5 +1,5 @@
 import type { Armor, ArmorSpec } from "./armor.ts";
-import { resolveCircleVsBox } from "../engine/collision.ts";
+import { resolveCircleVsObstacle } from "../engine/collision.ts";
 import type { UtilitySpec } from "./consumable.ts";
 import type { Gun } from "./gun.ts";
 import type { GunSpec } from "./guns.ts";
@@ -251,7 +251,7 @@ export class GunItem implements GroundItem {
     this.vel = scale(this.vel, ITEM_FRICTION);
     for (const o of obstacles) {
       if (o.z !== this.z) continue;
-      this.pos = resolveCircleVsBox(this.pos, ITEM_RADIUS, o);
+      this.pos = resolveCircleVsObstacle(this.pos, ITEM_RADIUS, o);
     }
   }
 
@@ -299,7 +299,7 @@ export class ArmorItem implements GroundItem {
     this.vel = scale(this.vel, ITEM_FRICTION);
     for (const o of obstacles) {
       if (o.z !== this.z) continue;
-      this.pos = resolveCircleVsBox(this.pos, ARMOR_ITEM_RADIUS, o);
+      this.pos = resolveCircleVsObstacle(this.pos, ARMOR_ITEM_RADIUS, o);
     }
   }
 
@@ -345,7 +345,7 @@ export class UtilityItem implements GroundItem {
     this.vel = scale(this.vel, ITEM_FRICTION);
     for (const o of obstacles) {
       if (o.z !== this.z) continue;
-      this.pos = resolveCircleVsBox(this.pos, UTILITY_ITEM_RADIUS, o);
+      this.pos = resolveCircleVsObstacle(this.pos, UTILITY_ITEM_RADIUS, o);
     }
   }
 

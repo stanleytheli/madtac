@@ -59,6 +59,18 @@ export const WALL_SHRAPNEL: ParticleStyle = {
   count: 6,
 };
 
+/** Bright steel sparks kicked off a metal barrel when shot — fast, small, and
+ *  short-lived, so they read as a spark shower rather than debris. */
+export const METAL_SHRAPNEL: ParticleStyle = {
+  color: "#ffd27a",
+  shape: "square",
+  size: 3,
+  speed: 5.5,
+  spread: 0.9,
+  life: 10,
+  count: 8,
+};
+
 /** Stylized red "blood" hitmarker when a character is struck. */
 export const BLOOD: ParticleStyle = {
   color: "#d11a1a",
