@@ -68,8 +68,11 @@
  * own level, and a candidate spot must be reachable without changing z (a
  * sidestep across a stair midpoint is a level change, not a strafe).
  */
-import type { Character } from "../entities/actor.ts";
+import { Character } from "../entities/actor.ts";
 import { BODY_RADIUS, type Skin } from "../entities/character.ts";
+import { Gun } from "../entities/gun.ts";
+import { UNARMED } from "../entities/guns.ts";
+import { GunItem } from "../entities/item.ts";
 import { walkable, zAt } from "../world/nav.ts";
 import { Oracle, type OracleOptions } from "./oracle.ts";
 import { profiler } from "../engine/profiler.ts";
@@ -262,6 +265,10 @@ const HOLD_MAX_TICKS = 5 * 60;
  *  goes and hunts rather than immediately re-entering the same fruitless hold. */
 const HOLD_STALE_COOLDOWN = 4.5 * 60;
 
+/** How close (world px) an out-of-ammo bot must get to a ground gun to grab it —
+ *  its body touching the pickup's footprint (ITEM_RADIUS = 35). */
+const PICKUP_RANGE = BODY_RADIUS + 35;
+
 /** The reach of the gun `c` would FIGHT with — primary, else secondary, else
  *  whatever is in hand — independent of what it happens to be holding. A
  *  holstered sprinter (RUN equips the fists, whose reach is punching distance)
@@ -392,6 +399,9 @@ export class TacOracle extends Oracle {
   /** Cached route-nearest hostile for blind navigation (see bestChase). */
   private chaseCache: Character | null = null;
   private chaseEvalIn = 0;
+  /** A throwaway waypoint parked on the ground gun this bot is fetching while out
+   *  of ammo (never in the world/roster), so navChase can steer toward it. */
+  private rearmMarker: Character | null = null;
   /** The lateral spot it's committed to (strafe lane or cover), or null. */
   private strafeTarget: Vec2 | null = null;
   private evalIn = 0;
@@ -419,6 +429,9 @@ export class TacOracle extends Oracle {
 
   protected override act(ai: AiContext, target: Character | null): void {
     this.vel = vec(0, 0);
+    // Out of bullets: everything else (fighting, holding, healing) is moot — go
+    // fetch a loaded gun. Overrides the whole combat flow while it applies.
+    if (this.rearm(ai)) return;
     if (this.focus && (this.focus.hp <= 0 || this.ticksSinceTarget > FOCUS_MEMORY)) {
       this.focus = null;
     }
@@ -495,6 +508,7 @@ export class TacOracle extends Oracle {
    *  any candidate rescoring or path query. */
   protected override coast(ai: AiContext): void {
     this.vel = vec(0, 0);
+    if (this.rearm(ai)) return; // keep walking to (or grabbing) the loaded gun between plans
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     this.updateMode(target ?? this.focus);
     this.updatePosture(ai, target); // keep the posture (and heal use) live between plans
@@ -745,11 +759,103 @@ export class TacOracle extends Oracle {
     return fightingRangeOf(this);
   }
 
-  /** Re-equip the best available weapon (primary, else secondary, else fists). */
+  /** Re-equip the best available weapon: a LOADED gun first (primary over
+   *  secondary), so a fresh pickup or a spare gets used instead of an empty slot;
+   *  then any gun; then fists. */
   private equipWeapon(): void {
-    if (this.slots.primary) this.equip("primary");
+    if (TacOracle.loaded(this.slots.primary)) this.equip("primary");
+    else if (TacOracle.loaded(this.slots.secondary)) this.equip("secondary");
+    else if (this.slots.primary) this.equip("primary");
     else if (this.slots.secondary) this.equip("secondary");
     else this.equip("hand");
+  }
+
+  /** A gun with rounds left to fire (in the mag or a spare) — fists/empty are not. */
+  private static loaded(g: Gun | null): boolean {
+    return !!g && (g.mag > 0 || g.reserveMags > 0);
+  }
+
+  /** Out of bullets when neither the primary nor the secondary has ammo (only
+   *  fists left). Melee doesn't count — that's the whole point of rearming. */
+  private outOfAmmo(): boolean {
+    return !TacOracle.loaded(this.slots.primary) && !TacOracle.loaded(this.slots.secondary);
+  }
+
+  /** Walk the currently-out-of-ammo bot to the nearest ground gun that still has
+   *  rounds and pick it up. Returns true if this tick was spent rearming, so the
+   *  caller skips the (weaponless) combat flow. Never routes to an empty gun, so
+   *  bots don't loop picking up and dropping dry weapons. */
+  private rearm(ai: AiContext): boolean {
+    if (!this.outOfAmmo()) {
+      this.rearmMarker = null;
+      return false;
+    }
+    const gun = this.nearestLoadedGun(ai);
+    if (!gun) return false; // nothing to fetch: fall through to the fists fallback
+    if (gun.z === this.z && dist(this.pos, gun.pos) <= PICKUP_RANGE) {
+      this.grabGun(ai, gun);
+      this.rearmMarker = null;
+      return true;
+    }
+    // Steer to it over the graph via a marker parked on the gun (standoff 0, so we
+    // walk right onto it — see standoffFor).
+    const m = (this.rearmMarker ??= new Character(vec(0, 0), this.skin, { hand: new Gun(UNARMED) }));
+    m.pos = vec(gun.pos.x, gun.pos.y);
+    m.z = gun.z;
+    m.hp = 1;
+    if (this.mode === "hold") this.clearHold(); // drop any stale hold plan
+    this.navChase(ai, m, null);
+    return true;
+  }
+
+  /** The nearest ground gun with ammo, by walk route (falling back to straight
+   *  line on the bot's own level when there's no graph). Empty guns are skipped. */
+  private nearestLoadedGun(ai: AiContext): GunItem | null {
+    const nav = ai.nav;
+    const myNode = nav ? nav.nearestWalkable(ai.world, this.pos, this.z) : -1;
+    let best: GunItem | null = null;
+    let bestCost = Infinity;
+    for (const it of ai.world.items) {
+      if (!(it instanceof GunItem) || !TacOracle.loaded(it.gun)) continue;
+      let cost: number;
+      if (nav && myNode >= 0) {
+        const goal = nav.nearestWalkable(ai.world, it.pos, it.z);
+        if (goal < 0) continue;
+        if (goal === myNode) cost = dist(this.pos, it.pos);
+        else {
+          const r = nav.route(myNode, goal);
+          if (!r) continue; // unreachable: don't pick a gun we can't get to
+          cost = r.dist;
+        }
+      } else {
+        if (it.z !== this.z) continue;
+        cost = dist(this.pos, it.pos);
+      }
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = it;
+      }
+    }
+    return best;
+  }
+
+  /** Take `gun` off the ground: pull it from the world, holster it (dropping the
+   *  empty gun it replaces back onto the ground), and equip it so the bot fights
+   *  with it immediately. */
+  private grabGun(ai: AiContext, item: GunItem): void {
+    const items = ai.world.items;
+    const idx = items.indexOf(item);
+    if (idx >= 0) items.splice(idx, 1);
+    const slot: "primary" | "secondary" = item.gun.spec.primary ? "primary" : "secondary";
+    const dropped = this.holster(item.gun);
+    if (dropped) items.push(dropped.getGroundItem(vec(this.pos.x, this.pos.y), vec(0, 0), this.z));
+    this.equip(slot);
+  }
+
+  /** Walk right onto the ground gun being fetched (no combat standoff for the
+   *  rearm marker); everything else keeps the base fighting standoff. */
+  protected override standoffFor(chase: Character): number {
+    return chase === this.rearmMarker ? 0 : super.standoffFor(chase);
   }
 
   /** Carrying at least one (healing) utility to use. */
