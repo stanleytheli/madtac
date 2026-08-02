@@ -10,6 +10,8 @@
  * A `GunSpec` is immutable data. The mutable, per-instance game object that
  * tracks recoil/cooldown/etc. is the `Gun` class (see gun.ts).
  */
+import { STANDARD_EXPLOSION, type ParticleStyle } from "../engine/particle.ts";
+
 export interface GripLocal {
   f: number;
   l: number;
@@ -68,6 +70,10 @@ export interface ProjectileSpec {
   /** Sprite native px -> world px, applied to both axes (aspect preserved). Only
    *  meaningful with `sprite` set; defaults to DEFAULT_PROJECTILE_SPRITE_SCALE. */
   spriteScale?: number;
+  /** The particle bursts spawned at detonation (smoke / fireball / shrapnel / …).
+   *  Omitted = the STANDARD_EXPLOSION preset. Give a launcher its own list here to
+   *  make it detonate with a distinct look. */
+  explosion?: readonly ParticleStyle[];
 }
 
 /** Fraction of damage that passes through each armor tier (0..1). Indexed by the
@@ -600,6 +606,7 @@ export const RPG: GunSpec = {
     trailColor: "#ffb454",
     sprite: "rocket",
     spriteScale: 1.0, // 115px art -> ~58px long in world
+    explosion: STANDARD_EXPLOSION,
   },
   visualRecoil: 14,
   recoilRecovery: 1,

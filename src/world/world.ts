@@ -3,10 +3,8 @@ import { hasLineOfSight, pointInBox, pointInObstacle, type Box, type ObstacleGri
 import {
   BLOOD,
   CRATE_SHRAPNEL,
-  EXPLOSION,
-  EXPLOSION_SHRAPNEL,
-  EXPLOSION_SMOKE,
   METAL_SHRAPNEL,
+  STANDARD_EXPLOSION,
   WALL_SHRAPNEL,
   spawnParticles,
   updateParticles,
@@ -421,6 +419,7 @@ export interface Projectile {
   trailColor: string; // exhaust-trail color "#rrggbb"
   sprite?: string; // optional /assets basename drawn in place of the body disc
   spriteScale?: number; // sprite native px -> world px (aspect preserved)
+  explosion?: readonly ParticleStyle[]; // particle bursts at detonation (default: STANDARD_EXPLOSION)
 }
 
 /** Static map data plus live projectiles, particle debris, and ground items. */
@@ -939,6 +938,7 @@ export function explode(
   armorPen: ArmorPen,
   owner: Hittable | null,
   targets: readonly Hittable[],
+  blast: readonly ParticleStyle[] = STANDARD_EXPLOSION,
 ): void {
   // A ray from the blast to `p` is clear unless a wall or a solid vehicle hull
   // stands in it (grid.blocked / hasLineOfSight both skip permeable fences).
@@ -965,9 +965,9 @@ export function explode(
     const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
     t.registerHit(dir, t.pos, damage * frac * (v / 9), armorPen, owner);
   }
-  spawnParticles(w.particles, at, vec(1, 0), EXPLOSION_SMOKE, z);
-  spawnParticles(w.particles, at, vec(1, 0), EXPLOSION, z);
-  spawnParticles(w.particles, at, vec(1, 0), EXPLOSION_SHRAPNEL, z);
+  // Detonation visuals: each burst in the round's blast preset (see ProjectileSpec
+  // .explosion). spread is a full circle, so the ejection direction is irrelevant.
+  for (const style of blast) spawnParticles(w.particles, at, vec(1, 0), style, z);
 }
 
 /**
@@ -981,7 +981,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
   for (const p of w.projectiles) {
     p.life -= 1;
     if (p.life <= 0) {
-      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets); // airburst at max range
+      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion); // airburst at max range
       continue;
     }
 
@@ -1010,7 +1010,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
         // own cover check would read the struck wall as shielding everything in
         // front of it. (Same back-out updateBullets does for its impact debris.)
         const at = backOut(sample, backDir, (pt) => pointInObstacle(pt, struck!));
-        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
+        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion);
         detonated = true;
         break;
       }
@@ -1024,7 +1024,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
           const hb = v.roundPartAt(sample);
           if (hb) {
             const at = backOut(sample, backDir, (pt) => pointInBox(pt, hb));
-            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
+            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion);
             detonated = true;
             break;
           }
@@ -1036,7 +1036,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
       for (const t of targets) {
         if (t === p.owner || t.z !== p.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS + p.bodyRadius) {
-          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets);
+          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion);
           detonated = true;
           break;
         }
@@ -1075,6 +1075,7 @@ export function spawnProjectile(
   z: number,
   sprite?: string,
   spriteScale?: number,
+  explosion?: readonly ParticleStyle[],
 ): void {
   w.projectiles.push({
     pos: origin,
@@ -1093,5 +1094,6 @@ export function spawnProjectile(
     trailColor,
     sprite,
     spriteScale,
+    explosion,
   });
 }

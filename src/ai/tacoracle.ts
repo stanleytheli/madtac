@@ -253,6 +253,14 @@ const HOLD_RETRY_TICKS = 60;
  *  refreshing it mid-walk would chase its own tail — the plan moves us, which
  *  moves the plan. Standing still, that loop can't close. */
 const HOLD_REPLAN_TICKS = 60;
+/** A base soldier gives up a hold after this many ticks (60/s) without a fight
+ *  ever starting — a hold is a bet that contact is coming, and if it doesn't pay
+ *  off there's no point waiting on a dead angle. (DominationOracle opts out and
+ *  runs its own objective vigil instead — see holdMaxTicks.) */
+const HOLD_MAX_TICKS = 5 * 60;
+/** ...and once it gives up, it won't re-dig-in for this long, so it actually
+ *  goes and hunts rather than immediately re-entering the same fruitless hold. */
+const HOLD_STALE_COOLDOWN = 4.5 * 60;
 
 /** The reach of the gun `c` would FIGHT with — primary, else secondary, else
  *  whatever is in hand — independent of what it happens to be holding. A
@@ -344,6 +352,9 @@ export class TacOracle extends Oracle {
   private healDwell = 0;
   /** Consecutive ticks the HOLD entry condition has held (see HOLD_COMMIT_TICKS). */
   private holdDwell = 0;
+  /** Consecutive ticks spent dug in (mode === "hold"), for the give-up timeout
+   *  (see holdMaxTicks). Resets whenever the posture isn't HOLD. */
+  private holdTicks = 0;
   /** Ticks left before HOLD may be attempted again after a failed plan. */
   private holdRetryIn = 0;
   /** The frozen hold plan. `holdEntry` is where the enemy would step into view
@@ -595,6 +606,14 @@ export class TacOracle extends Oracle {
     // it for HOLD_RETRY_TICKS so we don't re-run the search every tick against
     // geometry that offers nothing.
     if (this.holdRetryIn > 0) this.holdRetryIn -= 1;
+    // Give up a hold that's dragged on without a fight ever starting: it was a bet
+    // that contact was coming, and it hasn't paid off. Park the posture (via the
+    // retry cooldown) so the bot goes and hunts instead of re-digging-in on the
+    // same dead angle. holdMaxTicks() is Infinity for DominationOracle, which runs
+    // its own objective vigil instead.
+    if (this.mode === "hold" && this.holdTicks >= this.holdMaxTicks()) {
+      this.holdRetryIn = Math.max(this.holdRetryIn, HOLD_STALE_COOLDOWN);
+    }
     const holdSafe = !healing && this.holdRetryIn === 0 && this.wantsHold(ai, target);
     // NB: this one charges during RUN on purpose. RUN has no completion condition
     // — arriving doesn't change fightDist, so a bot that reaches its destination
@@ -636,7 +655,17 @@ export class TacOracle extends Oracle {
       this.strafeTarget = null;
       this.evalIn = 0;
     }
+    // Track time dug in for the give-up timeout; any non-HOLD tick resets it.
+    this.holdTicks = this.mode === "hold" ? this.holdTicks + 1 : 0;
     this.applyPostureSlot();
+  }
+
+  /** How many consecutive ticks the bot will wait in a hold before giving up and
+   *  going to hunt. The base soldier bets a fight is coming; if it never does, it
+   *  stops waiting. DominationOracle returns Infinity — it holds objectives on its
+   *  own schedule (the HOLD_MAX vigil in its wantsHold), not this give-up timer. */
+  protected holdMaxTicks(): number {
+    return HOLD_MAX_TICKS;
   }
 
   /** Is there a hold to be had here? Builds the plan if there isn't one yet, and
@@ -660,6 +689,15 @@ export class TacOracle extends Oracle {
    *  DominationOracle overrides this to hold the point it's standing on. */
   protected wantsHold(_ai: AiContext, target: Character | null): boolean {
     if (target) return false; // someone in sight: fight, don't dig in
+    // The distance band is an ENTRY gate only. Once dug in, whether to STAY is
+    // governed by the give-up timer (holdMaxTicks) and losing sight of a target —
+    // NOT by re-measuring fightDist from our live position. Re-checking it every
+    // tick let the retreat to cover, which GROWS the distance-to-contact, nudge
+    // fightDist just past RUN_DISTANCE one step short of the cover; that cancelled
+    // the hold, the bot approached (can't RUN — runDwell is starved during HOLD),
+    // fightDist dropped back under the line, it re-held, retreated again... a walk/
+    // retreat ping-pong that never settled. Committing to the hold breaks the loop.
+    if (this.mode === "hold") return true;
     const fightDist = Math.min(this.visDist, this.enemyVisDist);
     return fightDist > 0 && fightDist < RUN_DISTANCE;
   }

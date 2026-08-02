@@ -65,14 +65,14 @@ function emptyWorld(obstacles: any[] = []): World {
 }
 
 // ---------------------------------------------------------------- explode -----
-console.log("explode() — falloff, cutoff, full friendly fire:");
+console.log("explode() — range falloff (open field = full 9/9 coverage), full FF:");
 {
   const R = 150,
     D = 100;
   const center = dummy(0, 0);
-  const edgeOfBody = dummy(30, 0); // d=30=BODY_RADIUS -> body edge at centre -> full
-  const half = dummy(105, 0); // edge=105-30=75 -> frac .5
-  const atRadius = dummy(180, 0); // edge=150 -> frac 0 -> no hit
+  const edgeOfBody = dummy(30, 0); // edge = max(0, 30-30) = 0 -> full
+  const half = dummy(105, 0); // edge = 105-30 = 75 -> frac .5
+  const atRadius = dummy(180, 0); // edge = 150 = radius -> discarded before raycasting
   const outside = dummy(240, 0); // beyond radius+body -> no hit
   const owner = dummy(40, 0); // the shooter, inside the blast
   const teammate = dummy(-50, 0);
@@ -81,7 +81,7 @@ console.log("explode() — falloff, cutoff, full friendly fire:");
   check("centre takes full damage", near(center.dmg, 100), `dmg=${center.dmg}`);
   check("body-edge-at-centre full", near(edgeOfBody.dmg, 100), `dmg=${edgeOfBody.dmg}`);
   check("mid-radius ~half damage", near(half.dmg, 50), `dmg=${half.dmg}`);
-  check("at radius: no damage (frac 0)", atRadius.dmg === 0, `dmg=${atRadius.dmg}`);
+  check("at radius: no damage", atRadius.dmg === 0, `dmg=${atRadius.dmg}`);
   check("outside radius: no damage", outside.dmg === 0, `dmg=${outside.dmg}`);
   check("OWNER is hit (full FF, self-damage)", owner.dmg > 0, `dmg=${owner.dmg}`);
   check("teammate is hit (full FF)", teammate.dmg > 0, `dmg=${teammate.dmg}`);
@@ -105,6 +105,34 @@ console.log("explode() — a solid wall shields the blast:");
   explode(w, vec(0, 0), 0, 100, 300, RPG.armorPen, null, [behind, open]);
   check("body behind a wall: shielded", behind.dmg === 0, `dmg=${behind.dmg}`);
   check("body in the open: hit", open.dmg > 0, `dmg=${open.dmg}`);
+}
+
+// --------------------------------------------------------- partial cover (v/9) -
+console.log("explode() — partial cover scales damage by the visible fraction:");
+{
+  const R = 300,
+    D = 100;
+  // Open target: all 9 rays clear -> full range-falloff damage.
+  const openT = dummy(200, 0);
+  explode(emptyWorld(), vec(0, 0), 0, D, R, RPG.armorPen, null, [openT]);
+  const full = openT.dmg; // 100 * (1 - (200-30)/300) * 1 = 43.3
+  check("open target: full (v=9) damage", near(full, 43.33, 0.1), `dmg=${full.toFixed(1)}`);
+
+  // A wall over the +y half of the silhouette blocks some rays, not all.
+  const halfWall = makeWall(vec(170, 155), 20, 290, 0); // x∈[160,180], y∈[10,300]
+  const partial = dummy(200, 0);
+  explode(emptyWorld([halfWall]), vec(0, 0), 0, D, R, RPG.armorPen, null, [partial]);
+  check("partial cover: 0 < dmg < full", partial.dmg > 0 && partial.dmg < full, `dmg=${partial.dmg.toFixed(1)}`);
+  // dmg/full == v/9 exactly (both share the range falloff), so this pins the
+  // damage to a whole visible-ray count in 1..8 without hardcoding which.
+  const v = (partial.dmg / full) * 9;
+  check("damage is a whole v/9 fraction (1..8 rays)", near(v, Math.round(v), 1e-6) && Math.round(v) >= 1 && Math.round(v) <= 8, `v=${v.toFixed(3)}`);
+
+  // A wall across the whole silhouette blocks all 9 rays: nothing gets through.
+  const bigWall = makeWall(vec(100, 0), 20, 600, 0);
+  const covered = dummy(200, 0);
+  explode(emptyWorld([bigWall]), vec(0, 0), 0, D, R, RPG.armorPen, null, [covered]);
+  check("fully behind cover: no damage (v=0)", covered.dmg === 0, `dmg=${covered.dmg}`);
 }
 
 // -------------------------------------------------------- updateProjectiles ---
@@ -162,6 +190,7 @@ console.log("Gun(RPG).fire() — spawns a projectile, feasibleRange correct:");
   const p = w.projectiles[0];
   check("blast damage from spec", p && p.damage === RPG.damage, `dmg=${p?.damage}`);
   check("blast radius from spec", p && p.radius === RPG.projectile!.radius, `r=${p?.radius}`);
+  check("blast visuals carried from spec", p && p.explosion === RPG.projectile!.explosion, `explosion=${!!p?.explosion}`);
   check("travel speed from FireSpec", p && near(Math.hypot(p.vel.x, p.vel.y), RPG.fire!.bulletSpeed, 1e-9));
   check("feasibleRange = speed*life", gun.feasibleRange === RPG.fire!.bulletSpeed * RPG.fire!.bulletLife,
     `range=${gun.feasibleRange}`);

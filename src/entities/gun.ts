@@ -320,6 +320,7 @@ export class Gun implements Droppable {
         owner.z,
         pj.sprite,
         pj.spriteScale,
+        pj.explosion,
       );
       return true;
     }

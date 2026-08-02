@@ -115,11 +115,11 @@ export const EXPLOSION: ParticleStyle = {
 export const EXPLOSION_SMOKE: ParticleStyle = {
   color: "#4a4038",
   shape: "circle",
-  size: 40,
-  speed: 15,
+  size: 60,
+  speed: 18,
   spread: Math.PI,
   life: 50,
-  count: 15,
+  count: 8,
 };
 
 /** Burning green embers flung out of an explosion, each dragging a yellow
@@ -135,6 +135,16 @@ export const EXPLOSION_SHRAPNEL: ParticleStyle = {
   trail: "#ffe14a",
   shrink: true,
 };
+
+/** The default explosion look — dark smoke, a bright fireball, and burning
+ *  shrapnel — as a list of bursts spawned at the blast point. Launcher weapons
+ *  reference a blast preset like this from their spec (GunSpec.projectile.explosion),
+ *  so different rounds can detonate with different visuals. */
+export const STANDARD_EXPLOSION: readonly ParticleStyle[] = [
+  EXPLOSION_SMOKE,
+  EXPLOSION,
+  EXPLOSION_SHRAPNEL,
+];
 
 const DRAG = 0.86; // per-tick velocity retention (particles slow as they fly)
 

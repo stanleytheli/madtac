@@ -74,6 +74,14 @@ export class DominationOracle extends TacOracle {
    *  lapses or the bot leaves the ring. */
   private secureTicks = 0;
 
+  /** Objective holds run on their own clock — the HOLD_MAX vigil in wantsHold,
+   *  which only fires once the point is won AND quiet. A defender must NOT abandon
+   *  a live point just because a fight is slow to arrive, so opt out of the base
+   *  soldier's give-up timer entirely. */
+  protected override holdMaxTicks(): number {
+    return Infinity;
+  }
+
   /** Never treat the objective marker as a live enemy contact (that would zero
    *  the contact metrics and stop the bot healing/running on the way there). */
   protected override inContact(ai: AiContext, chase: Character): boolean {
