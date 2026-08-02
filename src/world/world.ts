@@ -902,13 +902,28 @@ export function spawnBullet(
   });
 }
 
+/** The 8 evenly-spaced offsets on the body's silhouette (radius BODY_RADIUS about
+ *  the head centre). With the centre itself these are the 9 points explode() rays
+ *  toward to measure how exposed a target is — see the v/9 coverage factor. */
+const BLAST_SAMPLES: readonly Vec2[] = Array.from({ length: 8 }, (_, i) => {
+  const a = (i / 8) * Math.PI * 2;
+  return vec(Math.cos(a) * BODY_RADIUS, Math.sin(a) * BODY_RADIUS);
+});
+
 /**
  * Detonate an area-of-effect blast at `at` on level `z`. Every character on that
- * level whose body circle reaches into the blast radius takes damage, scaled by a
- * linear falloff from full at the centre to 0 at the edge, unless a solid wall
- * stands between the blast and the body (fences don't shield — same permeability
- * rule bullets/sight use). Damage is dealt via the normal hit pipeline, so kill
- * crediting works exactly as for a bullet, with the shooter as attacker.
+ * level within `radius` of its near edge takes damage on two independent scales:
+ *   - RANGE: a linear falloff `1 - edge/radius`, measured to the body's near edge
+ *     (`edge = max(0, dist - BODY_RADIUS)`), so it's full while the body circle
+ *     overlaps the centre and tapers to 0 at the radius.
+ *   - COVER: `v / 9`, where v is how many of 9 points on the target (its centre
+ *     plus 8 around its silhouette) have clear line of sight back to the blast —
+ *     so a target with only a shoulder poking past a wall takes a sliver, and one
+ *     fully behind cover takes nothing. Walls and solid vehicle hulls block a ray;
+ *     fences (permeable) don't, matching the bullet/sight rule.
+ * Damage = `damage * (1 - edge/radius) * (v/9)`, dealt through the normal hit
+ * pipeline so kill crediting works exactly as for a bullet, with the shooter as
+ * attacker.
  *
  * Friendly fire is intentional and total: the owner and their teammates are NOT
  * spared — anyone in the radius is hit. (Kill *crediting* still filters to hostile
@@ -924,22 +939,30 @@ export function explode(
   owner: Hittable | null,
   targets: readonly Hittable[],
 ): void {
+  // A ray from the blast to `p` is clear unless a wall or a solid vehicle hull
+  // stands in it (grid.blocked / hasLineOfSight both skip permeable fences).
+  const rayClear = (p: Vec2): boolean =>
+    !(w.grid ? w.grid.blocked(at, p, z) : !hasLineOfSight(at, p, w.obstacles, z)) &&
+    !vehicleBlocksSegment(w.vehicles, at, p, z);
+
   for (const t of targets) {
+    // Cheap discards first, before any raycasting: wrong level, or too far for the
+    // range falloff to leave anything (near edge at/beyond the radius => frac <= 0).
     if (t.z !== z) continue;
     const d = dist(at, t.pos);
-    if (d > radius + BODY_RADIUS) continue;
-    // A wall between the blast and the body shields it. grid.blocked / hasLineOfSight
-    // both skip permeable fences, which is what we want (fences don't stop a blast).
-    // A solid vehicle hull shields too — that's blast protection for occupants.
-    const blocked = w.grid ? w.grid.blocked(at, t.pos, z) : !hasLineOfSight(at, t.pos, w.obstacles, z);
-    if (blocked || vehicleBlocksSegment(w.vehicles, at, t.pos, z)) continue;
-    // Measure to the body's near edge so a body is fully "in" the blast the moment
-    // its circle touches the centre; linear falloff to 0 at the radius.
     const edge = Math.max(0, d - BODY_RADIUS);
+    if (edge >= radius) continue;
     const frac = 1 - edge / radius;
-    if (frac <= 0) continue;
+
+    // Coverage: count how many of the 9 sample points can see the blast.
+    let v = rayClear(t.pos) ? 1 : 0;
+    for (const off of BLAST_SAMPLES) {
+      if (rayClear(vec(t.pos.x + off.x, t.pos.y + off.y))) v++;
+    }
+    if (v === 0) continue; // fully behind cover
+
     const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
-    t.registerHit(dir, t.pos, damage * frac, armorPen, owner);
+    t.registerHit(dir, t.pos, damage * frac * (v / 9), armorPen, owner);
   }
   spawnParticles(w.particles, at, vec(1, 0), EXPLOSION_SMOKE, z);
   spawnParticles(w.particles, at, vec(1, 0), EXPLOSION, z);

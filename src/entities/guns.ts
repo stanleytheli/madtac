@@ -594,7 +594,7 @@ export const RPG: GunSpec = {
     tracerColor: "#000000",
   },
   projectile: {
-    radius: 150,
+    radius: 200,
     bodyRadius: 9,
     color: "#d6d6d6",
     trailColor: "#ffb454",
