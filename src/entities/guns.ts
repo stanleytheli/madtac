@@ -562,12 +562,12 @@ export const RPG: GunSpec = {
   muzzle: { f: -60, l: 42 },
 
   parts: [
-    { p0: { f: -35, l: 37 }, p1: { f: 57, l: 17 }, width: 14, color: "#3d1500", over: false },
+    { p0: { f: -35, l: 37 }, p1: { f: 57, l: 17 }, width: 14, color: "#643116", over: false },
     { p0: { f: -38, l: 22 }, p1: { f: -32, l: 52 }, width: 5, color: "#181818", over: false },
-    { p0: { f: 57, l: 17 }, p1: { f: 76, l: 13 }, width: 11, color: "#123f0c", over: false },
-    { p0: { f: 76, l: 13 }, p1: { f: 90, l: 10 }, width: 16, color: "#123f0c", over: false },
-    { p0: { f: 90, l: 10 }, p1: { f: 104, l: 7 }, width: 10, color: "#123f0c", over: false },
-    { p0: { f: 104, l: 7 }, p1: { f: 114, l: 5 }, width: 6, color: "#123f0c", over: false },
+    { p0: { f: 57, l: 17 }, p1: { f: 76, l: 13 }, width: 11, color: "#1a5313", over: false },
+    { p0: { f: 76, l: 13 }, p1: { f: 90, l: 10 }, width: 16, color: "#1a5313", over: false },
+    { p0: { f: 90, l: 10 }, p1: { f: 104, l: 7 }, width: 10, color: "#1a5313", over: false },
+    { p0: { f: 104, l: 7 }, p1: { f: 114, l: 5 }, width: 6, color: "#1a5313", over: false },
   ],
 
   reloadAnim: {
