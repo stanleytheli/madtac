@@ -4,6 +4,7 @@ import {
   BLOOD,
   CRATE_SHRAPNEL,
   EXPLOSION,
+  EXPLOSION_SHRAPNEL,
   EXPLOSION_SMOKE,
   METAL_SHRAPNEL,
   WALL_SHRAPNEL,
@@ -966,6 +967,7 @@ export function explode(
   }
   spawnParticles(w.particles, at, vec(1, 0), EXPLOSION_SMOKE, z);
   spawnParticles(w.particles, at, vec(1, 0), EXPLOSION, z);
+  spawnParticles(w.particles, at, vec(1, 0), EXPLOSION_SHRAPNEL, z);
 }
 
 /**

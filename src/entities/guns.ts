@@ -553,7 +553,7 @@ export const RPG: GunSpec = {
   icon: "rpg_large",
   rightGrip: { f: 30, l: 35 },
   leftGrip: { f: 50, l: 5 },
-  muzzle: { f: 90, l: 20 },
+  muzzle: { f: -60, l: 42 },
 
   parts: [
     { p0: { f: -35, l: 37 }, p1: { f: 57, l: 17 }, width: 14, color: "#3d1500", over: false },

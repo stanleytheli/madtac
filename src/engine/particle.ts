@@ -1,4 +1,4 @@
-import { add, angleOf, fromAngle, scale, type Vec2 } from "./vec.ts";
+import { add, angleOf, fromAngle, scale, vec, type Vec2 } from "./vec.ts";
 
 /**
  * Short-lived visual debris: shrapnel from map objects, blood from characters.
@@ -17,6 +17,16 @@ export interface Particle {
   size: number; // half-extent (square) / radius (circle)
   color: string;
   shape: ParticleShape;
+  /** If set, the particle leaves a trail of this color: each tick (while moving)
+   *  it stamps a static copy of itself — same pos, orientation, and shape — that
+   *  shrinks to nothing. See updateParticles. */
+  trail?: string;
+  /** If true, the drawn size scales down with remaining life — an ember burning
+   *  out (and trail stamps disappearing). Alpha still fades unless `noFade`. */
+  shrink?: boolean;
+  /** If true, alpha stays at full for the whole life instead of fading out — the
+   *  particle only vanishes by shrinking (used for trail stamps). */
+  noFade?: boolean;
 }
 
 /**
@@ -35,6 +45,13 @@ export interface ParticleStyle {
   life: number;
   /** How many particles to emit per burst. */
   count: number;
+  /** Optional trail color "#rrggbb": each particle stamps shrinking afterimages
+   *  of itself in this color as it flies (see Particle.trail). */
+  trail?: string;
+  /** Optional: particles shrink as they burn out (see Particle.shrink). */
+  shrink?: boolean;
+  /** Optional: hold full alpha and vanish only by shrinking (see Particle.noFade). */
+  noFade?: boolean;
 }
 
 /** Brown wooden splinters kicked off a crate when shot. */
@@ -87,22 +104,36 @@ export const BLOOD: ParticleStyle = {
 export const EXPLOSION: ParticleStyle = {
   color: "#ffb43a",
   shape: "circle",
-  size: 13,
-  speed: 11,
+  size: 125,
+  speed: 0,
   spread: Math.PI,
   life: 20,
-  count: 26,
+  count: 1,
 };
 
 /** Dark smoke puff layered under the fireball for a bit of body. */
 export const EXPLOSION_SMOKE: ParticleStyle = {
   color: "#4a4038",
   shape: "circle",
-  size: 16,
-  speed: 6,
+  size: 40,
+  speed: 15,
   spread: Math.PI,
-  life: 34,
-  count: 16,
+  life: 50,
+  count: 15,
+};
+
+/** Burning green embers flung out of an explosion, each dragging a yellow
+ *  exhaust trail and shrinking as it burns out. Cosmetic only. */
+export const EXPLOSION_SHRAPNEL: ParticleStyle = {
+  color: "#ffe14a",
+  shape: "square",
+  size: 15,
+  speed: 30,
+  spread: Math.PI, // full 360° burst
+  life: 25,
+  count: 8,
+  trail: "#ffe14a",
+  shrink: true,
 };
 
 const DRAG = 0.86; // per-tick velocity retention (particles slow as they fly)
@@ -134,11 +165,19 @@ export function spawnParticles(
       size: style.size,
       color: style.color,
       shape: style.shape,
+      trail: style.trail,
+      shrink: style.shrink,
+      noFade: style.noFade,
     });
   }
 }
 
-/** Advance all particles one tick; drop the dead ones. */
+const STAMP_LIFE = 12; // ticks a trail stamp lives (it shrinks to nothing over this)
+const MIN_TRAIL_SPEED = 0.5; // below this the particle is ~stopped: stop trailing
+
+/** Advance all particles one tick; drop the dead ones. A particle with a `trail`
+ *  color also stamps a static, shrinking afterimage of itself each tick while it's
+ *  still moving — the stamps carry no trail of their own, so they don't recurse. */
 export function updateParticles(particles: Particle[]): Particle[] {
   const alive: Particle[] = [];
   for (const p of particles) {
@@ -146,13 +185,38 @@ export function updateParticles(particles: Particle[]): Particle[] {
     p.vel = scale(p.vel, DRAG);
     p.angle += p.spin;
     p.life -= 1;
-    if (p.life > 0) alive.push(p);
+    if (p.life <= 0) continue;
+
+    if (p.trail && Math.hypot(p.vel.x, p.vel.y) > MIN_TRAIL_SPEED) {
+      // Stamp at the current pos + orientation, sized to match how big the parent
+      // is drawing right now, in the trail colour. shrink + noFade => it holds full
+      // opacity and simply shrinks away, leaving a tapering streak of afterimages.
+      // Pushed BEFORE the parent so the parent draws on top of its own trail —
+      // otherwise the fresh same-spot stamp would hide the parent every frame.
+      const s = p.shrink ? p.size * (p.life / p.maxLife) : p.size;
+      alive.push({
+        pos: vec(p.pos.x, p.pos.y),
+        vel: vec(0, 0),
+        z: p.z,
+        angle: p.angle,
+        spin: 0,
+        life: STAMP_LIFE,
+        maxLife: STAMP_LIFE,
+        size: s,
+        color: p.trail,
+        shape: p.shape,
+        shrink: true,
+        noFade: true,
+      });
+    }
+    alive.push(p);
   }
   return alive;
 }
 
-/** Draw particles, fading out over their remaining life. Pass `z` to draw only
- *  the ones on that level (each level's render pass draws its own debris). */
+/** Draw particles. Alpha fades over remaining life unless `noFade`; `shrink`
+ *  scales the drawn size down with life. Pass `z` to draw only the ones on that
+ *  level (each level's render pass draws its own debris). */
 export function drawParticles(
   ctx: CanvasRenderingContext2D,
   particles: readonly Particle[],
@@ -160,16 +224,19 @@ export function drawParticles(
 ): void {
   for (const p of particles) {
     if (z !== undefined && p.z !== z) continue;
+    const lifeFrac = Math.max(0, p.life / p.maxLife);
+    const size = p.shrink ? p.size * lifeFrac : p.size;
+    if (size <= 0) continue;
     ctx.save();
-    ctx.globalAlpha = Math.max(0, p.life / p.maxLife);
+    ctx.globalAlpha = p.noFade ? 1 : lifeFrac;
     ctx.translate(p.pos.x, p.pos.y);
     ctx.fillStyle = p.color;
     if (p.shape === "square") {
       ctx.rotate(p.angle);
-      ctx.fillRect(-p.size, -p.size, p.size * 2, p.size * 2);
+      ctx.fillRect(-size, -size, size * 2, size * 2);
     } else {
       ctx.beginPath();
-      ctx.arc(0, 0, p.size, 0, Math.PI * 2);
+      ctx.arc(0, 0, size, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.restore();

@@ -617,7 +617,7 @@ function drawProjectiles(z: number): void {
     if (traveled <= p.renderAfter) continue;
 
     const dir = norm(p.vel);
-    const tailLen = Math.min(70, traveled - p.renderAfter);
+    const tailLen = Math.min(80, traveled - p.renderAfter);
     const tail = sub(p.pos, scale(dir, tailLen));
     const rgb = rgbTriple(p.trailColor);
     const grad = ctx.createLinearGradient(tail.x, tail.y, p.pos.x, p.pos.y);
