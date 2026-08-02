@@ -161,7 +161,7 @@ export const ARMOR_L4: ArmorSpec = {
   name: "Level IV Armor",
   level: 4,
   icon: "armor_l4",
-  maxHp: 500,
+  maxHp: 750,
   speed: 0.75,
   border: { color: "#000000", width: 7 }, // purple
   helmet: { color: "#182819", radius: 17, back: 8 },

@@ -207,13 +207,13 @@ export interface GunSpec {
 // const DEFAULT_AP_762       = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
 // const DEFAULT_AP_50AE      = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
 
-const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.28}
-const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.30 }
-const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.31 }
-const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.33 }
-const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
-const DEFAULT_AP_HIGH = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
-const DEFAULT_AP_XHIGH =  { l1: 0.975, l2: 0.85, l3: 0.70, l4: 0.45 }
+const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.16 }
+const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.18 }
+const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.20 }
+const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.23 }
+const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.25 }
+const DEFAULT_AP_HIGH = { l1: 0.95, l2: 0.85, l3: 0.60, l4: 0.30 }
+const DEFAULT_AP_XHIGH =  { l1: 0.975, l2: 0.90, l3: 0.70, l4: 0.38 }
 
 
 
@@ -377,7 +377,7 @@ export const Scout: GunSpec = {
 
   muzzle: { f: 120, l: 0 },
   parts: [
-    { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 9, color: "#877d6e", over: false },
+    { p0: { f: 30, l: 0 }, p1: { f: 120, l: 0 }, width: 9, color: "#877d6e", over: false },
   ],
   damage: 65,
   armorPen: DEFAULT_AP_MHIGH,
@@ -385,21 +385,100 @@ export const Scout: GunSpec = {
   speed: 0.75,
   fire: {
     delay: 80,
-    bulletSpeed: 80,
+    bulletSpeed: 90,
     bulletLife: 70,
     auto: false,
-    spread: 0.01,
+    spread: 0.005,
     magSize: 10,
     reserveMags: 3,
     reloadTime: 175,
     drawTime: 60,
-    tracerWidth: 5.5,
+    tracerWidth: 6.0,
     tracerLength: 180,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 16,
   recoilRecovery: 1,
   recoilCoef: 0.25,
+  recoilGain: 5.5,
+  recoilDelay: 45,
+  movePenalty: 3.5,
+  movingFirstShotRecoilMin: 20,
+  movingFirstShotRecoilMax: 28,
+};
+export const AWM: GunSpec = {
+  name: "AWM",
+  primary: true,
+  icon: "awm",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 70, l: -6 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 65, l : -6}, // 0
+                    { f : 20, l : -27}, // 35
+                    { f : 20, l : -27}, // 50
+                    { f : 65, l : -6}, // 85
+                    { f : 65, l : -6}, // 175
+                    ],
+    leftTimes: [0, 35, 50, 85, 175],
+
+    rightPositions:  [{ f: 40, l: 0 }, // 0
+                      { f: 40, l: 0 }, // 0 + 95
+                      { f: 50, l: 15}, // 20 + 95
+                      { f: 50, l: 8}, // 25 + ...
+                      { f: 50, l: 8}, // 30
+                      { f: 40, l: 8}, // 40
+                      { f: 40, l: 8}, // 50
+                      { f: 50, l: 8}, // 60
+                      { f: 50, l: 8}, // 65
+                      { f: 50, l: 15}, // 70
+                      { f: 50, l: 15}, // 75
+                      { f: 40, l: 0}, // 90
+                      ],
+    rightTimes: [0, 95, 115, 130, 125, 135, 145, 155, 160, 165, 170, 185]
+  },
+
+  fireAnim: {
+    rightPositions:  [{ f: 40, l: 0 }, // 0
+                      { f: 50, l: 15}, // 20
+                      { f: 50, l: 8}, // 25
+                      { f: 50, l: 8}, // 30
+                      { f: 40, l: 8}, // 40
+                      { f: 40, l: 8}, // 50
+                      { f: 50, l: 8}, // 60
+                      { f: 50, l: 8}, // 65
+                      { f: 50, l: 15}, // 70
+                      { f: 50, l: 15}, // 75
+                      { f: 40, l: 0}, // 90
+                      ],
+    rightTimes: [0, 20, 25, 30, 40, 50, 60, 65, 70, 75, 90]
+  },
+
+  muzzle: { f: 120, l: 0 },
+  parts: [
+    { p0: { f: 30, l: 0 }, p1: { f: 125, l: 0 }, width: 11, color: "rgb(73, 76, 67)", over: false },
+  ],
+  damage: 100,
+  armorPen: DEFAULT_AP_HIGH,
+  zoom: 2.7,
+  speed: 0.65,
+  fire: {
+    delay: 90,
+    bulletSpeed: 75,
+    bulletLife: 70,
+    auto: false,
+    spread: 0.005,
+    magSize: 5,
+    reserveMags: 3,
+    reloadTime: 185,
+    drawTime: 70,
+    tracerWidth: 8.0,
+    tracerLength: 200,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 18,
+  recoilRecovery: 1,
+  recoilCoef: 0.275,
   recoilGain: 5.5,
   recoilDelay: 45,
   movePenalty: 3.5,
