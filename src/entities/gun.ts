@@ -165,11 +165,23 @@ export class Gun implements Droppable {
     this.reloadTicks = 0;
   }
 
-  /** Hardcore reload: swap in a fresh mag, any rounds left in the old one are lost. */
+  /**
+   * Land one reload cycle. A normal gun does a hardcore mag swap: a fresh mag,
+   * any rounds left in the old one lost. A `perBullet` gun (pump shotgun, etc.)
+   * chambers a single round from its spare-round pool and, if the mag still isn't
+   * full and rounds remain, immediately restarts the cycle — so one `startReload`
+   * tops the whole mag off round by round until full, dry, or cancelled.
+   */
   private finishReload(): void {
     const f = this.spec.fire!;
-    this.mag = f.magSize;
-    this.reserveMags -= 1;
+    if (f.perBullet) {
+      this.mag += 1;
+      this.reserveMags -= 1;
+      if (this.canReload) this.reloadTicks = f.reloadTime; // auto-cycle to the next round
+    } else {
+      this.mag = f.magSize;
+      this.reserveMags -= 1;
+    }
   }
 
   /** Per-tick recovery while this gun is the equipped one. */
@@ -288,6 +300,10 @@ export class Gun implements Droppable {
    * from its own bullet until it clears them; `speedRatio` drives move-inaccuracy.
    */
   fire(world: World, origin: Vec2, forward: Vec2, owner: Hittable, speedRatio: number): boolean {
+    // Per-round guns (pump shotguns): a trigger pull interrupts an in-progress
+    // top-off so you can fire right away, as long as at least one round is
+    // chambered — no need to tap X first. A whole-mag-swap reload still commits.
+    if (this.reloading && this.spec.fire?.perBullet && this.mag > 0) this.cancelReload();
     if (!this.canFire) return false;
     const f = this.spec.fire!;
     // Project from the head center (not the muzzle) so shots can't originate past

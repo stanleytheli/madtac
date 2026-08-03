@@ -30,10 +30,23 @@ export interface FireSpec {
   spread: number;
   /** Rounds per magazine. */
   magSize: number;
-  /** Spare magazines carried (reserve is counted in whole mags, hardcore-style). */
+  /** Spare magazines carried (reserve is counted in whole mags, hardcore-style).
+   *  On a `perBullet` gun this instead counts spare *rounds* (shotgun shells). */
   reserveMags: number;
-  /** Ticks a full reload takes. */
+  /**
+   * Ticks a reload takes. For a normal gun this is one full mag swap; for a
+   * `perBullet` gun it's one *cycle* — the time to chamber a single round — and
+   * `reloadAnim` describes that one cycle too.
+   */
   reloadTime: number;
+  /**
+   * Per-round reload (pump shotguns, etc.): each reload cycle chambers ONE round
+   * (draining one from the `reserveMags` spare-round pool) and, while the mag
+   * still isn't full and rounds remain, auto-starts the next cycle — so a single
+   * reload tops the mag off round by round until full, dry, or cancelled.
+   * Omitted/false = the normal whole-mag swap.
+   */
+  perBullet?: boolean;
   /** time since drawing weapon to being able to fire */
   drawTime: number;
   /** Tracer streak thickness in world px (cosmetic). */
@@ -549,6 +562,78 @@ export const MP220: GunSpec = {
   movingFirstShotRecoilMax: 23.0,
 };
 
+
+/**
+ * Pump-action shotgun with a tube magazine loaded one shell at a time (`perBullet`).
+ * `reserveMags` here counts spare *shells*, and each reload cycle (`reloadTime` /
+ * `reloadAnim`) stuffs a single shell, auto-cycling until the tube is full, dry,
+ * or the player taps X to break off and fire. Buckshot spray via shotgunPellets /
+ * shotgunSpread. Auto-registers in GUN_SPECS (has an icon), so it's editor-placeable.
+ */
+export const Mossberg500: GunSpec = {
+  name: "Mossberg 500",
+  primary: true,
+  icon: "mossberg500",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 80, l: -11 },
+
+  // One cycle = load a single shell: support hand dips to the shell belt and back
+  // up to the loading port, over the reloadTime below.
+  reloadAnim: {
+    leftPositions: [{ f: 80, l: -11 }, // 0  support
+                    { f: 20, l: -27 }, // 10 grab a shell
+                    { f: 45, l: -6 }, // 25 press it into the port
+                    { f: 45, l: -6 }, // 30 seat it
+                    { f: 80, l: -11 }, // 40 back to support
+                    ],
+    leftTimes: [0, 10, 25, 30, 40],
+  },
+
+  fireAnim: {
+    leftPositions: [{ f: 80, l: -11 }, // 0 
+                    { f: 80, l: -11 }, // 15
+                    { f: 60, l: -11 }, // 25
+                    { f: 60, l: -11 }, // 35
+                    { f: 80, l: -11 }, // 45
+                    ],
+    leftTimes: [0, 15, 25, 35, 45],
+  },
+
+  muzzle: { f: 120, l: 0 },
+  parts: [
+    { p0: { f: 55, l: -8 }, p1: { f: 100, l: -8}, width: 7, color: "#5a3a1c", over: false }, // pump/forend
+    { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 10, color: "#2b2b2b", over: false }, // barrel
+  ],
+  damage: 10,
+  armorPen: DEFAULT_AP_XLOW,
+  shotgunPellets: 9,
+  shotgunSpread: 2.25,
+  zoom: 1.9,
+  speed: 0.85,
+  fire: {
+    delay: 45, // pump action between shots
+    bulletSpeed: 50,
+    bulletLife: 25,
+    auto: false,
+    spread: 0.03,
+    magSize: 6, // tube capacity
+    reserveMags: 24, // spare *shells* (perBullet)
+    reloadTime: 40, // ticks to chamber ONE shell
+    perBullet: true,
+    drawTime: 45,
+    tracerWidth: 3,
+    tracerLength: 150,
+    tracerColor: "#ffe26b",
+  },
+  visualRecoil: 16,
+  recoilRecovery: 2,
+  recoilCoef: 0.22,
+  recoilGain: 2.0,
+  recoilDelay: 8,
+  movePenalty: 3.5,
+  movingFirstShotRecoilMin: 19.0,
+  movingFirstShotRecoilMax: 23.0,
+};
 
 export const M249: GunSpec = {
   name: "M249",

@@ -401,6 +401,13 @@ export class Character {
     this.gun.startReload();
   }
 
+  /** Abort whatever timed action is in progress — a utility use or a reload (incl.
+   *  a per-round reload's auto-cycle). No-op if nothing is running. Bound to X. */
+  cancelAction(): void {
+    this.cancelUse();
+    this.gun.cancelReload();
+  }
+
   /** Acceleration + friction movement. `axis` is raw -1/0/1 input per axis. */
   move(axis: Vec2): void {
     let ax = axis.x;

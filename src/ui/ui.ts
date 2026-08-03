@@ -304,9 +304,19 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   const center = { x: o.center.x / UI_SCALE, y: o.center.y / UI_SCALE };
   const mouse = { x: o.mouse.x / UI_SCALE, y: o.mouse.y / UI_SCALE };
 
-  // Pickup prompt, just above the player (who is at screen center).
+  // Interaction prompts, just above the player (who is at screen center). The
+  // pickup (E) prompt and the cancel (X) prompt can both be live at once — a
+  // reload running while stood on an item — so they stack downward instead of
+  // overlapping.
+  const promptX = center.x + 15;
+  let promptY = center.y + 60;
   if (o.interactableLabel) {
-    drawKeyPrompt(ctx, center.x + 15, center.y + 60, "E", o.interactableLabel);
+    drawKeyPrompt(ctx, promptX, promptY, "E", o.interactableLabel);
+    promptY += 50;
+  }
+  const cancelLabel = player.usingUtility ? "Cancel" : gun.reloading ? "Cancel Reload" : null;
+  if (cancelLabel) {
+    drawKeyPrompt(ctx, promptX, promptY, "X", cancelLabel);
   }
 
   // Bottom block, stacked upward: health bar, then the armor bar (only when worn),
@@ -753,18 +763,39 @@ function drawAmmo(ctx: CanvasRenderingContext2D, gun: Gun, cx: number, bottom: n
   ctx.fillStyle = gun.mag === 0 ? "#ff6b6b" : "#ffffff";
   ctx.fillText(magText, cx, magTop + magH / 2 + 1);
 
-  // Reserve squircle to the right, sharing the same bottom edge.
+  // Reserve squircle to the right, sharing the same bottom edge. Shown only while
+  // spares remain (drops out entirely when out of reserve): the spare count (spare
+  // *rounds* on a per-round gun, else spare mags) followed by the reload-type icon
+  // INSIDE the same squircle, just right of the number — a single round (per-bullet,
+  // e.g. a pump shotgun) vs a magazine (whole-mag swap). The squircle grows to fit both.
   if (gun.reserveMags > 0) {
     const resH = 32;
     const resTop = bottom - resH;
     ctx.font = uiFont("bold 22px");
     const resText = String(gun.reserveMags);
-    const resW = Math.max(resH, ctx.measureText(resText).width + 20);
+    const numW = ctx.measureText(resText).width;
+
+    const icon = assetImage(gun.spec.fire.perBullet ? "bullet-thin.png" : "magazine-thin.png");
+    const iconH = icon ? 22 : 0;
+    const iconW = icon ? icon.naturalWidth * (iconH / icon.naturalHeight) : 0;
+
+    const padX = 12;
+    const gap = icon ? 8 : 0;
+    const contentW = numW + gap + iconW;
+    const resW = Math.max(resH, contentW + padX * 2);
     const resLeft = magLeft + magW + 10;
 
     fillSquircle(ctx, resLeft, resTop, resW, resH, 9, SQUIRCLE_BG);
+
+    // Center the number+icon block within the squircle.
+    const contentLeft = resLeft + (resW - contentW) / 2;
+    const cy = resTop + resH / 2;
+    ctx.textAlign = "left";
     ctx.fillStyle = "#ffffff";
-    ctx.fillText(resText, resLeft + resW / 2, resTop + resH / 2 + 1);
+    ctx.fillText(resText, contentLeft, cy + 1);
+    if (icon) {
+      ctx.drawImage(icon, contentLeft + numW + gap, cy - iconH / 2, iconW, iconH);
+    }
   }
   ctx.restore();
 }

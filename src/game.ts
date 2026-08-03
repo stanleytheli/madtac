@@ -116,6 +116,7 @@ export class Game implements GameCtx {
   private prevDown = false;
   private rmbDown = false;
   private eDown = false;
+  private xDown = false;
   private qDown = false;
   private fourDown = false;
   private jDown = false;
@@ -747,6 +748,13 @@ export class Game implements GameCtx {
       if (isDown("2")) this.player.equip("secondary");
       if (isDown("3")) this.player.equip("hand");
       if (isDown("r")) this.player.reload();
+
+      // X: cancel a timed action (a reload — including a per-round auto-cycle — or
+      // a utility use), so you can break off and fire/switch.
+      if (isDown("x")) {
+        if (!this.xDown) this.player.cancelAction();
+        this.xDown = true;
+      } else this.xDown = false;
 
       // Slot 4: equip the belt from another slot; press again on it to cycle to
       // the next carried utility (so a player can hold several kinds).
