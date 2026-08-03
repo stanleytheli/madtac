@@ -89,6 +89,20 @@ export interface ProjectileSpec {
   explosion?: readonly ParticleStyle[];
 }
 
+/**
+ * A weapon's stagger: a hit briefly slows the receiver's MOVEMENT (a stumble),
+ * without touching their aim accuracy. For a bullet it lands on whoever is struck;
+ * for a launcher it lands on everyone the blast damaged at all (any distance in the
+ * radius, any sliver of visibility). Staggers don't stack — a fresh hit refreshes
+ * the effect rather than compounding (see Character.applyStagger).
+ */
+export interface StaggerSpec {
+  /** Movement multiplier while staggered (0..1; e.g. 0.4 = 40% move speed). */
+  mul: number;
+  /** How many ticks (60/s) the stagger lasts from the hit. */
+  ticks: number;
+}
+
 /** Fraction of damage that passes through each armor tier (0..1). Indexed by the
  *  worn armor's level: l1..l4. Lower fraction = the armor stops more. */
 export interface ArmorPen {
@@ -177,6 +191,9 @@ export interface GunSpec {
   fire?: FireSpec;
   /** Present on launcher weapons: each shot is an AoE projectile, not a bullet. */
   projectile?: ProjectileSpec;
+  /** Optional movement stagger applied to whoever this weapon hits — the struck
+   *  body for a bullet, everyone the blast damaged for a launcher. Omitted = none. */
+  stagger?: StaggerSpec;
   /**
    * Melee weapon (fists, and knives/bats later). Modeled as a gun that fires a
    * very short-range, invisible bullet: it reuses the whole shooting/hit pipeline
@@ -410,6 +427,7 @@ export const Scout: GunSpec = {
   armorPen: DEFAULT_AP_MHIGH,
   zoom: 2.7,
   speed: 0.75,
+  stagger: { mul: 0.5, ticks: 30 },
   fire: {
     delay: 80,
     bulletSpeed: 90,
@@ -489,6 +507,7 @@ export const AWM: GunSpec = {
   armorPen: DEFAULT_AP_HIGH,
   zoom: 2.7,
   speed: 0.65,
+  stagger: { mul: 0.5, ticks: 45 },
   fire: {
     delay: 90,
     bulletSpeed: 75,
@@ -764,6 +783,7 @@ export const RPG: GunSpec = {
   zoom: 2.3,
   speed: 0.65,
   careful: true, // AI won't loose a rocket into a corner or a squadmate
+  stagger: { mul: 0.5, ticks: 60 }, // the blast rattles anyone it catches
   fire: {
     delay: 75,
     bulletSpeed: 30, // projectile travel speed (px/tick)
@@ -829,6 +849,7 @@ export const M79: GunSpec = {
   zoom: 2.1,
   speed: 0.80,
   careful: true, // AI won't loose a rocket into a corner or a squadmate
+  stagger: { mul: 0.5, ticks: 45 }, // a lighter jolt than the RPG
   fire: {
     delay: 75,
     bulletSpeed: 25, // projectile travel speed (px/tick)

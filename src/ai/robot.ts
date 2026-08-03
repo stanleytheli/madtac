@@ -223,6 +223,7 @@ export class Robot extends Character {
     // aiming/firing, so the recoil speed reads the scaled velocity — same order
     // the player gets (move() then fire). onStairs is set by the session.
     this.applyStairMove();
+    this.applyStaggerMove(); // movement stagger from a staggering hit (no-op otherwise)
 
     // Aim & fire run EVERY tick (not just plan ticks). Planning only picks the
     // *desired* heading (aimAngle); the actual heading eases toward it here, so

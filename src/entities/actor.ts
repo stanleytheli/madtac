@@ -108,6 +108,14 @@ export class Character {
   regenTicks = 0;
   regenRate = 0;
 
+  /** Stagger status (a staggering weapon hit): while `staggerTicks` remain, the
+   *  ACTUAL per-tick displacement is scaled by `staggerMul` — see applyStaggerMove.
+   *  Set/refreshed by applyStagger; does not stack. Deliberately NOT folded into
+   *  `vel`, so the inaccuracy `speed` still reads the intended velocity: a stagger
+   *  slows you down without ever making you a better shot. */
+  staggerTicks = 0;
+  staggerMul = 1;
+
   constructor(pos: Vec2, skin: Skin, loadout: Loadout) {
     this.pos = pos;
     this.skin = skin;
@@ -146,6 +154,8 @@ export class Character {
     this.cancelUse();
     this.regenTicks = 0;
     this.regenRate = 0;
+    this.staggerTicks = 0;
+    this.staggerMul = 1;
     this.equipped = loadout.primary ? "primary" : loadout.secondary ? "secondary" : "hand";
     this.gun.resetDraw();
   }
@@ -270,6 +280,16 @@ export class Character {
   applyRegen(rate: number, ticks: number): void {
     this.regenRate = rate;
     this.regenTicks = ticks;
+  }
+
+  /** Apply a movement stagger: scale actual movement by `mul` for `ticks` ticks
+   *  (see staggerTicks / applyStaggerMove). Non-stacking like regen — a fresh hit
+   *  REPLACES any active stagger rather than compounding, so a shotgun's many
+   *  pellets or a blast's coverage don't multiply into a freeze. This is the
+   *  optional `Hittable.applyStagger` hook the hit pipeline calls. */
+  applyStagger(mul: number, ticks: number): void {
+    this.staggerMul = mul;
+    this.staggerTicks = ticks;
   }
 
   /** Add up to `n` of a utility spec to the belt (capped at its maxCarry).
@@ -422,6 +442,7 @@ export class Character {
     this.vel = scale(this.vel, FRICTION);
     this.pos = add(this.pos, this.vel);
     this.applyStairMove(); // staircase climb slowdown (no-op off stairs)
+    this.applyStaggerMove(); // stagger slowdown (no-op when not staggered)
   }
 
   /** Apply the staircase climb slowdown to the step just taken: shrink this tick's
@@ -440,6 +461,18 @@ export class Character {
     this.vel = scaled;
   }
 
+  /** Apply the movement stagger to the step just taken: pull the position back so
+   *  the ACTUAL displacement this tick is `staggerMul` of the intended step, while
+   *  leaving `vel` untouched — so the recoil `speed` getter still reads the full
+   *  intended velocity and a stagger can never buy accuracy (the whole point). Runs
+   *  after applyStairMove, off `vel` (which stairs already scaled), so the two
+   *  slowdowns compose. Called by every mover — the player's move() and an AI's
+   *  Robot.think. No-op when not staggered. */
+  applyStaggerMove(): void {
+    if (this.staggerTicks <= 0) return;
+    this.pos = add(this.pos, scale(this.vel, this.staggerMul - 1));
+  }
+
   /** Per-tick recovery for the equipped gun (cooldown, flash, kick, spray reset). */
   tickWeapon(): void {
     this.gun.tick();
@@ -456,6 +489,10 @@ export class Character {
     if (this.regenTicks > 0) {
       this.regenTicks -= 1;
       this._heal(this.regenRate);
+    }
+    if (this.staggerTicks > 0) {
+      this.staggerTicks -= 1;
+      if (this.staggerTicks === 0) this.staggerMul = 1; // effect over: back to full speed
     }
   }
 

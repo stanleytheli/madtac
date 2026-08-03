@@ -377,6 +377,16 @@ export interface Hittable {
   pos: Vec2;
   z: number;
   registerHit(dir: Vec2, point: Vec2, damage: number, armorPen: ArmorPen, attacker: Hittable | null): void;
+  /** Optional: take a movement stagger (a staggering weapon hit). Optional so
+   *  non-character Hittables (test dummies, future props) simply ignore it. */
+  applyStagger?(mul: number, ticks: number): void;
+}
+
+/** A weapon's movement stagger, carried on a bullet / projectile from the firing
+ *  gun's spec (GunSpec.stagger) and applied to whoever it damages. */
+export interface StaggerEffect {
+  mul: number;
+  ticks: number;
 }
 
 export interface Bullet {
@@ -393,6 +403,7 @@ export interface Bullet {
   tracerLength: number; // cosmetic streak length behind the bullet (from the firing gun)
   tracerColor: string; // cosmetic streak color "#rrggbb" (from the firing gun)
   armorPen: ArmorPen; // per-tier penetration (from the firing gun), applied on hit
+  stagger?: StaggerEffect; // movement stagger applied to the body it strikes (from the gun)
 }
 
 /**
@@ -420,6 +431,7 @@ export interface Projectile {
   sprite?: string; // optional /assets basename drawn in place of the body disc
   spriteScale?: number; // sprite native px -> world px (aspect preserved)
   explosion?: readonly ParticleStyle[]; // particle bursts at detonation (default: STANDARD_EXPLOSION)
+  stagger?: StaggerEffect; // movement stagger applied to everyone the blast damages (from the gun)
 }
 
 /** Static map data plus live projectiles, particle debris, and ground items. */
@@ -844,6 +856,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
           t.registerHit(norm(b.vel), sample, b.damage, b.armorPen, b.owner);
+          if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           spawnParticles(w.particles, at, backDir, BLOOD, b.z);
           consumed = true;
@@ -884,6 +897,7 @@ export function spawnBullet(
   tracerColor: string,
   armorPen: ArmorPen,
   z: number,
+  stagger?: StaggerEffect,
 ): void {
   w.bullets.push({
     pos: origin,
@@ -899,6 +913,7 @@ export function spawnBullet(
     tracerLength,
     tracerColor,
     armorPen,
+    stagger,
   });
 }
 
@@ -939,6 +954,7 @@ export function explode(
   owner: Hittable | null,
   targets: readonly Hittable[],
   blast: readonly ParticleStyle[] = STANDARD_EXPLOSION,
+  stagger?: StaggerEffect,
 ): void {
   // A ray from the blast to `p` is clear unless a wall or a solid vehicle hull
   // stands in it (grid.blocked / hasLineOfSight both skip permeable fences).
@@ -964,6 +980,9 @@ export function explode(
 
     const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
     t.registerHit(dir, t.pos, damage * frac * (v / 9), armorPen, owner);
+    // Anyone the blast damaged at all (any distance in range, any sliver of
+    // visibility) is staggered — this is past the frac<=0 / v===0 discards above.
+    if (stagger) t.applyStagger?.(stagger.mul, stagger.ticks);
   }
   // Detonation visuals: each burst in the round's blast preset (see ProjectileSpec
   // .explosion). spread is a full circle, so the ejection direction is irrelevant.
@@ -981,7 +1000,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
   for (const p of w.projectiles) {
     p.life -= 1;
     if (p.life <= 0) {
-      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion); // airburst at max range
+      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger); // airburst at max range
       continue;
     }
 
@@ -1010,7 +1029,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
         // own cover check would read the struck wall as shielding everything in
         // front of it. (Same back-out updateBullets does for its impact debris.)
         const at = backOut(sample, backDir, (pt) => pointInObstacle(pt, struck!));
-        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion);
+        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger);
         detonated = true;
         break;
       }
@@ -1024,7 +1043,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
           const hb = v.roundPartAt(sample);
           if (hb) {
             const at = backOut(sample, backDir, (pt) => pointInBox(pt, hb));
-            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion);
+            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger);
             detonated = true;
             break;
           }
@@ -1036,7 +1055,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
       for (const t of targets) {
         if (t === p.owner || t.z !== p.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS + p.bodyRadius) {
-          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion);
+          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger);
           detonated = true;
           break;
         }
@@ -1076,6 +1095,7 @@ export function spawnProjectile(
   sprite?: string,
   spriteScale?: number,
   explosion?: readonly ParticleStyle[],
+  stagger?: StaggerEffect,
 ): void {
   w.projectiles.push({
     pos: origin,
@@ -1095,5 +1115,6 @@ export function spawnProjectile(
     sprite,
     spriteScale,
     explosion,
+    stagger,
   });
 }

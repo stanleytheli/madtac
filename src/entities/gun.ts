@@ -337,6 +337,7 @@ export class Gun implements Droppable {
         pj.sprite,
         pj.spriteScale,
         pj.explosion,
+        this.spec.stagger,
       );
       return true;
     }
@@ -356,6 +357,7 @@ export class Gun implements Droppable {
         f.tracerColor,
         this.spec.armorPen,
         owner.z, // the bullet lives on the shooter's level
+        this.spec.stagger,
       );
     } else {
       for (let i = 0; i < this.spec.shotgunPellets; i++) {
@@ -374,6 +376,7 @@ export class Gun implements Droppable {
           f.tracerColor,
           this.spec.armorPen,
           owner.z, // the bullet lives on the shooter's level
+          this.spec.stagger,
         );
       }
     }
