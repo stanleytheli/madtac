@@ -210,6 +210,20 @@ export interface GunSpec {
    */
   movingFirstShotRecoilMin: number;
   movingFirstShotRecoilMax: number;
+
+  /**
+   * Make the AI fire *carefully* with this weapon (default off). A normal gun
+   * looses the moment its muzzle is within a generous cone of the aim point and
+   * only checks for a teammate on the line to the target — so it grazes wall
+   * corners and sprays past friends now and then, which reads as human. On a
+   * launcher that's a disaster (a rocket clipping a corner detonates on the
+   * shooter; a blast lands beside a squadmate). With `careful`, the AI (see
+   * TacOracle.shouldFire) holds fire until the muzzle is genuinely settled on the
+   * aim point (a tight cone, same Gaussian aim error underneath — not a better
+   * shot, just a committed one) AND an actual raycast along its true heading is
+   * clear of walls and teammates out to the target.
+   */
+  careful?: boolean;
 }
 
 // const DEFAULT_AP_MELEE     = { l1: 0.80, l2: 0.70, l3: 0.60, l4: 0.40 }
@@ -749,6 +763,7 @@ export const RPG: GunSpec = {
   armorPen: DEFAULT_AP_XHIGH,
   zoom: 2.3,
   speed: 0.65,
+  careful: true, // AI won't loose a rocket into a corner or a squadmate
   fire: {
     delay: 75,
     bulletSpeed: 30, // projectile travel speed (px/tick)

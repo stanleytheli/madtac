@@ -105,6 +105,11 @@ const STAND_TO_SHOOT_PENALTY = 2.0;
  *  budget of the target (or this, whichever is looser) — no spraying while
  *  the turn-toward swing is still carrying the gun onto them. */
 const MIN_AIM_TOLERANCE = deg2rad(15);
+/** A `careful` gun's aim floor (see MIN_AIM_TOLERANCE): a much tighter cone, so a
+ *  launcher waits until the muzzle is genuinely settled on the (Gaussian-jittered)
+ *  aim point instead of loosing a round while the turn-toward swing still carries
+ *  it off-axis. Same aim error underneath — this only delays the trigger. */
+const CAREFUL_AIM_TOLERANCE = deg2rad(4);
 /** Default reaction time, ticks (~250ms — a decent human). See
  *  RobotOptions.reactionTime; 0 restores the launch-day inhuman slickness. */
 const DEFAULT_REACTION_TIME = 15;
@@ -1364,15 +1369,48 @@ export class TacOracle extends Oracle {
    *  it a shotgun would plant on a target it can't actually shoot and never close
    *  — frozen with the gun raised at a faraway enemy. */
   private standToShoot(ai: AiContext, target: Character | null): boolean {
-    return (
-      target !== null &&
-      this.mode === "shoot" &&
-      this.fireOk &&
-      !this.burstDone &&
-      this.gun.spec.movePenalty >= STAND_TO_SHOOT_PENALTY &&
-      dist(this.pos, target.pos) <= this.gun.feasibleRange &&
-      this.laneClear(ai, target)
-    );
+    if (
+      target === null ||
+      this.mode !== "shoot" ||
+      !this.fireOk ||
+      this.burstDone ||
+      this.gun.spec.movePenalty < STAND_TO_SHOOT_PENALTY ||
+      dist(this.pos, target.pos) > this.gun.feasibleRange
+    ) {
+      return false;
+    }
+    // A careful gunner won't PLANT on a lane it can't safely fire down either —
+    // if a wall or a mate is in the muzzle line, stay mobile and let strafeMove
+    // hunt a clean angle instead of freezing raised at a shot it will never take.
+    return this.gun.spec.careful ? this.muzzleLineClear(ai, target) : this.laneClear(ai, target);
+  }
+
+  /** The actual-muzzle clearance test a `careful` weapon fires through: cast from
+   *  the shot origin (the head centre, where rounds spawn) along the TRUE heading
+   *  — `this.forward`, where the round will really go, not the line to target.pos —
+   *  out to the aim distance, and refuse the shot if that line hits a wall before
+   *  the target or passes through a teammate. This is what the plain checks miss:
+   *  `laneClear` tests the line to the target (ignoring the heading offset) and
+   *  ignores geometry entirely, so it waves through a rocket that would clip the
+   *  corner it is peeking or the squadmate its muzzle actually points at. Widened
+   *  by the projectile's body radius on launchers so the round's hull can't graze
+   *  the corner the centre ray clears by a hair. */
+  private muzzleLineClear(ai: AiContext, target: Character): boolean {
+    const d = dist(this.pos, add(target.pos, this.aimError));
+    const end = add(this.pos, scale(this.forward, d));
+    // Wall: the centre line, plus (for a bodied projectile) two rails offset by
+    // its radius, must be clear of obstacles between muzzle and target.
+    if (!losClear(ai.world, this.pos, end, this.z)) return false;
+    const margin = this.gun.spec.projectile?.bodyRadius ?? 0;
+    if (margin > 0) {
+      const side = scale(perp(this.forward), margin);
+      const a = add(this.pos, side);
+      const b = sub(this.pos, side);
+      if (!losClear(ai.world, a, add(a, scale(this.forward, d)), this.z)) return false;
+      if (!losClear(ai.world, b, add(b, scale(this.forward, d)), this.z)) return false;
+    }
+    // Teammate anywhere along the true heading (within the friendly margin).
+    return !this.teammates(ai, target).some((m) => friendInLine(this.pos, end, m.pos, FRIENDLY_MARGIN));
   }
 
   /** Fire only mid-burst in SHOOT mode, with the muzzle settled on the target
@@ -1385,13 +1423,19 @@ export class TacOracle extends Oracle {
     if (dist(this.pos, target.pos) > this.gun.feasibleRange) return false;
     // Gate against the jittered aim point (where the muzzle actually points), so
     // the trigger agrees with the aim — otherwise it'd fire the instant it's dead
-    // on the true target while the muzzle is off by aimError.
+    // on the true target while the muzzle is off by aimError. A careful gun uses a
+    // much tighter cone (same jittered aim point — not a better shot, a more
+    // committed one) so it never looses mid-swing.
+    const careful = this.gun.spec.careful === true;
     const aim = add(target.pos, this.aimError);
     const d = dist(this.pos, aim);
     let aimErr = Math.abs(angleOf(this.forward) - angleOf(sub(aim, this.pos)));
     if (aimErr > Math.PI) aimErr = 2 * Math.PI - aimErr;
-    if (aimErr > Math.max(this.aimWidth(d), MIN_AIM_TOLERANCE)) return false;
-    return this.laneClear(ai, target);
+    const floor = careful ? CAREFUL_AIM_TOLERANCE : MIN_AIM_TOLERANCE;
+    if (aimErr > Math.max(this.aimWidth(d), floor)) return false;
+    // Careful weapons additionally veto on an actual raycast down the true heading
+    // (walls + teammates); everything else keeps the cheap center-line lane check.
+    return careful ? this.muzzleLineClear(ai, target) : this.laneClear(ai, target);
   }
 
   /** Semi-auto guns are clicked, not held: each shot re-arms the trigger only
