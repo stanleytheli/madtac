@@ -108,7 +108,7 @@ export const BLOOD: ParticleStyle = {
 export const EXPLOSION: ParticleStyle = {
   color: "#ffb43a",
   shape: "circle",
-  size: 125,
+  size: 135,
   speed: 0,
   spread: Math.PI,
   life: 20,
@@ -121,11 +121,11 @@ export const EXPLOSION_SMOKE: ParticleStyle = {
   color: "#4a4038",
   shape: "circle",
   size: 60,
-  speed: 18,
+  speed: 20,
   spread: Math.PI,
-  life: 50,
+  life: 55,
   count: 8,
-  sizeChange: 0.25,
+  sizeChange: 0.30,
 };
 
 /** Burning green embers flung out of an explosion, each dragging a yellow
@@ -142,6 +142,48 @@ export const EXPLOSION_SHRAPNEL: ParticleStyle = {
   sizeChange: -0.6, // 15px -> 0 over the ~25-tick life (burns out)
 };
 
+
+
+/** Bright fireball flung out in every direction by an explosion. `spread` = PI is
+ *  a full 360° burst (the ejection cone spans the whole circle). */
+export const SMALL_EXPLOSION_BLAST: ParticleStyle = {
+  color: "#ffb43a",
+  shape: "circle",
+  size: 90,
+  speed: 0,
+  spread: Math.PI,
+  life: 20,
+  count: 1,
+  sizeChange: 1.5,
+};
+
+/** Dark smoke puff layered under the fireball for a bit of body. */
+export const SMALL_EXPLOSION_SMOKE: ParticleStyle = {
+  color: "#4a4038",
+  shape: "circle",
+  size: 50,
+  speed: 16,
+  spread: Math.PI,
+  life: 40,
+  count: 8,
+  sizeChange: 0.20,
+};
+
+/** Burning green embers flung out of an explosion, each dragging a yellow
+ *  exhaust trail and shrinking as it burns out. Cosmetic only. */
+export const SMALL_EXPLOSION_SHRAPNEL: ParticleStyle = {
+  color: "#ffe14a",
+  shape: "square",
+  size: 12,
+  speed: 25,
+  spread: Math.PI, // full 360° burst
+  life: 25,
+  count: 5,
+  trail: "#ffe14a",
+  sizeChange: -0.6, // 15px -> 0 over the ~25-tick life (burns out)
+};
+
+
 /** The default explosion look — dark smoke, a bright fireball, and burning
  *  shrapnel — as a list of bursts spawned at the blast point. Launcher weapons
  *  reference a blast preset like this from their spec (GunSpec.projectile.explosion),
@@ -151,6 +193,13 @@ export const STANDARD_EXPLOSION: readonly ParticleStyle[] = [
   EXPLOSION,
   EXPLOSION_SHRAPNEL,
 ];
+
+export const SMALL_EXPLOSION: readonly ParticleStyle[] = [
+  SMALL_EXPLOSION_SMOKE,
+  SMALL_EXPLOSION_BLAST,
+  SMALL_EXPLOSION_SHRAPNEL,
+];
+
 
 const DRAG = 0.86; // per-tick velocity retention (particles slow as they fly)
 

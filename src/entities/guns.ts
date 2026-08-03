@@ -10,7 +10,7 @@
  * A `GunSpec` is immutable data. The mutable, per-instance game object that
  * tracks recoil/cooldown/etc. is the `Gun` class (see gun.ts).
  */
-import { STANDARD_EXPLOSION, type ParticleStyle } from "../engine/particle.ts";
+import { STANDARD_EXPLOSION, SMALL_EXPLOSION, type ParticleStyle } from "../engine/particle.ts";
 
 export interface GripLocal {
   f: number;
@@ -771,7 +771,7 @@ export const RPG: GunSpec = {
     auto: false,
     spread: 0.025,
     magSize: 1,
-    reserveMags: 4,
+    reserveMags: 5,
     reloadTime: 150,
     drawTime: 60,
     tracerWidth: 0, // unused: launchers spawn a projectile, not a tracer bullet
@@ -796,6 +796,72 @@ export const RPG: GunSpec = {
   movingFirstShotRecoilMin: 32.0,
   movingFirstShotRecoilMax: 48.0,
 };
+
+export const M79: GunSpec = {
+  name: "M79",
+  primary: false,
+  icon: "m79",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 65, l: -8 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 65, l : -8}, // 0
+                    { f : 20, l : -27}, // 40
+                    { f : 20, l : -27}, // 70
+                    { f : 55, l : 0}, // 110
+                    { f : 55, l : 0}, // 125
+                    { f : 65, l : 0}, // 135
+                    { f : 65, l : 0}, // 140
+                    { f : 65, l : -8}, // 155
+                    ],
+    leftTimes: [0, 40, 70, 110, 125, 135, 140, 155]
+  },
+
+
+  muzzle: { f: 120, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 100, l: 0 }, width: 9, color: "#5a340e", over: false },
+    { p0: { f: 60, l: 0 }, p1: { f: 120, l: 0 }, width: 15, color: "#373636", over: false },
+  ],
+
+  damage: 90,
+  armorPen: DEFAULT_AP_HIGH,
+  zoom: 2.1,
+  speed: 0.80,
+  careful: true, // AI won't loose a rocket into a corner or a squadmate
+  fire: {
+    delay: 75,
+    bulletSpeed: 25, // projectile travel speed (px/tick)
+    bulletLife: 55, // range/fuse
+    auto: false,
+    spread: 0.025,
+    magSize: 1,
+    reserveMags: 6,
+    reloadTime: 155,
+    drawTime: 60,
+    tracerWidth: 0, // unused: launchers spawn a projectile, not a tracer bullet
+    tracerLength: 0,
+    tracerColor: "#000000",
+  },
+  projectile: {
+    radius: 200,
+    bodyRadius: 7,
+    color: "#d6d6d6",
+    trailColor: "#ffb454",
+    sprite: "m79_grenade",
+    spriteScale: 1.0, // 115px art -> ~58px long in world
+    explosion: SMALL_EXPLOSION,
+  },
+  visualRecoil: 10,
+  recoilRecovery: 1,
+  recoilCoef: 0.25,
+  recoilGain: 4,
+  recoilDelay: 60,
+  movePenalty: 2.0,
+  movingFirstShotRecoilMin: 32.0,
+  movingFirstShotRecoilMax: 48.0,
+};
+
 
 export const Golden_M249: GunSpec = {
   name: "Golden M249",
