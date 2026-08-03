@@ -254,10 +254,10 @@ export interface GunSpec {
 const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.16 }
 const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.18 }
 const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.20 }
-const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.23 }
-const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.25 }
-const DEFAULT_AP_HIGH = { l1: 0.95, l2: 0.85, l3: 0.60, l4: 0.30 }
-const DEFAULT_AP_XHIGH =  { l1: 0.975, l2: 0.90, l3: 0.70, l4: 0.38 }
+const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.22 }
+const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.24 }
+const DEFAULT_AP_HIGH = { l1: 0.95, l2: 0.80, l3: 0.60, l4: 0.27 }
+const DEFAULT_AP_XHIGH =  { l1: 0.975, l2: 0.90, l3: 0.70, l4: 0.32 }
 
 
 
@@ -285,9 +285,9 @@ export const M16: GunSpec = {
   },
 
 
-  muzzle: { f: 110, l: 0 },
+  muzzle: { f: 115, l: 0 },
   parts: [
-    { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#26292e", over: false },
+    { p0: { f: 35, l: 0 }, p1: { f: 115, l: 0 }, width: 11, color: "#26292e", over: false },
   ],
   damage: 20,
   armorPen: DEFAULT_AP_MED,
@@ -317,6 +317,66 @@ export const M16: GunSpec = {
   movingFirstShotRecoilMax: 8.0,
 };
 
+export const M4A1S: GunSpec = {
+  name: "M4A1-S",
+  primary: true,
+  icon: "m4a1s",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 70, l: -6 },
+  //leftGrip: { f: 55, l: -12},
+
+  reloadAnim: {
+    leftPositions: [{ f : 70, l : -6}, // 0
+                    { f : 20, l : -27}, // 40
+                    { f : 20, l : -27}, // 60
+                    { f : 65, l : -6}, // 100
+                    { f: 70, l: -12}, // 105
+                    { f: 70, l: -12}, // 115
+                    { f: 55, l: -12}, // 125
+                    { f: 55, l: -12}, // 130
+                    { f: 70, l: -12}, // 140
+                    { f : 70, l : -6}, // 150
+                    ],
+    leftTimes: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
+  },
+
+
+  muzzle: { f: 145, l: 0 },
+  parts: [
+    { p0: { f: 100, l: 0 }, p1: { f: 115, l: 0 }, width: 5, color: "#12151a", over: false },
+    { p0: { f: 35, l: 0 }, p1: { f: 105, l: 0 }, width: 11, color: "#26292e", over: false },
+    { p0: { f: 110, l: 0 }, p1: { f: 145, l: 0 }, width: 11, color: "#12151a", over: false },
+
+  ],
+  damage: 23,
+  armorPen: DEFAULT_AP_MED,
+  zoom: 2.3,
+  speed: 0.85,
+  fire: {
+    delay: 8,
+    bulletSpeed: 60,
+    bulletLife: 70,
+    auto: true,
+    spread: 0.02,
+    magSize: 25,
+    reserveMags: 4,
+    reloadTime: 150,
+    drawTime: 50,
+    tracerWidth: 3.5,
+    tracerLength: 200,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 8,
+  recoilRecovery: 2,
+  recoilCoef: 0.135,
+  recoilGain: 5.0,
+  recoilDelay: 30,
+  movePenalty: 4.0,
+  movingFirstShotRecoilMin: 5.0,
+  movingFirstShotRecoilMax: 8.0,
+};
+
+
 export const AK47: GunSpec = {
   name: "AK-47",
   primary: true,
@@ -339,11 +399,11 @@ export const AK47: GunSpec = {
     leftTimes: [0, 40, 60, 100, 105, 115, 125, 130, 140, 150]
   },
 
-  muzzle: { f: 110, l: 0 },
+  muzzle: { f: 115, l: 0 },
   parts: [
-    { p0: { f: 35, l: 0 }, p1: { f: 110, l: 0 }, width: 11, color: "#53360b", over: false },
+    { p0: { f: 35, l: 0 }, p1: { f: 115, l: 0 }, width: 11, color: "#53360b", over: false },
   ],
-  damage: 25,
+  damage: 26,
   armorPen: DEFAULT_AP_MHIGH,
   zoom: 2.3,
   speed: 0.85,
@@ -818,7 +878,7 @@ export const RPG: GunSpec = {
 };
 
 export const M79: GunSpec = {
-  name: "M79",
+  name: "M79 Thumper",
   primary: false,
   icon: "m79",
   rightGrip: { f: 40, l: 0 },
