@@ -282,8 +282,10 @@ export interface HudOptions {
   deaths?: readonly DeathMark[];
 }
 
-/** Logical-px margin of the bottom-left minimap from the screen edges. */
-const MINIMAP_MARGIN = 16;
+/** Logical-px inset for the whole bottom-left HUD stack — the minimap and the
+ *  gamemode ticket bars sitting above it. One constant so their left edges line
+ *  up; nudging it moves the column as a unit. */
+const HUD_MARGIN = 24;
 
 /**
  * Draw the whole screen-space HUD: pickup prompt, the bottom health bar with the
@@ -353,8 +355,8 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   let gamemodeInset = 0;
   if (o.minimap && o.characters) {
     const px = o.minimap.px;
-    o.minimap.draw(ctx, MINIMAP_MARGIN, h - MINIMAP_MARGIN - px, o.characters, o.deaths ?? [], player, o.gamemode?.points);
-    gamemodeInset = px + MINIMAP_MARGIN;
+    o.minimap.draw(ctx, HUD_MARGIN, h - HUD_MARGIN - px, o.characters, o.deaths ?? [], player, o.gamemode?.points);
+    gamemodeInset = px + HUD_MARGIN;
   }
 
   if (o.gamemode) drawGamemodeHud(ctx, o.gamemode, w, h, gamemodeInset);
@@ -441,7 +443,7 @@ function drawGamemodeHud(
   const BAR_W = 240;
   const BAR_H = 18;
   const GAP = 8;
-  const MARGIN = 24;
+  const MARGIN = HUD_MARGIN; // shares the minimap's left edge
   // Bottom-anchored bits stack up from here — lifted above the minimap when one
   // is present (the centered banner still uses the true screen center).
   const bottom = h - bottomInset;

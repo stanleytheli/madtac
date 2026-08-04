@@ -11,6 +11,7 @@
  * logical (pre-UI_SCALE) space, like the rest of the HUD.
  */
 import type { Character } from "../entities/actor.ts";
+import { BODY_RADIUS } from "../entities/character.ts";
 import { rectCorners, type Poly } from "../engine/poly.ts";
 import { areHostile, TEAMS } from "../entities/team.ts";
 import { vec, type Vec2 } from "../engine/vec.ts";
@@ -59,9 +60,14 @@ export const MINIMAP_DEATH_TTL = 600; // ~10s
 const DEFAULT_PX = 190;
 /** Auto-fit padding: the covered region is this × the map's bounding extent. */
 const AUTO_PAD = 1.12;
-const RADIUS = 8; // widget corner rounding
-const DOT_R = 2.6; // ally / player dot radius
-const X_R = 3; // death-X arm length
+const RADIUS = 0; // widget corner rounding
+/** Backdrop when a level has no ground floor to take a color from. */
+const NO_GROUND = "rgb(0, 0, 0)";
+/** Clamps on the person-markers, which are otherwise drawn at the body's true
+ *  size for the map's scale (see markerR): a sprawling level would shrink them to
+ *  nothing, a cramped one would blob them over the whole widget. */
+const MIN_MARKER_R = 2;
+const MAX_MARKER_R = 6;
 
 /** A recent friendly death to mark. `age` ticks up; the mark fades then is
  *  pruned past MINIMAP_DEATH_TTL (owned/aged by the Game). */
@@ -71,18 +77,39 @@ export interface DeathMark {
   age: number;
 }
 
+/** One baked piece of static map geometry. Round obstacles keep their circular
+ *  footprint rather than being squared off into their bounding box — they collide
+ *  as circles in-world, so they should read as circles here too. */
+type MapShape =
+  | { kind: "poly"; corners: Poly; fill: string }
+  | { kind: "circle"; pos: Vec2; r: number; fill: string };
+
+/** Every world point a shape touches, for the map-bounds fit. */
+function shapeBounds(s: MapShape): Vec2[] {
+  if (s.kind === "poly") return s.corners;
+  return [vec(s.pos.x - s.r, s.pos.y - s.r), vec(s.pos.x + s.r, s.pos.y + s.r)];
+}
+
 export class Minimap {
   /** Baked floor/stair/obstacle fills, in painter order (z ascending, then
    *  floor→stair→obstacle within a level). */
-  private readonly polys: { corners: Poly; fill: string }[] = [];
+  private readonly shapes: MapShape[] = [];
   /** World point the widget centre maps to, and the world side it spans. */
   private readonly center: Vec2;
   private readonly worldSize: number;
+  /** The level's ground color, so the widget's empty space matches what the
+   *  ground actually looks like out there instead of reading as a void. */
+  private readonly ground: string;
   /** On-screen widget side (logical HUD px). */
   readonly px: number;
 
   constructor(world: World, sizeOverride?: number, px = DEFAULT_PX) {
     this.px = px;
+
+    // The ground is the infinite floor the renderer paints as the screen
+    // background (see main.ts) — minus the visibility test, since the minimap
+    // always shows the whole map regardless of where the player is standing.
+    this.ground = world.floors.find((f) => f.infinite && !f.invisible)?.color ?? NO_GROUND;
 
     // Collect every drawable surface + obstacle as a flat rect, tagged with its
     // painter key: (z, category) where category orders floor < stair < obstacle,
@@ -90,23 +117,24 @@ export class Minimap {
     // objects on top). Skip infinite floors (they're the global backdrop, not a
     // map feature) and anything flagged invisible. Hide-when-in is ignored — the
     // whole map always shows on the minimap.
-    type Part = { z: number; cat: number; corners: Poly; fill: string };
+    type Part = { z: number; cat: number; shape: MapShape };
     const parts: Part[] = [];
     for (const f of world.floors) {
       if (f.infinite || f.invisible) continue;
-      parts.push({ z: f.level, cat: 0, corners: rectCorners(f.pos, f.w, f.h, f.angle), fill: f.color });
+      const shape: MapShape = { kind: "poly", corners: rectCorners(f.pos, f.w, f.h, f.angle), fill: f.color };
+      parts.push({ z: f.level, cat: 0, shape });
     }
     for (const s of world.stairs) {
-      parts.push({
-        z: Math.min(s.zAtMin, s.zAtMax),
-        cat: 1,
-        corners: rectCorners(s.pos, s.w, s.h, s.angle),
-        fill: s.color,
-      });
+      const shape: MapShape = { kind: "poly", corners: rectCorners(s.pos, s.w, s.h, s.angle), fill: s.color };
+      parts.push({ z: Math.min(s.zAtMin, s.zAtMax), cat: 1, shape });
     }
     for (const o of world.obstacles) {
       if (o.invisible) continue;
-      parts.push({ z: o.z, cat: 2, corners: rectCorners(o.pos, o.w, o.h, o.angle), fill: o.fill });
+      // Radius matches the in-world circle collider: half the smaller extent.
+      const shape: MapShape = o.round
+        ? { kind: "circle", pos: o.pos, r: Math.min(o.w, o.h) / 2, fill: o.fill }
+        : { kind: "poly", corners: rectCorners(o.pos, o.w, o.h, o.angle), fill: o.fill };
+      parts.push({ z: o.z, cat: 2, shape });
     }
 
     // Cover the level's bounds: AABB over everything we'll draw.
@@ -115,7 +143,7 @@ export class Minimap {
     let maxx = -Infinity;
     let maxy = -Infinity;
     for (const p of parts) {
-      for (const c of p.corners) {
+      for (const c of shapeBounds(p.shape)) {
         if (c.x < minx) minx = c.x;
         if (c.x > maxx) maxx = c.x;
         if (c.y < miny) miny = c.y;
@@ -133,12 +161,24 @@ export class Minimap {
     // Painter order: z ascending, then floor/stair/obstacle. A stable sort keeps
     // authoring/depth order within a (z, category) bucket.
     parts.sort((a, b) => a.z - b.z || a.cat - b.cat);
-    for (const p of parts) this.polys.push({ corners: p.corners, fill: p.fill });
+    for (const p of parts) this.shapes.push(p.shape);
+  }
+
+  /** Widget px per world px. */
+  private get scale(): number {
+    return this.px / this.worldSize;
+  }
+
+  /** Radius for a person-marker: the body's true footprint at this map's scale,
+   *  so a dot covers about as much ground as the soldier really does — clamped at
+   *  both ends so it stays legible whatever the level's size. */
+  private get markerR(): number {
+    return Math.max(MIN_MARKER_R, Math.min(MAX_MARKER_R, BODY_RADIUS * this.scale));
   }
 
   /** World -> widget-local pixel (relative to the widget's top-left at x0,y0). */
   private toWidget(w: Vec2, x0: number, y0: number): Vec2 {
-    const s = this.px / this.worldSize;
+    const s = this.scale;
     return vec(x0 + this.px / 2 + (w.x - this.center.x) * s, y0 + this.px / 2 + (w.y - this.center.y) * s);
   }
 
@@ -158,10 +198,12 @@ export class Minimap {
   ): void {
     const px = this.px;
     const friendly = TEAMS[player.team]?.color ?? "#4a9de0";
+    const markerR = this.markerR;
 
     ctx.save();
-    // Backdrop + clip so nothing spills past the rounded frame.
-    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+    // Backdrop + clip so nothing spills past the rounded frame. The backdrop is
+    // the level's own ground color, so bare map reads as ground rather than void.
+    ctx.fillStyle = this.ground;
     ctx.beginPath();
     ctx.roundRect(x0, y0, px, px, RADIUS);
     ctx.fill();
@@ -171,16 +213,22 @@ export class Minimap {
     ctx.clip();
 
     // Static geometry: flat fills, no borders, in render order.
-    for (const p of this.polys) {
-      const c0 = this.toWidget(p.corners[0], x0, y0);
-      ctx.fillStyle = p.fill;
+    const scale = this.scale;
+    for (const s of this.shapes) {
+      ctx.fillStyle = s.fill;
       ctx.beginPath();
-      ctx.moveTo(c0.x, c0.y);
-      for (let i = 1; i < p.corners.length; i++) {
-        const c = this.toWidget(p.corners[i], x0, y0);
-        ctx.lineTo(c.x, c.y);
+      if (s.kind === "circle") {
+        const c = this.toWidget(s.pos, x0, y0);
+        ctx.arc(c.x, c.y, s.r * scale, 0, Math.PI * 2);
+      } else {
+        const c0 = this.toWidget(s.corners[0], x0, y0);
+        ctx.moveTo(c0.x, c0.y);
+        for (let i = 1; i < s.corners.length; i++) {
+          const c = this.toWidget(s.corners[i], x0, y0);
+          ctx.lineTo(c.x, c.y);
+        }
+        ctx.closePath();
       }
-      ctx.closePath();
       ctx.fill();
     }
 
@@ -201,7 +249,10 @@ export class Minimap {
       ctx.fillText(pt.name, p.x, p.y + 0.5);
     }
 
-    // Recent friendly deaths: X's, fading over their last quarter of life.
+    // Recent friendly deaths: X's, fading over their last quarter of life. Sized
+    // off the same marker radius, so a death and a live ally read as the same
+    // "one person" scale on any map.
+    const xr = markerR * 1.15;
     ctx.strokeStyle = friendly;
     ctx.lineWidth = 1.6;
     ctx.lineCap = "round";
@@ -209,10 +260,10 @@ export class Minimap {
       const p = this.toWidget(d.pos, x0, y0);
       ctx.globalAlpha = Math.max(0, Math.min(1, ((MINIMAP_DEATH_TTL - d.age) / (MINIMAP_DEATH_TTL * 0.25))));
       ctx.beginPath();
-      ctx.moveTo(p.x - X_R, p.y - X_R);
-      ctx.lineTo(p.x + X_R, p.y + X_R);
-      ctx.moveTo(p.x + X_R, p.y - X_R);
-      ctx.lineTo(p.x - X_R, p.y + X_R);
+      ctx.moveTo(p.x - xr, p.y - xr);
+      ctx.lineTo(p.x + xr, p.y + xr);
+      ctx.moveTo(p.x + xr, p.y - xr);
+      ctx.lineTo(p.x - xr, p.y + xr);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -223,7 +274,7 @@ export class Minimap {
       if (c.hp <= 0 || c === player || areHostile(player.team, c.team)) continue;
       const p = this.toWidget(c.pos, x0, y0);
       ctx.beginPath();
-      ctx.arc(p.x, p.y, DOT_R, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, markerR, 0, Math.PI * 2);
       ctx.fill();
     }
 
@@ -234,7 +285,7 @@ export class Minimap {
       ctx.strokeStyle = friendly;
       ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(p.x, p.y, DOT_R + 0.6, 0, Math.PI * 2);
+      ctx.arc(p.x, p.y, markerR + 0.6, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
     }
