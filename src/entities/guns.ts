@@ -1085,7 +1085,7 @@ export const Skorpion: GunSpec = {
   //leftGrip: { f: 30, l: 10 },
 
   reloadAnim: {
-    leftPositions: [{ f : 60, l : 0}, // 0
+    leftPositions: [{ f : 75, l : -9}, // 0
                     { f : 20, l : -27}, // 15
                     { f : 20, l : -27}, // 30
                     { f : 55, l : -9}, // 45
@@ -1093,16 +1093,16 @@ export const Skorpion: GunSpec = {
                     { f: 45, l: -12}, // 65
                     { f: 45, l: -12}, // 70
                     { f: 70, l: -12}, // 80
-                    { f: 60, l: 0}, // 90
+                    { f: 75, l: -9}, // 90
                     ],
     leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
   },
 
   muzzle: { f: 105, l: 0 },
   parts: [
-    { p0: { f: 50, l: 0 }, p1: { f: 100, l: 0 }, width: 8, color: "#464a51", over: false },
+    { p0: { f: 50, l: 0 }, p1: { f: 105, l: 0 }, width: 8, color: "#464a51", over: false },
   ],
-  damage: 17,
+  damage: 20,
   armorPen: DEFAULT_AP_LOW,
   zoom: 1.9,
   speed: 0.925,
@@ -1130,6 +1130,113 @@ export const Skorpion: GunSpec = {
   movingFirstShotRecoilMax: 0.0,
 };
 
+export const Uzi: GunSpec = {
+  name: "Uzi",
+  primary: false,
+  icon: "uzi",
+  rightGrip: { f: 50, l: 0 },
+  leftGrip: { f: 75, l: -9 },
+  //leftGrip: { f: 35, l: 20 },
+  //leftGrip: { f: 30, l: 10 },
+
+  reloadAnim: {
+    leftPositions: [{ f : 75, l : -9}, // 0
+                    { f : 20, l : -27}, // 15
+                    { f : 20, l : -27}, // 30
+                    { f : 55, l : -9}, // 45
+                    { f: 70, l: -12}, // 55
+                    { f: 45, l: -12}, // 65
+                    { f: 45, l: -12}, // 70
+                    { f: 70, l: -12}, // 80
+                    { f: 75, l: -9}, // 90
+                    ],
+    leftTimes: [0, 15, 30, 45, 55, 65, 70, 80, 90]
+  },
+
+  muzzle: { f: 110, l: 0 },
+  parts: [
+    { p0: { f: 50, l: 0 }, p1: { f: 110, l: 0 }, width: 8, color: "#000000", over: false },
+  ],
+  damage: 17,
+  armorPen: DEFAULT_AP_LOW,
+  zoom: 1.9,
+  speed: 0.925,
+  fire: {
+    delay: 7,
+    bulletSpeed: 50,
+    bulletLife: 60,
+    auto: true,
+    spread: 0.08,
+    magSize: 20,
+    reserveMags: 4,
+    reloadTime: 90,
+    drawTime: 45,
+    tracerWidth: 3,
+    tracerLength: 130,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 8,
+  recoilRecovery: 2,
+  recoilCoef: 0.10,
+  recoilGain: 5.0,
+  recoilDelay: 30,
+  movePenalty: 1.0,
+  movingFirstShotRecoilMin: 0.0,
+  movingFirstShotRecoilMax: 0.0,
+};
+
+export const Colt44: GunSpec = {
+  name: "Colt .44",
+  primary: false,
+  icon: "colt",
+  rightGrip: { f: 55, l: 0 },
+  leftGrip: { f: 60, l: -5 },
+
+  // One cycle = load a single shell: support hand dips to the shell belt and back
+  // up to the loading port, over the reloadTime below.
+  reloadAnim: {
+    leftPositions: [{ f: 60, l: -5 }, // 0  support
+                    { f: 20, l: -27 }, // 15 grab a shell
+                    { f: 20, l: -27 }, // 20
+                    { f: 55, l: -10 }, // 35
+                    { f: 70, l: -10 }, // 40 
+                      { f: 60, l: -5 }, // 45
+                    ],
+    leftTimes: [0, 14, 20, 35, 40, 45],
+  },
+
+  muzzle: { f: 120, l: 0 },
+  parts: [
+    { p0: { f: 55, l: 0 }, p1: { f: 120, l: 0 }, width: 9, color: "#9d9d9d", over: false },
+  ],
+  damage: 30,
+  armorPen: DEFAULT_AP_HIGH,
+  zoom: 2.3,
+  speed: 0.85,
+  fire: {
+    delay: 20,
+    bulletSpeed: 70,
+    bulletLife: 60,
+    auto: false,
+    spread: 0.005,
+    magSize: 6,
+    reserveMags: 24,
+    perBullet: true,
+    reloadTime: 45,
+    drawTime: 30,
+    tracerWidth: 4,
+    tracerLength: 150,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 13,
+  recoilRecovery: 1,
+  recoilCoef: 0.17,
+  recoilGain: 12.0,
+  recoilDelay: 30,
+  movePenalty: 2.0,
+  movingFirstShotRecoilMin: 35.0,
+  movingFirstShotRecoilMax: 40.0,
+};
 
 export const USPS: GunSpec = {
   name: "USP-S",
