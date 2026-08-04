@@ -251,13 +251,13 @@ export interface GunSpec {
 // const DEFAULT_AP_762       = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
 // const DEFAULT_AP_50AE      = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
 
-const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.16 }
-const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.18 }
-const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.20 }
-const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.22 }
-const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.24 }
-const DEFAULT_AP_HIGH = { l1: 0.95, l2: 0.80, l3: 0.60, l4: 0.27 }
-const DEFAULT_AP_XHIGH =  { l1: 0.975, l2: 0.90, l3: 0.70, l4: 0.32 }
+const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.20 }
+const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.21 }
+const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.22 }
+const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.23 }
+const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.26 }
+const DEFAULT_AP_HIGH = { l1: 0.90, l2: 0.80, l3: 0.60, l4: 0.28 }
+const DEFAULT_AP_XHIGH =  { l1: 0.925, l2: 0.85, l3: 0.70, l4: 0.31 }
 
 
 
@@ -838,7 +838,7 @@ export const RPG: GunSpec = {
     leftTimes: [0, 40, 60, 110, 130, 150]
   },
 
-  damage: 120,
+  damage: 110,
   armorPen: DEFAULT_AP_XHIGH,
   zoom: 2.3,
   speed: 0.65,
@@ -904,7 +904,7 @@ export const M79: GunSpec = {
     { p0: { f: 60, l: 0 }, p1: { f: 120, l: 0 }, width: 15, color: "#373636", over: false },
   ],
 
-  damage: 90,
+  damage: 75,
   armorPen: DEFAULT_AP_HIGH,
   zoom: 2.1,
   speed: 0.80,
