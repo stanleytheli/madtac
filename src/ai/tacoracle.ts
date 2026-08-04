@@ -471,7 +471,7 @@ export class TacOracle extends Oracle {
       this.threat = null;
       this.contactEvalIn = 0;
     }
-    this.updateMode(target ?? this.focus);
+    this.updateMode(target ?? this.focus, target);
     this.updatePosture(ai, target); // may override the combat mode with HOLD / RUN / HEAL
     // What capture point (if any) should pull our combat maneuvering this tick —
     // read only by strafe/cover below, so it steers fighting without touching
@@ -516,7 +516,7 @@ export class TacOracle extends Oracle {
     this.vel = vec(0, 0);
     if (this.rearm(ai)) return; // keep walking to (or grabbing) the loaded gun between plans
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
-    this.updateMode(target ?? this.focus);
+    this.updateMode(target ?? this.focus, target);
     this.updatePosture(ai, target); // keep the posture (and heal use) live between plans
     // HEAL: follow the committed retreat/cover spot, or hold — never coast toward
     // the enemy (that's the opposite of taking cover to heal).
@@ -528,7 +528,7 @@ export class TacOracle extends Oracle {
     // point) between plans. Never re-plans here — the plan is frozen by design.
     if (this.mode === "hold") {
       if (this.holdEntry) {
-        const ducked = this.gun.reloading || !this.fireOk;
+        const ducked = this.reloadBlocksFire || !this.fireOk;
         this.followHold(ai, (ducked ? this.holdCover : this.holdPeek) ?? this.holdCover!);
         this.faceHold();
       }
@@ -547,10 +547,29 @@ export class TacOracle extends Oracle {
     if (!chase || !blocker || !this.sidestep(ai, chase, blocker)) this.coastStep(ai);
   }
 
+  /**
+   * Is the gun genuinely out of action for reloading — i.e. is the reload a
+   * commitment we'd have to abandon rather than simply interrupt?
+   *
+   * For a normal gun, yes: a mag swap is all-or-nothing and cancelling it wastes
+   * the whole thing, so reloading means ducking. A `perBullet` gun inverts that.
+   * Each cycle chambers one shell and banks it, and `Gun.fire` cancels an
+   * in-progress cycle for free the moment there's something to shoot at — so as
+   * long as a round IS chambered, topping off costs nothing and the gun is still
+   * live. Only a dry one (mag 0, nothing to interrupt with) is really out.
+   */
+  private get reloadBlocksFire(): boolean {
+    const g = this.gun;
+    if (!g.reloading) return false;
+    return !(g.spec.fire?.perBullet && g.mag > 0);
+  }
+
   /** Burst / reload bookkeeping -> which mode this tick is fought in, with
    *  readiness changes acknowledged reactionTime late (see fireOk). `ref` is
-   *  whoever the spray is being judged against (target, or remembered focus). */
-  private updateMode(ref: Character | null): void {
+   *  whoever the spray is being judged against (target, or remembered focus);
+   *  `target` is the live, currently-visible one, which is what the top-off
+   *  decision below turns on. */
+  private updateMode(ref: Character | null, target: Character | null): void {
     const gun = this.gun;
     if (gun.currentRecoil === 0) this.burstDone = false;
     else if (ref) {
@@ -559,11 +578,18 @@ export class TacOracle extends Oracle {
       const envelope = gun.spec.recoilCoef ** 2 * Math.sqrt(gun.currentRecoil);
       if (envelope > this.aimWidth(dist(this.pos, ref.pos))) this.burstDone = true;
     }
-    // Hardcore reloads bin whatever is left in the mag, so only swap when dry.
-    if (gun.mag === 0) gun.startReload(); // no-op mid-reload or out of spares
+    // When to reload. Hardcore mag swaps bin whatever was left in the mag, so a
+    // normal gun only ever swaps dry. A perBullet gun has the opposite economics
+    // — a cycle banks one shell and firing interrupts it for free — so it tops off
+    // at every lull instead, and walks into the next fight with a full tube rather
+    // than whatever it happened to stop shooting on. Either way it still reloads
+    // when it MUST (dry). All no-ops if the mag is full, spares are out, a reload
+    // is already running, or the fire delay hasn't elapsed.
+    const topsOff = gun.spec.fire?.perBullet === true;
+    if (gun.mag === 0 || (topsOff && !target)) gun.startReload();
     if (this.clickIn > 0) this.clickIn -= 1;
 
-    const ready = !this.burstDone && !gun.reloading;
+    const ready = !this.burstDone && !this.reloadBlocksFire;
     if (ready !== this.lastReady) {
       this.lastReady = ready;
       this.reactIn = this.reactionTime;
@@ -652,14 +678,16 @@ export class TacOracle extends Oracle {
     // RUN: stay while still safe; enter only after the dwell.
     const wantRun =
       !healing && !wantHold && runSafe && (this.mode === "run" || this.runDwell >= RUN_COMMIT_TICKS);
-    // Reloading is a self-known, vulnerable moment: drop to cover at once
+    // A committed reload is a self-known, vulnerable moment: drop to cover at once
     // (reflexively, like the burst cutoff) instead of holding a firing lane while
     // the mag swaps — don't wait out the reaction delay that gates the normal
     // shoot<->cover flip. combatMode still catches up on its own timer underneath.
+    // A perBullet gun topping off with a shell up isn't committed to anything (see
+    // reloadBlocksFire) and holds its lane, ready to interrupt and shoot.
     // HOLD does its own ducking (it falls back to full cover while the gun is
     // out of action), so it doesn't want the generic reload->cover override
     // dragging it off its angle.
-    const combat = this.gun.reloading ? "cover" : this.combatMode;
+    const combat = this.reloadBlocksFire ? "cover" : this.combatMode;
     const mode: "shoot" | "cover" | "run" | "heal" | "hold" = healing
       ? "heal"
       : wantHold
@@ -929,7 +957,7 @@ export class TacOracle extends Oracle {
         return;
       }
     }
-    const ducked = this.gun.reloading || !this.fireOk;
+    const ducked = this.reloadBlocksFire || !this.fireOk;
     const dest = () => (ducked ? this.holdCover : this.holdPeek) ?? this.holdCover!;
     // On station? Then it's safe to re-check who's coming and from where. "On
     // station" means parked at EITHER end of the cover<->peek slide, not just at

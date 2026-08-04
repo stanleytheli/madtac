@@ -73,6 +73,10 @@ const RESPAWN_CSS = `
   color: #dfe2e8; font: 13px system-ui, sans-serif; user-select: none;
 }
 #respawn-panel.is-open { display: flex; }
+/* Tab is held. The scoreboard is canvas-drawn and this panel is DOM, so it sits
+   over the canvas no matter what z-index says — stepping out of the way entirely
+   is the only way to put the player list on top. */
+#respawn-panel.is-behind { display: none; }
 .rs-title { font: bold 30px system-ui, sans-serif; letter-spacing: 4px; text-align: center; color: #ff6b6b; }
 .rs-sub { text-align: center; letter-spacing: 1px; opacity: 0.5; margin-top: 3px; }
 
@@ -88,7 +92,10 @@ const RESPAWN_CSS = `
      shrinks the scrollers on a short screen — the action bar below never goes
      off-screen to make room for the lists. */
   align-content: start;
-  height: min(264px, 34vh); padding: 2px 8px 2px 2px;
+  /* Tall enough that the armor column's three taller rows don't scroll; the two
+     weapon columns show ~3.5 of their shorter rows, which still reads as scrollable. */
+  height: min(312px, 40vh); padding: 2px 8px 2px 2px;
+  --rs-icon-h: 40px;
   /* 'scroll', not 'auto': the track is always there, so a column that scrolls
      looks like one before you touch it (macOS overlay scrollbars hide on idle). */
   overflow-y: scroll; overscroll-behavior: contain;
@@ -109,9 +116,14 @@ const RESPAWN_CSS = `
 .rs-item.is-selected { background: rgba(61, 220, 255, 0.3); border-color: #3ddcff; color: #fff; }
 /* Random is on: the picks below it still exist but aren't what you'll spawn with. */
 .rs-grid.is-overridden { opacity: 0.4; }
-.rs-icon { height: 40px; display: flex; align-items: center; justify-content: center; }
+/* Armor sprites are near-square (319x325) where guns are long and thin (~300x100),
+   so a shared 40px icon box wastes most of an armor button's width — the sprite is
+   height-limited there but width-limited on a gun. Give that column more vertical
+   room so the armor actually fills its button. */
+.rs-grid.rs-armor { --rs-icon-h: 56px; }
+.rs-icon { height: var(--rs-icon-h); display: flex; align-items: center; justify-content: center; }
 .rs-icon img {
-  max-width: 100%; max-height: 40px; object-fit: contain;
+  max-width: 100%; max-height: var(--rs-icon-h); object-fit: contain;
   /* Sprite palettes vary a lot across the set (black rifles, gold pistols, olive
      armor), so every icon gets the same white keyline to sit on and reads at a
      glance whatever its own colors are. See ICON_OUTLINE for how the chain works. */
@@ -188,7 +200,9 @@ function loadoutChoices(): { primary: LoadoutChoice[]; secondary: LoadoutChoice[
  * gamemode HUD each render and it opens/closes itself, seeds the selection when
  * it opens, and keeps the Respawn button's countdown current.
  */
-export function buildRespawnMenu(g: RespawnHost): (hud: GamemodeHud | null) => void {
+export function buildRespawnMenu(
+  g: RespawnHost,
+): (hud: GamemodeHud | null, showScoreboard?: boolean) => void {
   installRespawnCss();
   const choices = loadoutChoices();
   /** The live selection, mirrored into the gamemode on every click. */
@@ -247,7 +261,7 @@ export function buildRespawnMenu(g: RespawnHost): (hud: GamemodeHud | null) => v
     heading.className = "rs-label";
     heading.textContent = label;
     const grid = document.createElement("div");
-    grid.className = "rs-grid";
+    grid.className = `rs-grid rs-${slot}`; // rs-armor gets the taller icon box
     grids[slot] = grid;
 
     buttons[slot] = items.map((c) => {
@@ -336,8 +350,11 @@ export function buildRespawnMenu(g: RespawnHost): (hud: GamemodeHud | null) => v
   respawnKeyHandler = onKey;
   window.addEventListener("keydown", onKey);
 
-  return (hud: GamemodeHud | null): void => {
+  return (hud: GamemodeHud | null, showScoreboard = false): void => {
     const show = !!hud?.choosingLoadout;
+    // Yield to the Tab player list. Tracked separately from `show` so holding Tab
+    // doesn't count as a close/reopen — the selection and scroll positions stay put.
+    panel.classList.toggle("is-behind", showScoreboard);
     if (show && !open) {
       // Just opened: reflect the kit the player is set to spawn with (their picks,
       // or the dice) and drop any leftover keyboard focus, so a stray Enter can't

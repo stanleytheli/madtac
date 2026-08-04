@@ -54,6 +54,10 @@ export interface Region {
  * against things on its own z level. Crates and walls are both Obstacles,
  * differing only in appearance + shrapnel.
  */
+/** Obstacles that get their own renderer rather than the generic shape look.
+ *  Add a member here and a case in drawObstacle to give something custom art. */
+export type ObstacleStyle = "barrel_metal" | "barrel_wood";
+
 export interface Obstacle {
   pos: Vec2; // center
   w: number;
@@ -61,11 +65,17 @@ export interface Obstacle {
   /** Rotation about `pos` in radians (absent/0 = axis-aligned). Collision,
    *  sight, and rendering all honor it — see collision.ts's local-frame Box. */
   angle?: number;
-  /** Barrel-like: a CIRCLE (radius = half the smaller of w/h; the factories keep
-   *  w === h) instead of a box, for collision, sight, bullets, and rendering. See
-   *  collision.ts's obstacle-shape dispatch. `cross` still splits the two barrel
-   *  looks (wood planks vs bare metal), exactly as it splits crate from wall. */
+  /** A CIRCLE (radius = half the smaller of w/h; the factories keep w === h)
+   *  instead of a box, for collision, sight, bullets, and rendering. See
+   *  collision.ts's obstacle-shape dispatch. Purely a SHAPE flag — what the thing
+   *  looks like is `style`'s business. */
   round?: boolean;
+  /** Which dedicated renderer draws this obstacle. Omitted = the plain look for
+   *  its shape: a filled rect (plus `cross` for crate planks), or a filled circle
+   *  with an edge stroke and nothing else. Named styles let a thing have art of
+   *  its own instead of being inferred from the generic appearance flags — which
+   *  is what `cross` used to do for barrels. See drawObstacle in main.ts. */
+  style?: ObstacleStyle;
   z: number; // the level it sits on
   /** Fence-like: still solid to movement, but bullets and sight pass through, so
    *  same-level firefights work across it. (Bullets stay z-bound regardless —
@@ -223,18 +233,26 @@ export function makeFence(pos: Vec2, w: number, h: number, z = 0): Obstacle {
   return { pos, w, h, z, permeable: true, fill: "#a9946e", stroke: "#615139", strokeWidth: 5, cross: false, particle: WALL_SHRAPNEL };
 }
 
-/** A metal barrel: a solid CIRCLE (radius `r`) that blocks like a wall and
- *  showers steel sparks when shot. `cross: false` marks the bare-metal look. */
-export function makeBarrelMetal(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
+/** A plain circular obstacle: blocks like a wall, drawn as nothing more than a
+ *  filled disc with an edge stroke. The generic round primitive — the barrels
+ *  below are styles layered on this same collider. */
+export function makeCircle(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
   const d = 2 * r;
-  return { pos, w: d, h: d, z, round: true, fill: "#8a929b", stroke: "#3f474d", strokeWidth: 5, cross: false, particle: METAL_SHRAPNEL };
+  return { pos, w: d, h: d, z, round: true, fill: "#6b7076", stroke: "#3a3d40", strokeWidth: 5, cross: false, particle: WALL_SHRAPNEL };
 }
 
-/** A wooden barrel: same circular collider, but splinters like a crate.
- *  `cross: true` marks the planked-wood look (as it does for crates). */
+/** A metal barrel: a solid CIRCLE (radius `r`) that blocks like a wall and
+ *  showers steel sparks when shot. Drawn by its own renderer (see drawObstacle). */
+export function makeBarrelMetal(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
+  const d = 2 * r;
+  return { pos, w: d, h: d, z, round: true, style: "barrel_metal", fill: "#8a929b", stroke: "#3f474d", strokeWidth: 5, cross: false, particle: METAL_SHRAPNEL };
+}
+
+/** A wooden barrel: same circular collider, but splinters like a crate. Drawn by
+ *  its own renderer (see drawObstacle). */
 export function makeBarrelWood(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
   const d = 2 * r;
-  return { pos, w: d, h: d, z, round: true, fill: "#9a6a2f", stroke: "#4a300f", strokeWidth: 5, cross: true, particle: CRATE_SHRAPNEL };
+  return { pos, w: d, h: d, z, round: true, style: "barrel_wood", fill: "#9a6a2f", stroke: "#4a300f", strokeWidth: 5, cross: false, particle: CRATE_SHRAPNEL };
 }
 
 /**

@@ -390,6 +390,87 @@ function drawStairs(s: Stairs): void {
   ctx.restore();
 }
 
+// --- per-style obstacle art --------------------------------------------------
+// Each of these draws in the obstacle's OWN local frame: drawObstacle has already
+// translated to its centre, applied its rotation, and set fill/stroke/lineWidth,
+// so a renderer just draws around the origin out to radius `r`. This is where
+// custom barrel art goes — they're deliberately separate functions rather than
+// flags on the generic circle, so either can grow without touching the other.
+
+/** Metal barrel: filled body plus the concentric lid rim. */
+
+//  return { pos, w: d, h: d, z, round: true, style: "barrel_metal", fill: "#8a929b", stroke: "#3f474d", strokeWidth: 5, cross: false, particle: METAL_SHRAPNEL };
+
+
+/** A wooden barrel: same circular collider, but splinters like a crate. Drawn by
+ *  its own renderer (see drawObstacle). */
+//  return { pos, w: d, h: d, z, round: true, style: "barrel_wood", fill: "#9a6a2f", stroke: "#4a300f", strokeWidth: 5, cross: false, particle: CRATE_SHRAPNEL };
+
+
+function drawBarrelMetal(r: number): void {
+
+  ctx.fillStyle = "#73787c";
+  ctx.strokeStyle = "#3f474d";
+  ctx.lineWidth = r * 0.125;
+
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.strokeStyle = "#8b8c8e";
+  ctx.beginPath();
+  ctx.arc(0, 0, r * (1 - 0.125), 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = "#3f474d"
+  ctx.beginPath();
+  ctx.arc(r * -0.3, r * -0.3, r * 0.2, 0, Math.PI * 2);
+  ctx.fill();
+
+  // ctx.beginPath();
+  // ctx.arc(0, 0, r * 0.8, 0, Math.PI * 2);
+  // ctx.stroke();
+}
+
+/** Wooden barrel: the same body and rim, with planking across the lid. */
+function drawBarrelWood(r: number): void {
+  ctx.fillStyle = "#9a6a2f";
+  ctx.strokeStyle = "#4a300f";
+  ctx.lineWidth = r * 0.125;
+
+  ctx.beginPath();
+  ctx.arc(0, 0, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  const innerR = r * 0.7;
+
+  ctx.fillStyle = "#ba8443";
+  //ctx.strokeStyle = "#4a300f";
+  ctx.beginPath();
+  ctx.arc(0, 0, innerR, 0, Math.PI * 2);
+  ctx.fill();
+  //ctx.stroke();
+
+  const numLines = 5;
+
+  ctx.strokeStyle = "#9a6a2f";
+  ctx.lineWidth = r * 0.05;
+  for (let i = 0; i < numLines; i++) {
+    const y = (i + 0.5) / numLines * 2 - 1;
+    const x1 = Math.sqrt(1 - y ** 2) * 1.1;
+    ctx.beginPath();
+    ctx.moveTo(innerR * x1, innerR * y);
+    ctx.lineTo(innerR * -x1, innerR * y);
+    ctx.stroke();
+  }
+  // ctx.strokeStyle = "#4a300f";
+  // ctx.stroke();
+
+}
+
 function drawObstacle(o: Obstacle): void {
   ctx.save();
   ctx.translate(o.pos.x, o.pos.y);
@@ -398,24 +479,15 @@ function drawObstacle(o: Obstacle): void {
   ctx.strokeStyle = o.stroke;
   ctx.lineWidth = o.strokeWidth;
   if (o.round) {
-    // Barrel: a filled disc (radius = half the smaller extent, matching the
-    // collider) with a concentric rim for the lid. Wood barrels (cross) get a
-    // plank cross on the lid; metal ones stay bare.
+    // Radius matches the collider: half the smaller extent.
     const r = Math.min(o.w, o.h) / 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.arc(0, 0, r * 0.62, 0, Math.PI * 2);
-    ctx.stroke();
-    if (o.cross) {
-      const d = r * 0.62;
+    if (o.style === "barrel_metal") drawBarrelMetal(r);
+    else if (o.style === "barrel_wood") drawBarrelWood(r);
+    else {
+      // The generic circle: a filled disc with an edge stroke, and nothing else.
       ctx.beginPath();
-      ctx.moveTo(-d, 0);
-      ctx.lineTo(d, 0);
-      ctx.moveTo(0, -d);
-      ctx.lineTo(0, d);
+      ctx.arc(0, 0, r, 0, Math.PI * 2);
+      ctx.fill();
       ctx.stroke();
     }
     ctx.restore();
@@ -891,7 +963,7 @@ function render(): void {
       deaths: game.minimapDeaths,
     });
     profiler.end("render.hud");
-    updateRespawnMenu?.(gh);
+    updateRespawnMenu?.(gh, isDown("tab"));
   }
 
   if (profiler.enabled) drawProfilerOverlay(ctx, window.innerWidth);

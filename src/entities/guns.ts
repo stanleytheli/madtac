@@ -845,7 +845,7 @@ export const RPG: GunSpec = {
   careful: true, // AI won't loose a rocket into a corner or a squadmate
   stagger: { mul: 0.5, ticks: 60 }, // the blast rattles anyone it catches
   fire: {
-    delay: 75,
+    delay: 0,
     bulletSpeed: 30, // projectile travel speed (px/tick)
     bulletLife: 70, // range/fuse ~1680 px
     auto: false,
@@ -911,7 +911,7 @@ export const M79: GunSpec = {
   careful: true, // AI won't loose a rocket into a corner or a squadmate
   stagger: { mul: 0.5, ticks: 45 }, // a lighter jolt than the RPG
   fire: {
-    delay: 75,
+    delay: 0,
     bulletSpeed: 25, // projectile travel speed (px/tick)
     bulletLife: 55, // range/fuse
     auto: false,
@@ -1232,7 +1232,7 @@ export const Colt44: GunSpec = {
   recoilRecovery: 1,
   recoilCoef: 0.17,
   recoilGain: 12.0,
-  recoilDelay: 30,
+  recoilDelay: 35,
   movePenalty: 2.0,
   movingFirstShotRecoilMin: 35.0,
   movingFirstShotRecoilMax: 40.0,
