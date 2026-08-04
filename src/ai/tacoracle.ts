@@ -210,6 +210,14 @@ const HEAL_SEEK_DISTANCE = 1200;
  *  The min distance-until-visibility is dominated by the closest enemies, so a
  *  small K keeps the O(nodes) nav scans bounded regardless of the roster size. */
 const CONTACT_SCAN_K = 3;
+/** Sampling stride (world px) for the first-sight march in routeUntilSight. The
+ *  coarser cousin of HOLD_ENTRY_STEP: that one places a spot to aim at and wants
+ *  precision, this one feeds distance BANDS hundreds of px wide, so a stride this
+ *  size costs a fraction of the raycasts and lands well inside the tolerance. */
+const SIGHT_MARCH_STEP = 40;
+/** Hop cap on that march, mirroring HOLD_PATH_HOPS. The `ceiling` guard normally
+ *  ends it far sooner; this just stops a pathological graph walking forever. */
+const SIGHT_MARCH_HOPS = 24;
 /** Recompute the (expensive, nav-scan-heavy) contact scan only this often;
  *  distance-until-visibility drifts slowly, so it's cached between. */
 const CONTACT_EVAL_TICKS = 15;
@@ -1302,16 +1310,25 @@ export class TacOracle extends Oracle {
     return this.mode === "run";
   }
 
-  /** Distance-until-contact: the distance a mover at (fromPos, fromZ) with weapon
-   *  reach `range` must travel before it can both SEE `tgt` and be within `range`
-   *  of it — 0 if already so. Already seeing it (but out of range) → the straight
-   *  gap left to close; can't see it yet → the walk to the nearest node that sees
-   *  `tgt`, plus any gap still left from there (usually 0 — a sighting node sits
-   *  near what it sees). `fromNode` (the mover's nearest walkable node) and
-   *  `tgtGoal` (nearest node that sees `tgt`) can be passed precomputed to hoist
-   *  those node scans out of a loop (see contactScan). Adds only dist() arithmetic
-   *  over the old sight-only scan. No graph / unreachable falls back to
-   *  straight-line / Infinity. */
+  /**
+   * Distance-until-contact: the distance a mover at (fromPos, fromZ) with weapon
+   * reach `range` must travel before it can both SEE `tgt` and be within `range`
+   * of it — 0 if already so.
+   *
+   * The sight line opening IS the fight starting, so this walks the mover's route
+   * and stops at the first point along it with a clear line to `tgt`, rather than
+   * at `tgt`'s doorstep. The difference is the whole of corner geometry: someone
+   * tucked behind a corner opens the angle with a short peek, while the enemy
+   * coming down the corridor has to cross the entire corridor to open the same
+   * line. Measuring both as "walk to where the other one is standing" reports
+   * those as equal, and reports both as far — which is how a bot ends up
+   * holstering its gun for a RUN one peek away from contact.
+   *
+   * `fromNode` (the mover's nearest walkable node) and `tgtGoal` (nearest node
+   * that sees `tgt`) can be passed precomputed to hoist those node scans out of a
+   * loop (see contactScan). No graph / unreachable falls back to straight-line /
+   * Infinity.
+   */
   private routeUntilSight(
     ai: AiContext,
     fromPos: Vec2,
@@ -1321,18 +1338,54 @@ export class TacOracle extends Oracle {
     fromNode?: number,
     tgtGoal?: number,
   ): number {
-    const sees = fromZ === tgt.z && targetPoints(tgt).some((pt) => losClear(ai.world, fromPos, pt, fromZ));
-    if (sees) return Math.max(0, dist(fromPos, tgt.pos) - range); // 0 if also in range
+    // Only a mover on the target's own level can see it (bullets are z-bound).
+    const seesFrom = (p: Vec2, z: number): boolean =>
+      z === tgt.z && targetPoints(tgt).some((pt) => losClear(ai.world, p, pt, z));
+    /** Straight closing distance from a point that already has the line. */
+    const gapAt = (p: Vec2): number => Math.max(0, dist(p, tgt.pos) - range);
+
+    if (seesFrom(fromPos, fromZ)) return gapAt(fromPos);
     const nav = ai.nav;
     if (!nav || nav.nodes.length === 0) return dist(fromPos, tgt.pos);
     const curr = fromNode ?? nav.nearestWalkable(ai.world, fromPos, fromZ);
     const goal = tgtGoal ?? nav.nearestInSight(ai.world, tgt.pos, tgt.z);
     if (curr < 0 || goal < 0) return dist(fromPos, tgt.pos);
-    // Reach a sighting node, then close any straight gap from it to within range.
-    const gapFrom = (n: number): number => Math.max(0, dist(nav.nodes[n].pos, tgt.pos) - range);
-    if (curr === goal) return dist(fromPos, nav.nodes[curr].pos) + gapFrom(curr);
-    const step = nav.route(curr, goal);
-    return step ? dist(fromPos, nav.nodes[curr].pos) + step.dist + gapFrom(goal) : Infinity;
+
+    // The old doorstep answer, kept as the ceiling: it's what this used to
+    // report, so the march can only ever improve on it, and it bounds the work —
+    // once we've marched that far there is nothing left to win.
+    const first = curr === goal ? null : nav.route(curr, goal);
+    if (curr !== goal && !first) return Infinity;
+    const ceiling = dist(fromPos, nav.nodes[curr].pos) + (first?.dist ?? 0) + gapAt(nav.nodes[goal].pos);
+
+    // March the route, sampling for the line at SIGHT_MARCH_STEP intervals, and
+    // stop the instant it opens. Cost tracks the ANSWER (a line that opens in one
+    // peek costs one or two samples), not the length of the route.
+    let travelled = 0;
+    let from = fromPos;
+    let fromLevel = fromZ;
+    let cur = curr;
+    for (let hop = 0; hop < SIGHT_MARCH_HOPS && travelled < ceiling; hop++) {
+      const nd = nav.nodes[cur];
+      const segLen = dist(from, nd.pos);
+      // Samples along this hop carry the level they're walking on; a hop that
+      // isn't on the target's level can't open a line, so it's just distance.
+      if (fromLevel === tgt.z && segLen > 1e-3) {
+        const dir = norm(sub(nd.pos, from));
+        for (let d = SIGHT_MARCH_STEP; d <= segLen; d += SIGHT_MARCH_STEP) {
+          const p = add(from, scale(dir, d));
+          if (seesFrom(p, fromLevel)) return Math.min(ceiling, travelled + d + gapAt(p));
+        }
+      }
+      travelled += segLen;
+      if (cur === goal) break;
+      const step = hop === 0 ? first : nav.route(cur, goal);
+      if (!step) break;
+      from = nd.pos;
+      fromLevel = nd.z;
+      cur = step.next;
+    }
+    return ceiling;
   }
 
   /** Both contact metrics: `myMin` = the soonest WE could see anyone (drives RUN),
