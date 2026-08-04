@@ -499,11 +499,17 @@ only the body test, two bots claimed the same node on ~60% of the ticks where
 more than one was dug in. Claims release when `clearHold` ends the posture. It's
 the only crowd rule inside HOLD; general spacing is still `separateCharacters`' job.
 
-**There is currently no exit timer.** A bot holds as long as `wantsHold` stays
-true — that is, until something comes into view (it fights) or contact drifts
-past `RUN_DISTANCE` (it runs). On a map where neither happens, two dug-in teams
-will stare at each other; a jittered hold duration is the intended fix when that
-becomes a problem.
+**Three ways out of a hold.** (1) Something comes into view: it fights. (2) The
+give-up timer: `HOLD_MAX_TICKS` (~5s) without a fight ever starting parks the
+posture for `HOLD_STALE_COOLDOWN` (~4.5s) — a hold is a bet that contact is
+coming, and when it doesn't pay off the bot goes hunting instead of re-digging
+into the same dead angle. (`DominationOracle` opts out — its `holdMaxTicks()` is
+Infinity — and runs its own objective vigil instead.) (3) **Taking damage from an
+enemy** breaks the hold straight into SHOOT (a `registerHit` override): a hold is
+a bet on *where they'd appear*, and a landed round means they came in on an angle
+we weren't watching — the same retry cooldown (`HOLD_RETRY_TICKS`) stops it
+re-digging into the failed angle while still under fire. Friendly fire and
+ownerless damage don't break it; neither says the angle failed.
 
 ### 3e. `coast()` — the 4 ticks out of 5 that aren't planning
 
@@ -784,8 +790,9 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `HOLD_PEEK_STEP` / `HOLD_ARRIVE` | 8 / 8 | peek slide granularity / hold waypoint slop |
 | `HOLD_ENTRY_STEP` | 10 | march granularity refining the entry point |
 | `HOLD_PEEK_MARGIN` | 16 | extra lean past where the sight line first opens |
-| `HOLD_COMMIT_TICKS` / `HOLD_RETRY_TICKS` | 30 / 60 | hold entry dwell / backoff after a failed plan |
+| `HOLD_COMMIT_TICKS` / `HOLD_RETRY_TICKS` | 30 / 60 | hold entry dwell / backoff after a failed plan (also set on a damage-break) |
 | `HOLD_REPLAN_TICKS` | 60 | parked threat/entry refresh, ~1s (never fires mid-walk) |
+| `HOLD_MAX_TICKS` / `HOLD_STALE_COOLDOWN` | 300 / 270 | give-up timer on a fightless hold / no-re-dig window after it |
 
 Also in `tacoracle.ts`, not constants but easy to miss: `retreatSpot` probes a
 fixed `LOOK = 90` px in 5 directions (away, two 30-ish° diagonals, both pure
@@ -843,7 +850,7 @@ Behaviour you see, and the specific decision that produces it.
 | Bot refuses to hold anywhere on a map | `planHold` failing — no nav route to the threat, or nothing within `HOLD_COVER_DISTANCE` that hides all 5 body points. Check node density. |
 | Dom bot stands in the open on a point instead of using nearby cover | `holdSpotOk` — cover off the ring would stop the capture, so it's refused until the point is owned and reinforced. |
 | Dom bot won't dig in on a point it's standing on | A hostile is inside `radius + CONTEST_PAD` (a contested site is a fight, not a vigil), or `planHold` found no cover satisfying the on-ring `holdSpotOk`. |
-| Whole team digs in and the match stalls | No hold exit timer yet; bots hold until they see someone or contact drifts past `RUN_DISTANCE`. |
+| Whole team digs in and the match stalls | Shouldn't persist: `HOLD_MAX_TICKS` gives up a fightless hold after ~5s and `HOLD_STALE_COOLDOWN` forces a hunt before re-digging (dom bots exempt on their objective vigil). |
 | Bot runs in, digs in, walks back, runs in again | Was the run<->hold ping-pong: `runDwell` stayed charged through the HOLD, plus HOLD committing before knowing it had cover, plus the dom site being re-tested by position every tick. All three fixed. |
 | Bot stands still in RUN, weapon holstered | RUN ends only when something else takes over; on arrival that's HOLD. If it persists, `holdDwell` is being blocked from charging during RUN. |
 | Runner gets shot before drawing its weapon | The contact metrics must use `fightingRange` (the gun it would draw), not `gun.feasibleRange` (the fists it holsters to while sprinting). |

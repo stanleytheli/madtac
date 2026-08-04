@@ -10,13 +10,14 @@ import { resolveTdm, type TdmOverrides } from "./gamemodes/tdm.ts";
 import { resolveDom, type DomOverrides } from "./gamemodes/domination.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
-import { ARMOR_SPECS, GUN_SPECS, loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
+import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
 import { LEVELS } from "./world/levels.ts";
 import { initInput, isDown, mouse } from "./engine/input.ts";
 import { drawParticles } from "./engine/particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
+import { buildRespawnMenu, teardownRespawnMenu } from "./ui/respawn.ts";
 import { domPointStyle, Minimap } from "./ui/minimap.ts";
 import { angleOf, dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { assetImage } from "./entities/item.ts";
@@ -190,88 +191,9 @@ const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", r
 // meta or auto-fit. Play mode only — the editor has its own world overview.
 let minimap = game ? new Minimap(world, meta.minimapSize) : null;
 
-/**
- * The respawn-screen loadout dropdown (TDM): a small DOM panel with primary /
- * secondary / armor selects, shown only while the player is dead and choosing
- * their next kit. Built once (for modes that support it) and toggled by the HUD.
- */
-// The single respawn-loadout panel in the DOM. buildRespawnMenu removes any
-// prior one before appending its own, so repeated playtests don't stack panels.
-let respawnPanelEl: HTMLElement | null = null;
-
-function buildRespawnMenu(g: Game): (hud: GamemodeHud | null) => void {
-  const SELECT_CSS =
-    "background:#23262c;color:#dfe2e8;border:1px solid #3a3e46;border-radius:4px;font:inherit;padding:3px 6px;min-width:150px;";
-  const addOpts = (sel: HTMLSelectElement, specs: Record<string, { name: string }>): void => {
-    const none = document.createElement("option");
-    none.value = "";
-    none.textContent = "(none)";
-    sel.append(none);
-    for (const [key, spec] of Object.entries(specs)) {
-      const o = document.createElement("option");
-      o.value = key;
-      o.textContent = spec.name;
-      sel.append(o);
-    }
-  };
-  const mkSelect = (specs: Record<string, { name: string }>): HTMLSelectElement => {
-    const s = document.createElement("select");
-    s.style.cssText = SELECT_CSS;
-    addOpts(s, specs);
-    return s;
-  };
-  const primary = mkSelect(GUN_SPECS);
-  const secondary = mkSelect(GUN_SPECS);
-  const armor = mkSelect(ARMOR_SPECS);
-
-  const panel = document.createElement("div");
-  panel.style.cssText =
-    "position:fixed;left:50%;top:58%;transform:translateX(-50%);display:none;flex-direction:column;" +
-    "gap:8px;background:rgba(14,16,20,0.9);color:#dfe2e8;font:13px system-ui,sans-serif;" +
-    "padding:14px 16px;border-radius:10px;z-index:20;min-width:260px;";
-  const title = document.createElement("div");
-  title.textContent = "LOADOUT";
-  title.style.cssText = "font-weight:bold;letter-spacing:1px;opacity:0.7;text-align:center;";
-  panel.append(title);
-  const row = (label: string, sel: HTMLSelectElement): HTMLElement => {
-    const r = document.createElement("div");
-    r.style.cssText = "display:flex;justify-content:space-between;align-items:center;gap:12px;";
-    const l = document.createElement("span");
-    l.textContent = label;
-    r.append(l, sel);
-    return r;
-  };
-  panel.append(row("Primary", primary), row("Secondary", secondary), row("Armor", armor));
-  respawnPanelEl?.remove(); // a previous playtest's menu, if any — don't leak it
-  respawnPanelEl = panel;
-  document.body.append(panel);
-
-  const apply = (): void =>
-    g.gamemode.setPlayerLoadout?.({
-      primary: primary.value || undefined,
-      secondary: secondary.value || undefined,
-      armor: armor.value || undefined,
-    });
-  primary.onchange = apply;
-  secondary.onchange = apply;
-  armor.onchange = apply;
-
-  let shown = false;
-  return (hud: GamemodeHud | null): void => {
-    const show = !!hud?.choosingLoadout;
-    if (show && !shown) {
-      // Just opened: reflect the player's current chosen kit in the dropdowns.
-      primary.value = hud!.loadout?.primary ?? "";
-      secondary.value = hud!.loadout?.secondary ?? "";
-      armor.value = hud!.loadout?.armor ?? "";
-    }
-    panel.style.display = show ? "flex" : "none";
-    shown = show;
-  };
-}
-
-// Only modes with a customizable respawn (TDM) build the menu. Rebound per
-// playtest, so the throwaway match gets its own respawn dropdown (or none).
+// The post-death loadout screen (see ui/respawn.ts). Only modes with a
+// customizable respawn (the team modes) build one. Rebound per playtest, so the
+// throwaway match gets its own respawn menu (or none).
 let updateRespawnMenu = game && game.gamemode.setPlayerLoadout ? buildRespawnMenu(game) : null;
 
 // --- editor playtest ---------------------------------------------------------
@@ -355,8 +277,7 @@ function stopPlaytest(): void {
   camera = { size: editorPlayer!.gun.spec.zoom };
   minimap = null;
   updateRespawnMenu = null;
-  respawnPanelEl?.remove(); // drop the match's respawn menu if it built one
-  respawnPanelEl = null;
+  teardownRespawnMenu(); // drop the match's respawn menu if it built one
   showPlayChip(false);
   editor.setSuspended(false);
 }

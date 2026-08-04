@@ -7,7 +7,7 @@ import type { Character } from "../entities/actor.ts";
 import type { Armor } from "../entities/armor.ts";
 import type { GamemodeHud, PlayerRow } from "../gamemodes/gamemode.ts";
 import type { Gun } from "../entities/gun.ts";
-import { armorIcon, assetImage, gunIcon, utilityIcon } from "../entities/item.ts";
+import { armorIcon, assetImage, gunIcon, OUTLINE_PX, outlinedIcon, utilityIcon } from "../entities/item.ts";
 import { Minimap, type DeathMark } from "./minimap.ts";
 import type { Vec2 } from "../engine/vec.ts";
 
@@ -489,12 +489,14 @@ function drawGamemodeHud(
 // Loadout panel, bottom-right: primary + secondary weapon slots stacked. The
 // worn-armor slot (when armed) is a small square just left of that column, sitting
 // in the gap between the centered health bar and the weapons.
-const SLOT_W = 190;
-const SLOT_H = 72;
+// Each box is OUTLINE_PX*2 + a little wider/taller than it used to be, so the
+// keylined icons keep the same clearance from the slot edges as the bare sprites did.
+const SLOT_W = 198;
+const SLOT_H = 80;
 const SLOT_GAP = 8;
 const SLOT_MARGIN = 22;
-const ARMOR_SQ = 68; // side length of the square armor slot
-const HALF_H = 54; // height of the compact melee/utility row (slots 3 & 4)
+const ARMOR_SQ = 76; // side length of the square armor slot
+const HALF_H = 62; // height of the compact melee/utility row (slots 3 & 4)
 
 /** Which panel slot a point is over (see hudHitTest). The weapon slots (1/2) and
  *  armor are droppable; melee (3, fists) is not; utility (4) drops one. */
@@ -587,7 +589,8 @@ function drawCompactSlotChrome(
   ctx.restore();
 }
 
-/** Draw a fitted icon centered in a box (longest side = `maxPx`). */
+/** Draw a fitted, white-keylined icon centered in a box (sprite's longest side =
+ *  `maxPx`; the outline reaches a few px past that). */
 function drawIconCentered(
   ctx: CanvasRenderingContext2D,
   img: HTMLImageElement,
@@ -596,9 +599,11 @@ function drawIconCentered(
   maxPx: number,
 ): void {
   const k = maxPx / Math.max(img.naturalWidth, img.naturalHeight);
-  const iw = img.naturalWidth * k;
-  const ih = img.naturalHeight * k;
-  ctx.drawImage(img, cx - iw / 2, cy - ih / 2, iw, ih);
+  const sprite = outlinedIcon(img, k);
+  if (!sprite) return;
+  const iw = sprite.width * k;
+  const ih = sprite.height * k;
+  ctx.drawImage(sprite, cx - iw / 2, cy - ih / 2, iw, ih);
 }
 
 /** Slot 3 — melee (the fists). Icon + hotkey; no name/count (there's one melee). */
@@ -671,11 +676,12 @@ function drawArmorSlot(
 
   // Sprite, centered a little high to leave room for the label.
   const img = armorIcon(armor.spec);
-  if (img) {
+  const sprite = img ? outlinedIcon(img, 0.22) : null;
+  if (sprite) {
     const k = 0.22
-    const iw = img.naturalWidth * k;
-    const ih = img.naturalHeight * k;
-    ctx.drawImage(img, cx - iw / 2, y + size / 2 - ih / 2 - 14, iw, ih);
+    const iw = sprite.width * k;
+    const ih = sprite.height * k;
+    ctx.drawImage(sprite, cx - iw / 2, y + size / 2 - ih / 2 - 14, iw, ih);
   }
 
   ctx.font = uiFont("bold 12px");
@@ -727,14 +733,16 @@ function drawLoadoutSlot(
     const gunNameW = ctx.measureText(gunName).width;
     ctx.fillText(gunName, x + SLOT_W / 2 - gunNameW / 2, cy + 18);
 
-    // Icon centered above the name.
+    // Icon centered above the name. Bottom-anchored, so the keyline's padding is
+    // added back to keep the sprite itself sitting exactly where it did.
     const img = gunIcon(gun.spec);
-    if (img) {
+    const sprite = img ? outlinedIcon(img, 0.35) : null;
+    if (sprite) {
       const k = 0.35;
-      const iw = img.naturalWidth * k;
-      const ih = img.naturalHeight * k;
+      const iw = sprite.width * k;
+      const ih = sprite.height * k;
       ctx.translate(x + SLOT_W / 2, cy);
-      ctx.drawImage(img, -iw / 2, -ih + 6, iw, ih);
+      ctx.drawImage(sprite, -iw / 2, -ih + 6 + OUTLINE_PX, iw, ih);
     }
   }
   ctx.restore();

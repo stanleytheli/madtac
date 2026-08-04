@@ -79,7 +79,8 @@ import { profiler } from "../engine/profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { losClear } from "../world/world.ts";
+import { losClear, type Hittable } from "../world/world.ts";
+import type { ArmorPen } from "../entities/guns.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
 export const TAC_ORACLE_SKIN: Skin = {
@@ -734,6 +735,31 @@ export class TacOracle extends Oracle {
     this.holdEntryNode = -1;
     this.holdPath = [];
     this.holdReplanIn = HOLD_REPLAN_TICKS;
+  }
+
+  /** Taking damage from an enemy while dug in breaks the hold into SHOOT: a hold
+   *  is a bet on where they'd appear, and a round landing means they came in on
+   *  an angle we weren't watching — keep fighting from a broken angle and the
+   *  next rounds land too. The retry cooldown stops it re-digging into the same
+   *  wrong angle while still under fire. Friendly fire / ownerless damage leaves
+   *  the hold standing: neither says the angle failed. */
+  override registerHit(
+    dir: Vec2,
+    point: Vec2,
+    damage: number,
+    armorPen: ArmorPen,
+    attacker: Hittable | null = null,
+  ): void {
+    super.registerHit(dir, point, damage, armorPen, attacker);
+    if (this.mode !== "hold" || damage <= 0) return;
+    if (!(attacker instanceof Character) || !areHostile(this.team, attacker.team)) return;
+    this.clearHold();
+    this.mode = "shoot";
+    this.holdDwell = 0;
+    this.holdTicks = 0;
+    this.holdRetryIn = Math.max(this.holdRetryIn, HOLD_RETRY_TICKS);
+    this.strafeTarget = null;
+    this.evalIn = 0;
   }
 
   /** Hold the slot the posture wants: the healing item (and keep using it) while

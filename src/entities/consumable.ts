@@ -50,7 +50,7 @@ const FIST_L = { f: 70, l: -20 };
 
 export const BANDAGE: UtilitySpec = {
   name: "Bandage",
-  icon: "bandage.svg",
+  icon: "bandage_outline.svg",
   useTime: 150, // ~2.5s to wrap
   maxCarry: 5,
   // Both hands draw together in front to wrap, hold, then return.
@@ -70,7 +70,7 @@ const SYRINGE_TICKS = Math.round(10 * 60); // 750 ticks
 
 export const SYRINGE: UtilitySpec = {
   name: "Syringe",
-  icon: "syringe.png",
+  icon: "syringe_outline.png",
   useTime: 120, // ~2s to jab
   maxCarry: 1,
   // Right hand thrusts out, pulls in to inject, then returns; left steadies.

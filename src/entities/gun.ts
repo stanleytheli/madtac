@@ -134,10 +134,28 @@ export class Gun implements Droppable {
     );
   }
 
-  /** Can a reload start now? (Has a mag that isn't full, a spare, and isn't already reloading.) */
+  /** Is there room and ammo to load? (A mag that isn't full, a spare, not already
+   *  reloading, not drawing.) This is the *continuation* predicate — it's what a
+   *  perBullet gun re-checks to auto-cycle the next shell. Starting a reload from
+   *  scratch has the extra condition in `canStartReload`. */
   get canReload(): boolean {
     const f = this.spec.fire;
     return f !== undefined && !this.reloading && this.mag < f.magSize && this.reserveMags > 0 && !this.drawing;
+  }
+
+  /**
+   * Can a reload be *started* right now? Everything `canReload` wants, plus the
+   * fire delay having fully elapsed.
+   *
+   * That last condition is what stops reload-cancelling from laundering away the
+   * fire delay: reload, then abort it (X, a weapon switch, or — on a perBullet gun
+   * — just firing), and you'd be back to a ready weapon without having waited out
+   * the shot you already took. Gating the *start* rather than `canReload` itself
+   * keeps a pump shotgun's shell-by-shell cycle intact, which matters because
+   * Mossberg500 reloads a shell (40t) faster than it can fire (45t).
+   */
+  get canStartReload(): boolean {
+    return this.canReload && this.fireCooldown <= 0;
   }
 
   /** Reload progress in [0, 1] (0 just started, 1 done). 0 when not reloading. */
@@ -153,11 +171,14 @@ export class Gun implements Droppable {
     return 1 - this.drawTicks / f.drawTime; 
   }
 
-  /** Begin a reload if allowed. No-op otherwise (e.g. full mag or no spare). */
+  /** Begin a reload if allowed. No-op otherwise (full mag, no spare, or the fire
+   *  delay from the last shot hasn't run out yet). */
   startReload(): void {
-    if (!this.canReload) return;
+    if (!this.canStartReload) return;
     this.reloadTicks = this.spec.fire!.reloadTime;
-    this.fireCooldown = 0;
+    // NB: deliberately does NOT clear fireCooldown. It used to, which is what made
+    // reload-cancel a free way to skip the fire delay; canStartReload now
+    // guarantees it's already 0 anyway.
   }
 
   /** Abort an in-progress reload without consuming a spare (e.g. on weapon switch). */

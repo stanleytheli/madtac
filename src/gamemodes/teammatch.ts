@@ -41,7 +41,7 @@ const EQUIP: { name: string; primaries: string[]; secondaries: string[]; armors:
   { name: "medium", primaries: ["M16", "AK47"], secondaries: ["M9", "USPS"], armors: ["ARMOR_L1", "ARMOR_L2"] },
   { name: "heavy", primaries: ["M16", "AK47"], secondaries: ["Deagle"], armors: ["ARMOR_L2", "ARMOR_L3"] },
   { name: "superheavy", primaries: ["AK47", "M249"], secondaries: ["Deagle", "Golden_Deagle"], armors: ["ARMOR_L3", "ARMOR_L4"] },
-  { name: "random", primaries: ["M249", "AK47", "M16", "MP220", "Scout", "RPG", "AWM", "Mossberg500", "M4A1S"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle", "Skorpion", "M79"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
+  { name: "random", primaries: ["M249", "AK47", "M16", "MP220", "Scout", "RPG", "AWM", "Mossberg500", "M4A1S"], secondaries: ["Deagle", "USPS", "M9", "Golden_Deagle", "Skorpion", "M79", "Uzi", "Colt44"], armors: ["", "ARMOR_L1", "ARMOR_L2", "ARMOR_L3"], both: false },
 ];
 
 /** The equipment tier names, in ladder order — the editor dropdown + URL/meta
@@ -120,6 +120,15 @@ export function rollLoadout(equip: string): PlayerLoadout {
   };
 }
 
+/** The registry key a spec object is filed under (identity match), or undefined
+ *  for "none" / a spec that isn't in the registry. The inverse of the GUN_SPECS /
+ *  ARMOR_SPECS lookup — used to describe gear the player is holding as a
+ *  PlayerLoadout. */
+function specKey<T>(specs: Record<string, T>, spec: T | undefined | null): string | undefined {
+  if (!spec) return undefined;
+  return Object.keys(specs).find((k) => specs[k] === spec);
+}
+
 /** A small random belt for a bot: 0–2 bandages and a ~40% chance of a syringe.
  *  Bots never use these, but they drop on death, so med kits circulate. */
 export function rollUtilities(): UtilityStack[] {
@@ -139,14 +148,33 @@ export interface Agent {
   skill: number;
   /** Equipment tier name. Bots re-roll a gun+armor from it every (re)spawn. */
   equip: string;
-  /** The player's chosen kit, edited at the respawn screen. Empty (no weapon) =
-   *  "auto": re-roll from `equip` each spawn like a bot. Bots leave this unset. */
+  /** The player's chosen kit, edited at the respawn screen. Bots leave this unset. */
   loadout?: PlayerLoadout;
+  /** The player is on "random": roll a fresh kit from `equip` every spawn, exactly
+   *  like a bot. On at match start (so the opening life is a roll) and toggled by
+   *  the respawn menu's dice button; picking any weapon/armor turns it off. Kept
+   *  separate from `loadout` so an empty kit reads as a deliberate "fists only"
+   *  rather than "unset". */
+  random?: boolean;
   kills: number;
   deaths: number;
   /** The live character this agent currently drives, or null while awaiting respawn. */
   char: Character | null;
 }
+
+/** A downed combatant waiting to come back. */
+interface RespawnSlot {
+  agent: Agent;
+  /** Tick the respawn timer is up — bots spawn on it, the player's button unlocks. */
+  at: number;
+  /** Tick they went down, for the beat before the player's menu opens. */
+  diedAt: number;
+}
+
+/** Ticks between the player dying and the respawn menu appearing. The camera has
+ *  already stopped dead with them; this is a held breath over the corpse before
+ *  the UI takes the screen, so the kill reads instead of being cut off. */
+const MENU_DELAY = 60;
 
 /**
  * Base for blue-vs-red team modes. Owns the roster, spawning, respawns, K/D, and
@@ -166,7 +194,7 @@ export abstract class TeamMatchMode implements Gamemode {
   protected readonly cfg: TeamMatchConfig;
   protected phase: "playing" | "over" = "playing";
   protected agents: Agent[] = [];
-  protected queue: { agent: Agent; at: number }[] = [];
+  protected queue: RespawnSlot[] = [];
   /** The player's identity, kept for the respawn-screen loadout dropdown. */
   protected playerAgent: Agent | null = null;
   /** Character -> its Agent, kept even after the character dies, so a kill that
@@ -206,7 +234,7 @@ export abstract class TeamMatchMode implements Gamemode {
     if (blueSkin) ctx.player.skin = blueSkin;
     const player: Agent = {
       name: nextName(), team: "blue", isPlayer: true, skill: this.cfg.blue.skill,
-      equip: this.cfg.blue.equip, loadout: {},
+      equip: this.cfg.blue.equip, loadout: {}, random: true,
       kills: 0, deaths: 0, char: ctx.player,
     };
     this.agents.push(player);
@@ -230,8 +258,8 @@ export abstract class TeamMatchMode implements Gamemode {
   }
 
   /** (Re)spawn an agent's character at one of its team's zones. Bots re-roll a
-   *  fresh full kit every spawn; the player does too while its loadout is empty
-   *  ("auto"), or gets its fixed chosen kit once a weapon is set. Subclasses can
+   *  fresh full kit every spawn; the player does too while it's on `random`,
+   *  otherwise it gets exactly what the respawn menu shows. Subclasses can
    *  override `troopOptions` to build a different AI (e.g. an objective AI). */
   protected spawnAgent(ctx: GameCtx, agent: Agent): void {
     const sp = ctx.spawnPoint(agent.team);
@@ -240,8 +268,7 @@ export abstract class TeamMatchMode implements Gamemode {
       return;
     }
     if (agent.isPlayer) {
-      const auto = !agent.loadout?.primary && !agent.loadout?.secondary;
-      ctx.revivePlayer(sp.pos, sp.z, auto ? rollLoadout(agent.equip) : agent.loadout);
+      ctx.revivePlayer(sp.pos, sp.z, agent.random ? rollLoadout(agent.equip) : (agent.loadout ?? {}));
       agent.char = ctx.player;
     } else {
       const e = rollLoadout(agent.equip); // full kit, sampled fresh each life
@@ -271,8 +298,8 @@ export abstract class TeamMatchMode implements Gamemode {
     return undefined;
   }
 
-  /** Store the player's next-life kit (respawn-screen dropdown), keeping only
-   *  keys that exist so a stale/garbage value can't break a spawn. */
+  /** Store the player's next-life kit (respawn-screen menu), keeping only keys
+   *  that exist so a stale/garbage value can't break a spawn. */
   setPlayerLoadout(loadout: PlayerLoadout): void {
     if (!this.playerAgent) return;
     this.playerAgent.loadout = {
@@ -280,6 +307,38 @@ export abstract class TeamMatchMode implements Gamemode {
       secondary: loadout.secondary && loadout.secondary in GUN_SPECS ? loadout.secondary : undefined,
       armor: loadout.armor && loadout.armor in ARMOR_SPECS ? loadout.armor : undefined,
     };
+    this.playerAgent.random = false; // an explicit pick overrides the dice
+  }
+
+  /** The player hit the dice button: hand them the same roll the bots get from
+   *  their side's equip tier, fresh every life, until they pick something. */
+  randomizePlayerLoadout(): void {
+    if (this.playerAgent) this.playerAgent.random = true;
+  }
+
+  /** The player pressed Respawn. Respawning is voluntary — the player's queue
+   *  entry is never spawned by `update`, it just sits there marking when the
+   *  timer is up — so this is the only way back in. No-op (false) while the
+   *  timer still has time on it. */
+  requestRespawn(ctx: GameCtx): boolean {
+    const agent = this.playerAgent;
+    if (this.matchOver || !agent || agent.char) return false; // decided, or already alive
+    const i = this.queue.findIndex((p) => p.agent.isPlayer);
+    if (i >= 0) {
+      if (ctx.tick < this.queue[i].at) return false; // timer still running
+      this.queue.splice(i, 1);
+    }
+    // No queue entry but no character either means a spawn already failed (a
+    // level with no zone for this team). Retry rather than leave the button dead.
+    this.spawnAgent(ctx, agent);
+    return true;
+  }
+
+  /** Seconds until the player may respawn (0 = now), or undefined if they're
+   *  not waiting to. */
+  private respawnIn(ctx: GameCtx): number | undefined {
+    const mine = this.queue.find((p) => p.agent.isPlayer);
+    return mine ? Math.max(0, (mine.at - ctx.tick) / 60) : undefined;
   }
 
   /** A team's total deaths across the match (TDM's ticket spend). */
@@ -294,6 +353,18 @@ export abstract class TeamMatchMode implements Gamemode {
 
     victim.deaths += 1;
     victim.char = null;
+    // While the player is on random they have no picks of their own, so park the
+    // kit they went down with under the dice: the menu opens on something real,
+    // and turning random off starts from what they were just carrying. Once they
+    // pick for themselves those picks are theirs and this stops overwriting them.
+    // Called from reapDead before the corpse drops its gear, so slots are filled.
+    if (victim.isPlayer && victim.random) {
+      victim.loadout = {
+        primary: specKey(GUN_SPECS, dead.slots.primary?.spec),
+        secondary: specKey(GUN_SPECS, dead.slots.secondary?.spec),
+        armor: specKey(ARMOR_SPECS, dead.armor?.spec),
+      };
+    }
     // Only a kill against a team you're hostile to counts. Friendly-fire and
     // neutral kills (e.g. rocket splash catching a teammate, or a self-kill) still
     // register the death but credit no kill — mirrors the AI's areHostile targeting.
@@ -303,15 +374,17 @@ export abstract class TeamMatchMode implements Gamemode {
 
     this.afterDeath(victim, ctx); // subclass may end the match (TDM: killLimit)
     if (this.matchOver) return;
-    this.queue.push({ agent: victim, at: ctx.tick + this.cfg.respawnDelay });
+    this.queue.push({ agent: victim, at: ctx.tick + this.cfg.respawnDelay, diedAt: ctx.tick });
   }
 
   update(ctx: GameCtx): void {
     if (this.matchOver) return;
-    // Respawn everyone whose timer is up; keep the not-yet-due ones for later.
-    const waiting: { agent: Agent; at: number }[] = [];
+    // Respawn every BOT whose timer is up; keep the not-yet-due ones for later.
+    // The player's entry always waits — it respawns only when they press the
+    // button (requestRespawn), so there's no rush on the loadout menu.
+    const waiting: RespawnSlot[] = [];
     for (const p of this.queue) {
-      if (ctx.tick < p.at) waiting.push(p);
+      if (ctx.tick < p.at || p.agent.isPlayer) waiting.push(p);
       else this.spawnAgent(ctx, p.agent);
     }
     this.queue = waiting;
@@ -329,16 +402,19 @@ export abstract class TeamMatchMode implements Gamemode {
     }));
 
     // Player awaiting respawn: it's dead (no live char) while the match plays on.
-    const choosingLoadout = this.phase === "playing" && !!this.playerAgent && this.playerAgent.char === null;
+    // Held back for MENU_DELAY ticks after the death so the panel doesn't slam up
+    // the instant they go down. A dead player with no queue slot (their spawn
+    // failed) has no death tick to wait on, so the menu opens right away — it's
+    // their only way back in.
+    const dead = this.phase === "playing" && !!this.playerAgent && this.playerAgent.char === null;
+    const slot = dead ? this.queue.find((p) => p.agent.isPlayer) : undefined;
+    const choosingLoadout = dead && (!slot || ctx.tick - slot.diedAt >= MENU_DELAY);
 
-    let banner: string | undefined;
-    if (this.matchOver) {
-      banner = `${this.blueLost() ? "Defeat" : "Victory"}\nPress Enter to restart`;
-    } else if (choosingLoadout) {
-      const mine = this.queue.find((p) => p.agent.isPlayer);
-      const secs = mine ? Math.max(1, Math.ceil((mine.at - ctx.tick) / 60)) : 1;
-      banner = `Respawning in ${secs}`;
-    }
+    // No death banner while choosing: the respawn menu is centered over the same
+    // space and carries its own "YOU DIED" heading + countdown.
+    const banner = this.matchOver
+      ? `${this.blueLost() ? "Defeat" : "Victory"}\nPress Enter to restart`
+      : undefined;
 
     return {
       name: this.label,
@@ -348,6 +424,8 @@ export abstract class TeamMatchMode implements Gamemode {
       players,
       choosingLoadout,
       loadout: this.playerAgent?.loadout,
+      randomLoadout: !!this.playerAgent?.random,
+      respawnIn: choosingLoadout ? (this.respawnIn(ctx) ?? 0) : undefined,
       ...this.extraHud(ctx),
     };
   }

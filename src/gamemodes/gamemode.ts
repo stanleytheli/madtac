@@ -98,11 +98,19 @@ export interface GamemodeHud {
   over: boolean;
   /** Per-combatant K/D for the Tab scoreboard (undefined = no player list). */
   players?: PlayerRow[];
-  /** The player is dead and picking their next kit — show the respawn-screen
-   *  loadout dropdown (see setPlayerLoadout). */
+  /** The player is dead and picking their next kit — show the respawn screen
+   *  (see setPlayerLoadout / requestRespawn). */
   choosingLoadout?: boolean;
-  /** The player's current chosen kit, to populate that dropdown. */
+  /** The player's current chosen kit, to populate that menu. */
   loadout?: PlayerLoadout;
+  /** The player is on "random" — their kit is rolled fresh each life instead of
+   *  taken from `loadout`, so the menu shows the dice button as active and every
+   *  weapon/armor pick as overridden. */
+  randomLoadout?: boolean;
+  /** Seconds left before the respawn button unlocks (0 = ready now). Only
+   *  meaningful while `choosingLoadout` — respawning is voluntary, so the player
+   *  sits on the menu until they press it. */
+  respawnIn?: number;
   /** Domination capture points to render (in-world + minimap); undefined for
    *  modes without them. */
   points?: DomPointView[];
@@ -124,9 +132,18 @@ export interface Gamemode {
   onDeath(dead: Character, ctx: GameCtx): void;
   /** Scoreboard/banner for the HUD, or null for no gamemode UI. */
   hud(ctx: GameCtx): GamemodeHud | null;
-  /** Set the player's chosen kit for their next life (respawn-screen dropdown).
+  /** Set the player's chosen kit for their next life (respawn-screen menu).
    *  Only modes with a customizable respawn (TDM) implement this. */
   setPlayerLoadout?(loadout: PlayerLoadout): void;
+  /** Put the player on a randomly rolled kit (the same roll the bots get from
+   *  their side's equip tier), overriding any picked loadout until they pick
+   *  again. Implemented alongside setPlayerLoadout. */
+  randomizePlayerLoadout?(): void;
+  /** The player pressed Respawn. Puts them back in with their chosen kit and
+   *  returns true; returns false (and does nothing) while the respawn timer is
+   *  still running or they aren't waiting to spawn. Implemented alongside
+   *  setPlayerLoadout by the modes with a respawn screen. */
+  requestRespawn?(ctx: GameCtx): boolean;
   /** The objectives to feed objective-seeking AIs this tick (domination points),
    *  or undefined for modes without them. */
   objectives?(ctx: GameCtx): ObjectivePoint[];

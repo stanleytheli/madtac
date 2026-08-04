@@ -123,6 +123,77 @@ function getImage(src: string): HTMLImageElement {
   return img;
 }
 
+/** Thickness of the white keyline around a sprite, in the units it's DRAWN in
+ *  (world px on the ground, logical HUD px in a slot). Matches the respawn
+ *  menu's ICON_OUTLINE_PX so every icon in the game reads the same. */
+export const OUTLINE_PX = 3;
+
+// Keylined sprites, per source image and dilation radius. The outline is baked
+// once per (sprite, radius) and then drawn like any other image, so the per-frame
+// cost is the same single drawImage it always was. Keyed off the image object
+// rather than its URL: this is on the ground-item draw path, and reading `.src`
+// serializes the whole URL every call.
+const outlineCache = new WeakMap<HTMLImageElement, Map<number, HTMLCanvasElement>>();
+
+/**
+ * A copy of `img` ringed in white, for drawing at `scale` (output px per source
+ * px). The dilation happens in SOURCE pixels — `OUTLINE_PX / scale` of them — so
+ * the ring lands at OUTLINE_PX once the caller scales it down.
+ *
+ * The result is padded symmetrically by that radius, so a centered draw needs no
+ * repositioning: swap `naturalWidth`/`naturalHeight` for the returned canvas's
+ * `width`/`height` and the sprite core stays put while the outline grows outward.
+ * Returns null until the image has decoded.
+ *
+ * Deliberately NOT folded into gunIcon/armorIcon/utilityIcon: those also feed the
+ * in-world character rendering (a slung rifle on someone's back, a held bandage),
+ * which stays un-outlined.
+ */
+export function outlinedIcon(img: HTMLImageElement, scale: number): HTMLCanvasElement | null {
+  if (!img.complete || img.naturalWidth === 0) return null;
+  const r = Math.max(1, Math.round(OUTLINE_PX / Math.max(scale, 1e-6)));
+  let byRadius = outlineCache.get(img);
+  if (!byRadius) {
+    byRadius = new Map();
+    outlineCache.set(img, byRadius);
+  }
+  const hit = byRadius.get(r);
+  if (hit) return hit;
+
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+
+  // The sprite's alpha, filled flat white: 'source-in' keeps only the pixels the
+  // sprite already covers, so the silhouette carries its exact shape.
+  const sil = document.createElement("canvas");
+  sil.width = w;
+  sil.height = h;
+  const sc = sil.getContext("2d")!;
+  sc.drawImage(img, 0, 0);
+  sc.globalCompositeOperation = "source-in";
+  sc.fillStyle = "#fff";
+  sc.fillRect(0, 0, w, h);
+
+  // Dilate by a (2r+1)² square — the same gap-free ring the menu builds from
+  // repeated drop-shadow quads. Done separably (a horizontal smear, then a
+  // vertical one), which is 2(2r+1) stamps instead of the square's (2r+1)².
+  const rowC = document.createElement("canvas");
+  rowC.width = w + r * 2;
+  rowC.height = h;
+  const rc = rowC.getContext("2d")!;
+  for (let dx = -r; dx <= r; dx++) rc.drawImage(sil, r + dx, 0);
+
+  const out = document.createElement("canvas");
+  out.width = w + r * 2;
+  out.height = h + r * 2;
+  const oc = out.getContext("2d")!;
+  for (let dy = -r; dy <= r; dy++) oc.drawImage(rowC, 0, r + dy);
+  oc.drawImage(img, r, r); // original colors on top of the ring
+
+  byRadius.set(r, out);
+  return out;
+}
+
 const ICON_SIZE = 72; // world px for the icon's longer side
 const ICON_ROT = -Math.PI / 4; // drawn rotated 45° counter-clockwise
 const ICON_SCALE = 0.5; // sprite -> world px scale for ground icons
@@ -169,12 +240,13 @@ function drawGroundIcon(
   if (highlight) drawHighlightRing(ctx, pos, backdropRadius);
 
   const img = iconSrc ? getImage(iconSrc) : null;
-  if (img && img.complete && img.naturalWidth > 0) {
-    const w = img.naturalWidth * scale;
-    const h = img.naturalHeight * scale;
+  const sprite = img ? outlinedIcon(img, scale) : null;
+  if (sprite) {
+    const w = sprite.width * scale;
+    const h = sprite.height * scale;
     ctx.translate(pos.x, pos.y);
     ctx.rotate(rotation);
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
   }
   ctx.restore();
 }
@@ -205,12 +277,17 @@ function drawGroundIconFit(
 
   const img = iconSrc ? getImage(iconSrc) : null;
   if (img && img.complete && img.naturalWidth > 0) {
+    // Fit from the ORIGINAL dimensions, so the sprite core still lands at
+    // `targetPx` and only the keyline reaches past it.
     const k = targetPx / Math.max(img.naturalWidth, img.naturalHeight);
-    const w = img.naturalWidth * k;
-    const h = img.naturalHeight * k;
-    ctx.translate(pos.x, pos.y);
-    ctx.rotate(rotation);
-    ctx.drawImage(img, -w / 2, -h / 2, w, h);
+    const sprite = outlinedIcon(img, k);
+    if (sprite) {
+      const w = sprite.width * k;
+      const h = sprite.height * k;
+      ctx.translate(pos.x, pos.y);
+      ctx.rotate(rotation);
+      ctx.drawImage(sprite, -w / 2, -h / 2, w, h);
+    }
   }
   ctx.restore();
 }
