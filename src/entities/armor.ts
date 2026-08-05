@@ -265,7 +265,7 @@ export const ARMOR_L4: ArmorSpec = {
 
 
 export const ARMOR_L5: ArmorSpec = {
-  name: "Level IV Armor",
+  name: "Level V Armor",
   level: 5,
   icon: "armor_l5",
   maxHp: 750,
