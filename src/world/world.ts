@@ -14,7 +14,7 @@ import {
 import type { GroundItem } from "../entities/item.ts";
 import type { Vehicle } from "../entities/vehicle.ts";
 import type { ArmorPen } from "../entities/guns.ts";
-import { add, dist, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { add, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at
@@ -803,12 +803,14 @@ function backOut(pos: Vec2, back: Vec2, inside: (p: Vec2) => boolean): Vec2 {
   return p;
 }
 
-const SUBSTEPS = 10; // sub-tick collision samples along each bullet's path
+const SAMPLE_DX = 5; // world px between sub-tick collision samples along a bullet/projectile path
 
 /**
  * Advance all bullets one tick and drop any that expire or hit something. To stop
  * fast bullets tunneling through thin walls / past characters, collision is sampled
- * at SUBSTEPS points along the path this tick (not just at the endpoint).
+ * along the path this tick (not just at the endpoint) — every SAMPLE_DX px, so the
+ * sample count scales with how far the bullet travels: a fast round gets more
+ * checks, a slow one fewer, at a constant spatial resolution either way.
  *
  * `targets` are the hittable characters; a bullet never collides with its own
  * owner (you can't shoot yourself), and only interacts with obstacles/characters
@@ -821,11 +823,14 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     if (b.life <= 0) continue;
 
     const start = b.pos;
-    const step = scale(b.vel, 1 / SUBSTEPS);
+    // One sample per SAMPLE_DX px of travel (>=1), so hitreg resolution is fixed
+    // in space rather than in count — fast bullets get more checks, slow ones less.
+    const n = Math.max(1, Math.ceil(len(b.vel) / SAMPLE_DX));
+    const step = scale(b.vel, 1 / n);
     const backDir = norm(scale(b.vel, -1)); // debris flies back toward the shooter
 
     let consumed = false;
-    for (let i = 1; i <= SUBSTEPS && !consumed; i++) {
+    for (let i = 1; i <= n && !consumed; i++) {
       const sample = add(start, scale(step, i));
 
       // Obstacles (walls/crates) on this bullet's level block first. Fences
@@ -1023,10 +1028,12 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
     }
 
     const start = p.pos;
-    const step = scale(p.vel, 1 / SUBSTEPS);
+    // Same fixed-spatial-resolution sampling as bullets: one check per SAMPLE_DX px.
+    const n = Math.max(1, Math.ceil(len(p.vel) / SAMPLE_DX));
+    const step = scale(p.vel, 1 / n);
     const backDir = norm(scale(p.vel, -1)); // toward the shooter, to back out of a wall
     let detonated = false;
-    for (let i = 1; i <= SUBSTEPS && !detonated; i++) {
+    for (let i = 1; i <= n && !detonated; i++) {
       const sample = add(start, scale(step, i));
 
       // Walls/crates on this level detonate it (fences are permeable, like bullets).

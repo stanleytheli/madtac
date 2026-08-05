@@ -120,7 +120,7 @@ const RESPAWN_CSS = `
    so a shared 40px icon box wastes most of an armor button's width — the sprite is
    height-limited there but width-limited on a gun. Give that column more vertical
    room so the armor actually fills its button. */
-.rs-grid.rs-armor { --rs-icon-h: 56px; }
+.rs-grid.rs-armor { --rs-icon-h: 60px; }
 .rs-icon { height: var(--rs-icon-h); display: flex; align-items: center; justify-content: center; }
 .rs-icon img {
   max-width: 100%; max-height: var(--rs-icon-h); object-fit: contain;

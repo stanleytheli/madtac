@@ -235,7 +235,7 @@ function circle(ctx: CanvasRenderingContext2D, c: Vec2, r: number, color: string
  *
  * The gun is drawn by `drawGun`, invoked at the gun's z-slot (above the head,
  * below the hands) — the Gun owns its own rendering; the Character only places
- * the hands. z-order: arms -> shoulders -> head -> gun -> hands.
+ * the hands. z-order: arms -> shoulders -> shoulder pads -> gun -> hands -> head.
  */
 export function drawCharacter(
   ctx: CanvasRenderingContext2D,
@@ -276,6 +276,10 @@ export function drawCharacter(
   drawPart(rightLimb.lowerArm, skin.rightForearm)
   drawPart(rightLimb.upperArm, skin.rightUpperarm)
   drawPart(rightLimb.shoulder, skin.rightShoulder)
+
+  // Cosmetic shoulder pads: above the shoulder caps, below the head — so they
+  // cap the shoulders but never occlude the face.
+  if (armor) armor.drawShoulderPadsOverBody(ctx, forward, leftLimb.shoulder, rightLimb.shoulder, o, skin.outline);
 
   drawGun();
 

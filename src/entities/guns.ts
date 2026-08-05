@@ -251,13 +251,13 @@ export interface GunSpec {
 // const DEFAULT_AP_762       = { l1: 0.85, l2: 0.70, l3: 0.55, l4: 0.35 }
 // const DEFAULT_AP_50AE      = { l1: 0.95, l2: 0.75, l3: 0.60, l4: 0.37 }
 
-const DEFAULT_AP_XLOW = {l1: 0.60, l2: 0.50, l3: 0.40, l4: 0.20 }
-const DEFAULT_AP_LOW = { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.21 }
-const DEFAULT_AP_MLOW = { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.22 }
-const DEFAULT_AP_MED = { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.23 }
-const DEFAULT_AP_MHIGH = { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.26 }
-const DEFAULT_AP_HIGH = { l1: 0.90, l2: 0.80, l3: 0.60, l4: 0.28 }
-const DEFAULT_AP_XHIGH =  { l1: 0.925, l2: 0.85, l3: 0.70, l4: 0.31 }
+const DEFAULT_AP_XLOW =   { l1: 0.60, l2: 0.50, l3: 0.37, l4: 0.30, l5: 0.20 } // 16
+const DEFAULT_AP_LOW =    { l1: 0.70, l2: 0.55, l3: 0.40, l4: 0.32, l5: 0.21 } // 17
+const DEFAULT_AP_MLOW =   { l1: 0.75, l2: 0.60, l3: 0.45, l4: 0.36, l5: 0.22 } // 18
+const DEFAULT_AP_MED =    { l1: 0.80, l2: 0.65, l3: 0.50, l4: 0.39, l5: 0.23 } // 20
+const DEFAULT_AP_MHIGH =  { l1: 0.85, l2: 0.75, l3: 0.55, l4: 0.43, l5: 0.26 } // 22
+const DEFAULT_AP_HIGH =   { l1: 0.90, l2: 0.80, l3: 0.60, l4: 0.47, l5: 0.28 } // 24
+const DEFAULT_AP_XHIGH =  { l1: 0.93, l2: 0.85, l3: 0.70, l4: 0.50, l5: 0.31 } // 25
 
 
 
