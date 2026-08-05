@@ -287,7 +287,7 @@ The four postures:
 | **cover** | burst spent, **or reloading** | strafe to the spot the opponent sees least of; if nowhere is better *and* here is no cover either, dodge side-to-side (`coverMove`). Re-emerges to shoot once recoil resets & reload's done — an emergent **peek cycle**. |
 | **run** | no fight for a while (`fightDist >= RUN_DISTANCE`, dwell met) | holster to fists, sprint (`RUN_SPEED_MUL`) to contact via the graph, re-arm on arrival. Faces straight ahead (no corner pre-aim). |
 | **heal** | hurt (`hp < HEAL_HP`), safe (`enemyVisDist >= HEAL_SAFE_DISTANCE`, dwell met), carrying a heal | back away to grow the threat's reach-to-us up to `HEAL_SEEK_DISTANCE`, then hold cover burning heal items back-to-back. Aborts instantly (re-arms) if the enemy could see us within `HEAL_ALARM_DISTANCE`, we top off, or run out. |
-| **hold** | nothing in sight, contact nearer than `RUN_DISTANCE`, dwell met, and cover exists (`wantsHold` + a successful `planHold`). DominationOracle instead: standing on any site with no enemy on it | dig in on the spot an approaching enemy must walk into, gun already pointed at it, and wait. See 3d-hold. |
+| **hold** | base soldier: a **cover-aware reflex** — the angle advantage `enemyVisDist − visDist` just dropped sharply while contact is near and unseen, i.e. we stepped out of a strong angle (`reflexHoldWanted`). DominationOracle instead: standing on any site with no enemy on it | dig in on the spot an approaching enemy must walk into, gun already pointed at it, and watch for a short beat (soldier: ~2s from arrival). See 3d-hold. |
 
 RUN/HEAL/HOLD entry is **committed a-priori** (dwell), exit is **instant** for
 HEAL (safety).
@@ -310,9 +310,10 @@ never entered and then abandoned for want of cover. The `700 > 400` gap between 
 
 Priority is `heal > hold > run > (reload→cover) > combatMode`. HOLD sits above
 RUN so an objective-holder doesn't sprint off the thing it's guarding; for a
-plain TacOracle the two can't both apply anyway (HOLD wants contact *nearer* than
-`RUN_DISTANCE`, RUN wants it further). HOLD also bypasses the reload→cover
-reflex, because it does its own ducking (below).
+plain TacOracle the two can't both apply anyway (the reflex hold only fires with
+contact `≤ REFLEX_VIS_MAX` — well inside `RUN_DISTANCE` — while RUN wants it
+further). HOLD also bypasses the reload→cover reflex, because it does its own
+ducking (below).
 
 ### 3d. `act()` — the TacOracle decision tree
 
@@ -366,6 +367,23 @@ entry point is derived from the enemy's route to where we *stand*, so refreshing
 it mid-walk would chase its own tail: the plan moves us, which moves the plan
 (the same oscillation `SWITCH_MARGIN` exists to stop). Standing still, that loop
 can't close, so a refresh there is safe.
+
+**What triggers a hold, and for how long.** The planning below is shared; the two
+AIs enter it differently. A base soldier holds as a **cover-aware reflex**
+(`reflexHoldWanted`): each tick it tracks the asymmetry `enemyVisDist − visDist` —
+how much *longer* the enemy needs to reach a sightline than we do, i.e. our angle
+advantage — and when it drops sharply between contact scans (`REFLEX_ASYM_DROP`)
+to near parity (`REFLEX_ASYM_KEEP`), with contact still near (`visDist ≤
+REFLEX_VIS_MAX`) and nobody yet in sight, that means we just stepped out of a
+strong angle. It ducks back into cover (the same `planHold` below) and watches for
+`REFLEX_HOLD_TICKS` (~2s) — **timed from arrival at the spot**, so the walk there
+doesn't burn the clock (capped by `REFLEX_MAX_TICKS`). If the enemy shows it
+fights; if the beat elapses it resumes combat and can't re-arm the reflex for
+`REFLEX_COOLDOWN` (~3s), so the step-out/watch cycle can't loop. The old
+distance-band hold — "an enemy is vaguely near, so dig in for a few seconds" — is
+**gone**; soldiers hold only on this principle now. `DominationOracle` overrides
+the trigger with objective defense (§4): stand on a site with no enemy on it and
+hold it on its own ~8s vigil (`HOLD_MAX`), independent of the reflex clock.
 
 ```
   0. THREAT (holdThreat)
@@ -500,12 +518,14 @@ more than one was dug in. Claims release when `clearHold` ends the posture. It's
 the only crowd rule inside HOLD; general spacing is still `separateCharacters`' job.
 
 **Three ways out of a hold.** (1) Something comes into view: it fights. (2) The
-give-up timer: `HOLD_MAX_TICKS` (~5s) without a fight ever starting parks the
-posture for `HOLD_STALE_COOLDOWN` (~4.5s) — a hold is a bet that contact is
-coming, and when it doesn't pay off the bot goes hunting instead of re-digging
-into the same dead angle. (`DominationOracle` opts out — its `holdMaxTicks()` is
-Infinity — and runs its own objective vigil instead.) (3) **Taking damage from an
-enemy** breaks the hold straight into SHOOT (a `registerHit` override): a hold is
+watch expires: a soldier's reflex hold ends after `REFLEX_HOLD_TICKS` (~2s from
+arrival) and parks the reflex for `REFLEX_COOLDOWN`; `HOLD_MAX_TICKS` (~5s) is a
+backstop the short reflex rarely reaches, and on the rare hold that does run long
+it parks the posture for `HOLD_STALE_COOLDOWN` (~4.5s) so the bot goes hunting
+rather than re-digging the dead angle. (`DominationOracle` opts out of the give-up
+timer — its `holdMaxTicks()` is Infinity — and releases a won, quiet point on its
+own ~8s vigil instead.) (3) **Taking damage from an enemy** breaks the hold
+straight into SHOOT (a `registerHit` override): a hold is
 a bet on *where they'd appear*, and a landed round means they came in on an angle
 we weren't watching — the same retry cooldown (`HOLD_RETRY_TICKS`) stops it
 re-digging into the failed angle while still under fire. Friendly fire and
@@ -542,6 +562,7 @@ selectTarget(ai):
   for each visible hostile h on my z:
       cost = shootCost(ai, h) + BETA_DIST · dist(h)          ← time-to-first-shot, nudged toward closer
       if dist(h) > feasibleRange: cost += OUT_OF_RANGE_PENALTY   ← anyone reachable outranks anyone not
+      cost += targetShareCost(ai, h)                        ← spread fire: shun a mate-crowded target
       if h == focus: cost -= FOCUS_STICKINESS               ← don't flip-flop between near-equal targets
   pick the min; remember it as focus (kept while briefly blind)
 ```
@@ -564,6 +585,16 @@ away** (the span is how much strafing the shootable one costs, 0–180). Raise
 through a teammate; lower it and they'll turn to snipe someone far away because
 the lane happens to be cleaner. The stale `0.35` in `shootCost`'s comment is the
 old value, not the live one.
+
+**Target splitting** (`targetShareCost`) keeps a squad from dogpiling one enemy: a
+stepped surcharge by how many *other* live teammates already hold `h` as their
+focus — **0** for 0–1 (someone has to shoot first, and a duo is fine),
+`TARGET_SHARE_BIG` (400, `NO_LANE_COST` scale — redirects toward any other
+reachable foe) for **2**, and `TARGET_SHARE_FORBID` (out-of-range scale) for
+**3+**, so a thrice-covered enemy is picked only when nothing else is visible. It
+reads teammates' *committed* focus, so it lags a tick and can't feed back on itself
+inside one re-evaluation. Measured: time with 4+ guns on one enemy drops ~⅓. It
+spreads *fire*, not bodies — the 2+ body pileups are a separate problem (§3i).
 
 ### 3g. Strafe / cover candidates & scoring
 
@@ -611,14 +642,20 @@ Two nav-route distances, both z- and range-aware, minimised over the
   keys off it.
 
 `routeUntilSight` returns 0 if already see-and-in-range; if visible but out of
-range, the straight gap left to close; if not visible, the route to the nearest
-sighting node plus any residual gap. It's the old sight-only scan plus `dist()`
-arithmetic — no new raycasts, so it stays cheap.
+range, the straight gap left to close. Otherwise it **marches the route toward the
+target, sampling for the sight line every `SIGHT_MARCH_STEP` (40 px), and stops the
+instant the line opens** — distance-until-*first-sight*, not to the target's
+doorstep, because when the sight line opens is when the fight can start. The old
+doorstep answer (route to the nearest sighting node + residual gap) is kept as a
+`ceiling` that bounds the march, so cost tracks the *answer*: a line that opens in
+one peek costs a sample or two, not the length of the route. This fixed a large
+class of illogical approaches — bots walking all the way to a doorway to "make
+contact" with an enemy they could already have peeked from cover.
 
 ### 3i. Crowd spacing
 
 There is **no boids/separation steering** in the AI (an earlier layered approach
-fought the movement and was removed). Spacing comes from two places instead:
+fought the movement and was removed). Spacing comes from three places instead:
 
 - **`separateCharacters` (game.ts):** a single small "squishy" push per tick on
   touching bodies. Soft — bodies driven together harder than the push clip
@@ -627,6 +664,14 @@ fought the movement and was removed). Spacing comes from two places instead:
   travel/aim lane ahead (within `CROWD_DIST`, `CROWD_MARGIN` of the line), veer
   around them so we don't march in behind (and flag) them. If boxed in, drive
   straight and let squishy collision phase us through rather than freeze.
+- **The nav congestion field (`nav.setRoute`, §"player"):** each committed route
+  stamps a surcharge on its corridor, so the *next* bot's `route(…, congested)`
+  prefers a parallel approach — spreading a squad across corridors before their
+  bodies ever meet. It's **per team** (a bot spreads from its own side, not from
+  enemy traffic), which is the only lever that has measurably moved the routine
+  pairwise bumping (deg-1). It can price bots off a shared *corridor* but not a
+  shared *destination*, so it doesn't touch the 2+ dogpiles — those stay a
+  body-space problem for the two rules above.
 
 ### 3j. Vehicles
 
@@ -673,7 +718,9 @@ bestChase(ai):   ← consulted only when nothing is seen (selectTarget engages v
 - **`standoffFor` override:** `0` for the marker, so it walks right onto the point
   instead of stopping a gun-length short and hovering off it.
 - **`wantsHold` override:** dig in whenever it's standing on a site with nothing
-  in sight and **no hostile on the site** (out to `radius + CONTEST_PAD`). The
+  in sight and **no hostile on the site** (out to `radius + CONTEST_PAD`). (The
+  *base* `wantsHold` now returns false — a plain soldier holds only via the reflex,
+  §3d-hold — so this override is the sole strategic-hold trigger left.) The
   site is **latched on entry** and re-resolved by position each tick (the gamemode
   rebuilds the objective objects every frame), so walking to cover a step outside
   the ring doesn't drop the posture — re-testing "am I inside a ring" every tick
@@ -771,6 +818,7 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `AXIAL_OFFSETS` | 40, 90 | fwd/back cover spots |
 | `BETA_DIST` | 0.75 | distance weight in target selection |
 | `OUT_OF_RANGE_PENALTY` | 1e5 | out-of-feasible-range targeting penalty |
+| `TARGET_SHARE_BIG` / `_FORBID` | 400 / 1e5 | target-splitting surcharge: 2 mates already on it / 3+ (near-forbid) |
 | `NO_LANE_COST` / `LOW_VIS_PENALTY` | 400 / 60 | shootCost surcharges |
 | `FOCUS_STICKINESS` / `FOCUS_MEMORY` | 30 / 120 | anti flip-flop / blind memory |
 | `EVAL_TICKS` / `TARGET_EVAL_TICKS` / `CHASE_EVAL_TICKS` | 10 / 10 / 30 | re-eval cadences (candidate spots / target lock / blind chase) |
@@ -792,7 +840,11 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `HOLD_PEEK_MARGIN` | 16 | extra lean past where the sight line first opens |
 | `HOLD_COMMIT_TICKS` / `HOLD_RETRY_TICKS` | 30 / 60 | hold entry dwell / backoff after a failed plan (also set on a damage-break) |
 | `HOLD_REPLAN_TICKS` | 60 | parked threat/entry refresh, ~1s (never fires mid-walk) |
-| `HOLD_MAX_TICKS` / `HOLD_STALE_COOLDOWN` | 300 / 270 | give-up timer on a fightless hold / no-re-dig window after it |
+| `HOLD_MAX_TICKS` / `HOLD_STALE_COOLDOWN` | 300 / 270 | give-up backstop on a fightless hold / no-re-dig window after it (a soldier's ~2s reflex rarely reaches it; DominationOracle opts out) |
+| `REFLEX_ASYM_DROP` / `_KEEP` | 250 / 150 | cover-aware hold: asymmetry drop that fires it / residual that counts as "angle lost" |
+| `REFLEX_VIS_MAX` | 500 | contact must be within this (`visDist`) to bother watching |
+| `REFLEX_HOLD_TICKS` / `_MAX_TICKS` / `_COOLDOWN` | 120 / 240 / 180 | watch from arrival (~2s) / travel+watch cap / anti-loop re-arm gate |
+| `SIGHT_MARCH_STEP` / `_HOPS` | 40 / 24 | `routeUntilSight` first-sight march stride / hop cap |
 
 Also in `tacoracle.ts`, not constants but easy to miss: `retreatSpot` probes a
 fixed `LOOK = 90` px in 5 directions (away, two 30-ish° diagonals, both pure
@@ -822,8 +874,9 @@ field (`nav.setRoute`). A bot publishes a route because it has a plan with a goa
 the player never states a destination. So `Game.updatePlayerRoute` infers one from
 the outside — start at the node they're standing on, follow the graph in the
 direction they're actually moving for a few hops — and publishes that. Standing
-still, entering a vehicle, or dying withdraws the claim. Bots then route around
-the player's corridor the same way they route around each other.
+still, entering a vehicle, or dying withdraws the claim. The player's **teammates**
+then route around that corridor the same way they route around each other (the
+field is per-team — see below).
 
 Note the congestion field is **per team**: a bot spreads out from its own side's
 committed routes and ignores where enemies are walking (you don't detour around a
@@ -844,6 +897,8 @@ Behaviour you see, and the specific decision that produces it.
 | Bot won't shoot a target it's clearly facing | `laneClear` (a teammate within `FRIENDLY_MARGIN` downrange), the aim-settle gate, or `clickIn` on a semi-auto. |
 | Bot aims at someone across the map instead of the enemy in front | Target selection: the near one is lane-blocked (`NO_LANE_COST`) — see the `BETA_DIST` trade in 3f. |
 | Bot keeps swapping targets | `FOCUS_STICKINESS` too small vs the cost gap, or `TARGET_EVAL_TICKS` firing on a genuinely tied board. |
+| Whole squad fixates one enemy while others go unengaged | Turn up target-splitting: `targetShareCost` taxes a mate-crowded target (`TARGET_SHARE_BIG` at 2 mates, near-forbid at 3+). If it *over*-spreads onto worse targets, lower those. |
+| Soldier ducks into cover for a beat mid-fight, then pops back out | The cover-aware reflex (`reflexHoldWanted`): it just stepped out of a strong angle (asymmetry `enemyVisDist − visDist` dropped), so it watches ~2s then resumes. Tune `REFLEX_ASYM_DROP` / `_KEEP` / `_VIS_MAX`. |
 | Bot backpedals mid-fight for no reason | HEAL entry: `hp < 75`, carrying an item, and `enemyVisDist ≥ 700` held for 90 ticks. Note it keys off the **enemy's** reach, not sight. |
 | Bot holsters and sprints past a live enemy | RUN: `min(visDist, enemyVisDist) ≥ 1000` for 90 ticks. If the enemy is in cover, `enemyVisDist` can stay long even when they're near. |
 | Bot bobs side to side in the open | `coverMove`'s dodge branch — every candidate equally `exposed`, so there's nothing to hide behind. |
@@ -853,7 +908,7 @@ Behaviour you see, and the specific decision that produces it.
 | Bot refuses to hold anywhere on a map | `planHold` failing — no nav route to the threat, or nothing within `HOLD_COVER_DISTANCE` that hides all 5 body points. Check node density. |
 | Dom bot stands in the open on a point instead of using nearby cover | `holdSpotOk` — cover off the ring would stop the capture, so it's refused until the point is owned and reinforced. |
 | Dom bot won't dig in on a point it's standing on | A hostile is inside `radius + CONTEST_PAD` (a contested site is a fight, not a vigil), or `planHold` found no cover satisfying the on-ring `holdSpotOk`. |
-| Whole team digs in and the match stalls | Shouldn't persist: `HOLD_MAX_TICKS` gives up a fightless hold after ~5s and `HOLD_STALE_COOLDOWN` forces a hunt before re-digging (dom bots exempt on their objective vigil). |
+| Whole team digs in and the match stalls | Can't be soldiers anymore — they only do the ~2s reflex watch (`REFLEX_HOLD_TICKS`) with a `REFLEX_COOLDOWN` after, so they can't mass-camp. A lingering dig-in is a DominationOracle objective vigil (its own ~8s `HOLD_MAX`, released once the point is won and quiet). |
 | Bot runs in, digs in, walks back, runs in again | Was the run<->hold ping-pong: `runDwell` stayed charged through the HOLD, plus HOLD committing before knowing it had cover, plus the dom site being re-tested by position every tick. All three fixed. |
 | Bot stands still in RUN, weapon holstered | RUN ends only when something else takes over; on arrival that's HOLD. If it persists, `holdDwell` is being blocked from charging during RUN. |
 | Runner gets shot before drawing its weapon | The contact metrics must use `fightingRange` (the gun it would draw), not `gun.feasibleRange` (the fists it holsters to while sprinting). |
@@ -862,7 +917,7 @@ Behaviour you see, and the specific decision that produces it.
 | Bot oscillates at a doorway / stair | The anti-flicker rules are being defeated — check `atGoalNode`, and that the direct-step stair guard is firing. |
 | Bot walks into a wall near stairs | `plan`'s fallback to `curr` when the next hop isn't straight-walkable. |
 | Bot ignores a capture point it's standing next to | `bestChase` only runs when **nothing is visible**; a seen enemy always wins. For combat *on* the point, that's `biasObjective` + `OBJ_PULL_MARGIN`. |
-| Bots bunch up / shove each other | `separateCharacters` is deliberately squishy — there is no separation steering. Spacing during approach is only `blockingMate`/`sidestep`. |
+| Bots bunch up / shove each other | Body-space only: `separateCharacters` (squishy, no steering) + `blockingMate`/`sidestep` on approach. Route-level spreading is the **per-team** congestion field — it thins shared *corridors* but can't split a shared *destination*, so 2+ pileups on one spot are expected; the routine pairwise bumping is what per-team improved. |
 | Bot reacts sluggishly to everything | `reactionTime` (skill), compounded by `stagger` — target changes are only seen on plan ticks. |
 | Bot misses badly at point-blank range | `aimSigma` is a fixed *world-px* offset, so its angular error grows as range shrinks. Low skill = 48 px of it. |
 
