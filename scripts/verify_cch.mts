@@ -182,25 +182,32 @@ const okFull = compareAll(navFull, refFull, "full rebuild vs fresh reference (co
 //       stamp leak would silently bend pathfinding for the rest of the match;
 //   (c) never change reachability — a surcharge is finite, so nothing it does can
 //       disconnect the graph.
-console.log("\n--- congestion metric ---");
+console.log("\n--- congestion metric (per team) ---");
 const cnav = new NavGraph(loaded.world);
+const TEAM = "blue";
+const OTHER = "red";
+// Touch each team once so its lazily-built congested metric exists to inspect.
+const anyNode = Math.min(1, cnav.nodes.length - 1);
+cnav.route(0, anyNode, TEAM);
+cnav.route(0, anyNode, OTHER);
 const g = cnav as unknown as {
   plain: { w: Float64Array };
-  cong: { w: Float64Array };
-  congestion: Float64Array;
+  congByTeam: Map<string, { congestion: Float64Array; cong: { w: Float64Array } }>;
 };
+const blue = g.congByTeam.get(TEAM)!;
+const red = g.congByTeam.get(OTHER)!;
 const M = g.plain.w.length;
 const plainBefore = Float64Array.from(g.plain.w);
-const congBefore = Float64Array.from(g.cong.w);
+const congBefore = Float64Array.from(blue.cong.w);
 let okCong = true;
 const say = (name: string, ok: boolean, detail = ""): void => {
   if (!ok) okCong = false;
   console.log(`  ${ok ? "ok  " : "FAIL"} ${name}${detail ? `   ${detail}` : ""}`);
 };
-say("both metrics start identical",
+say("a fresh team metric starts identical to plain",
   congBefore.every((w, i) => w === plainBefore[i]));
 
-// Stamp several routes, as a squad of bots would.
+// Stamp several routes onto TEAM, as a squad of bots on one side would.
 const owners = [{}, {}, {}, {}, {}, {}];
 let seedC = 7;
 const rndC = (): number => (seedC = (seedC * 1664525 + 1013904223) >>> 0) / 4294967296;
@@ -209,7 +216,7 @@ const routes = owners.map(() => {
   let cur = Math.floor(rndC() * cnav.nodes.length);
   const goal = Math.floor(rndC() * cnav.nodes.length);
   for (let h = 0; h < 12 && cur !== goal; h++) {
-    const step = cnav.route(cur, goal, true);
+    const step = cnav.route(cur, goal, TEAM);
     if (!step || step.next === cur) break;
     nodes.push(cur);
     cur = step.next;
@@ -217,14 +224,21 @@ const routes = owners.map(() => {
   return nodes;
 });
 const st = performance.now();
-owners.forEach((o, i) => cnav.setRoute(o, routes[i]));
+owners.forEach((o, i) => cnav.setRoute(o, routes[i], TEAM));
 console.log(`      setRoute x${owners.length}: ${(performance.now() - st).toFixed(3)} ms total`);
 
 say("the plain metric is untouched by stamping",
   g.plain.w.every((w, i) => w === plainBefore[i]));
 let bent = 0;
-for (let a = 0; a < M; a++) if (g.cong.w[a] !== congBefore[a]) bent++;
+for (let a = 0; a < M; a++) if (blue.cong.w[a] !== congBefore[a]) bent++;
 say("stamping actually moved the congested metric", bent > 0, `arcs changed=${bent}`);
+
+// Per-team isolation: TEAM's routes must NOT bend the OTHER team's field — a bot
+// spreads out from its own side, never routes around where enemies are walking.
+let crossTalk = 0;
+for (let a = 0; a < M; a++) if (red.cong.w[a] !== plainBefore[a]) crossTalk++;
+say("one team's routes leave the other team's field untouched", crossTalk === 0,
+  `arcs bent on the other team=${crossTalk}`);
 
 // Reachability is unchanged, and every congested first hop is a real walkable edge.
 let unreachable = 0;
@@ -234,7 +248,7 @@ for (let t = 0; t < 4000; t++) {
   const b = Math.floor(rndC() * cnav.nodes.length);
   if (a === b) continue;
   const p = cnav.route(a, b);
-  const c = cnav.route(a, b, true);
+  const c = cnav.route(a, b, TEAM);
   if (!!p !== !!c) unreachable++;
   if (c && c.next !== a && !cnav.nodes[a].movable.has(c.next)) badHop++;
 }
@@ -242,11 +256,11 @@ say("congestion never changes reachability", unreachable === 0, `mismatches=${un
 say("every congested first hop is a real walkable edge", badHop === 0, `bad=${badHop}`);
 
 // Withdraw one at a time; the field must land back exactly where it started.
-owners.forEach((o) => cnav.setRoute(o, []));
+owners.forEach((o) => cnav.setRoute(o, [], TEAM));
 say("withdrawing every route zeroes the congestion field",
-  g.congestion.every((c) => c === 0));
+  blue.congestion.every((c) => c === 0));
 let residue = 0;
-for (let a = 0; a < M; a++) if (g.cong.w[a] !== congBefore[a]) residue++;
+for (let a = 0; a < M; a++) if (blue.cong.w[a] !== congBefore[a]) residue++;
 say("...and restores the congested metric exactly", residue === 0, `arcs still bent=${residue}`);
 
 // ---- the player's inferred route --------------------------------------------

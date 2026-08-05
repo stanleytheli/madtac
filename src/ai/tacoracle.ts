@@ -165,6 +165,17 @@ const FOCUS_STICKINESS = 30;
  *  out-of-range hostiles keep their relative order among themselves (so the best
  *  of a bad lot is still picked when nothing is reachable). */
 const OUT_OF_RANGE_PENALTY = 1e5;
+/** Target-splitting: extra selectTarget cost for a hostile that teammates are
+ *  ALREADY focused on, so a squad spreads its fire instead of every gun locking
+ *  the same man. Keyed by how many OTHER live teammates hold it as their focus:
+ *  0-1 is free (someone has to shoot first, and a duo on one target is fine), 2
+ *  is "pretty big" — on the NO_LANE_COST scale, enough to redirect toward any
+ *  other reachable hostile that isn't already crowded — and 3+ is a near-forbid
+ *  on the out-of-range scale, so a thrice-covered enemy is picked only when
+ *  nothing else is visible. Read from teammates' committed focus, so it lags a
+ *  tick and can't feed back on itself inside one re-evaluation. */
+const TARGET_SHARE_BIG = 400;
+const TARGET_SHARE_FORBID = OUT_OF_RANGE_PENALTY;
 /** Ticks without sight of anyone before the remembered focus is dropped and
  *  navigation goes back to "whoever is quickest to reach". */
 const FOCUS_MEMORY = 120;
@@ -278,6 +289,34 @@ const HOLD_MAX_TICKS = 5 * 60;
 /** ...and once it gives up, it won't re-dig-in for this long, so it actually
  *  goes and hunts rather than immediately re-entering the same fruitless hold. */
 const HOLD_STALE_COOLDOWN = 4.5 * 60;
+
+// --- REFLEX HOLD (principled, brief: watch after stepping out of cover) ------
+/** The "asymmetry" a bot enjoys from a good angle: how much FARTHER the enemy is
+ *  from seeing us (enemyVisDist) than we are from seeing anyone (visDist). High
+ *  while peeking from cover — they must round the corner; we just lean out. When
+ *  it drops by at least this many world px between contact scans, we just stepped
+ *  out of that cover and gave the advantage away. */
+const REFLEX_ASYM_DROP = 100;
+/** ...and the drop only counts as "lost the cover" if what's LEFT is near parity
+ *  (<= this). A 250px dip from a still-huge asymmetry isn't stepping out — it's
+ *  still great cover — so gate on the residual, not the delta alone. */
+const REFLEX_ASYM_KEEP = 50;
+/** Only bother watching if contact is close: our own distance-until-sight must be
+ *  under this (we can bring the angle back into view in a step). Past it, there's
+ *  nothing imminent to watch for, so just keep moving. */
+const REFLEX_VIS_MAX = 500;
+/** The watch itself: hold the re-taken cover for ~2s, counted from ARRIVAL at the
+ *  hold spot (the walk there doesn't burn the clock). If nobody shows by then,
+ *  give it up and resume the fight. */
+const REFLEX_HOLD_TICKS = 2 * 60;
+/** Hard cap from the moment the reflex fires, so a bot that can't actually reach
+ *  its cover doesn't watch forever while walking. Travel budget + the 2s watch. */
+const REFLEX_MAX_TICKS = 2.5 * 60;
+/** After a reflex hold ends (sighted, timed out, or bailed), it can't re-arm for
+ *  this long — the bot stays in the fight. Longer than the watch, so a step-out /
+ *  watch / step-out cycle can't run away with itself (the loop guard the plain
+ *  anti-hold timer only approximates). */
+const REFLEX_COOLDOWN = 1.5 * 60;
 
 /** How close (world px) an out-of-ammo bot must get to a ground gun to grab it —
  *  its body touching the pickup's footprint (ITEM_RADIUS = 35). */
@@ -395,6 +434,18 @@ export class TacOracle extends Oracle {
   /** Remaining node-to-node legs of the walk to `holdCover` (movable-linked, so
    *  each leg is a clear straight line). */
   private holdPath: Vec2[] = [];
+  /** REFLEX HOLD state. `reflexAsym` is last tick's enemyVisDist - visDist, so a
+   *  sharp drop can be detected; `reflexHold` marks the current hold as the brief
+   *  principled watch (vs a strategic dig-in); `reflexArrived` latches once we're
+   *  parked on the spot (the 2s clock only runs after that); `reflexWatchTicks`
+   *  is that clock; `reflexAge` counts from the trigger (the travel+watch cap);
+   *  `reflexCooldown` blocks re-arming so the watch can't loop. */
+  private reflexAsym = Infinity;
+  private reflexHold = false;
+  private reflexArrived = false;
+  private reflexWatchTicks = 0;
+  private reflexAge = 0;
+  private reflexCooldown = 0;
   /** Latched when the envelope crosses burstLimit; cleared when the pattern resets. */
   private burstDone = false;
   /** Reaction-time gating of gun readiness (ready = pattern reset + not
@@ -668,6 +719,10 @@ export class TacOracle extends Oracle {
     if (this.mode === "hold" && this.holdTicks >= this.holdMaxTicks()) {
       this.holdRetryIn = Math.max(this.holdRetryIn, HOLD_STALE_COOLDOWN);
     }
+    // The brief principled watch after stepping out of cover — a combat reflex
+    // orthogonal to the strategic hold below, so it's OR'd into wantHold and runs
+    // for soldiers and objective bots alike (both share this updatePosture).
+    const reflexHolding = this.reflexHoldWanted(ai, target);
     const holdSafe = !healing && this.holdRetryIn === 0 && this.wantsHold(ai, target);
     // NB: this one charges during RUN on purpose. RUN has no completion condition
     // — arriving doesn't change fightDist, so a bot that reaches its destination
@@ -680,8 +735,9 @@ export class TacOracle extends Oracle {
     // in, stopping, and running off again. Building the plan at the transition
     // costs nothing extra: holdMove reuses it.
     const wantHold =
-      holdSafe &&
-      (this.mode === "hold" || (this.holdDwell >= HOLD_COMMIT_TICKS && this.tryPlanHold(ai)));
+      reflexHolding ||
+      (holdSafe &&
+        (this.mode === "hold" || (this.holdDwell >= HOLD_COMMIT_TICKS && this.tryPlanHold(ai))));
 
     // RUN: stay while still safe; enter only after the dwell.
     const wantRun =
@@ -737,25 +793,91 @@ export class TacOracle extends Oracle {
     return false;
   }
 
+  /** Are we parked on the planted hold spot (either end of the cover<->peek
+   *  slide, and not mid-walk)? Mirrors holdMove's own "parked" test; it's what
+   *  starts the reflex watch clock — the 2s is measured from arrival, not entry. */
+  private atHoldPoint(): boolean {
+    if (this.holdEntry === null || this.holdPath.length !== 0) return false;
+    return (
+      (this.holdCover !== null && dist(this.pos, this.holdCover) <= HOLD_ARRIVE) ||
+      (this.holdPeek !== null && dist(this.pos, this.holdPeek) <= HOLD_ARRIVE)
+    );
+  }
+
+  /** The principled "reflex" hold. When asymmetry (enemyVisDist - visDist) drops
+   *  sharply between contact scans, the bot just stepped out of a strong cover
+   *  angle; if contact is still near and unseen, it ducks back to cover (reusing
+   *  the strategic hold's cover/peek plan) and watches the sightline for ~2s from
+   *  arrival. A sighting ends it into the fight; a timeout resumes combat; either
+   *  way it can't re-arm for REFLEX_COOLDOWN, so the step-out/watch cycle can't
+   *  loop. Returns whether this tick should be a reflex hold; also owns all the
+   *  reflex bookkeeping (asymmetry sample, clocks, cooldown). */
+  private reflexHoldWanted(ai: AiContext, target: Character | null): boolean {
+    if (this.reflexCooldown > 0) this.reflexCooldown -= 1;
+
+    // Roll the asymmetry sample forward. Infinity (no chase / in contact both 0's
+    // cancel to 0, but then a target is usually up) simply can't produce a drop.
+    const prev = this.reflexAsym;
+    const asym = this.enemyVisDist - this.visDist;
+    this.reflexAsym = Number.isFinite(asym) ? asym : Infinity;
+
+    // Continue an in-progress watch: latch arrival, run the 2s clock from there,
+    // and end on a sighting, timeout, the travel+watch cap, or being yanked into
+    // another mode (heal, a forced combat drop). Ending arms the cooldown.
+    if (this.reflexHold) {
+      this.reflexAge += 1;
+      if (!this.reflexArrived && this.atHoldPoint()) this.reflexArrived = true;
+      if (this.reflexArrived) this.reflexWatchTicks += 1;
+      const done =
+        this.mode !== "hold" ||
+        target !== null ||
+        this.reflexWatchTicks >= REFLEX_HOLD_TICKS ||
+        this.reflexAge >= REFLEX_MAX_TICKS;
+      if (done) {
+        this.reflexHold = false;
+        this.reflexCooldown = REFLEX_COOLDOWN;
+        return false;
+      }
+      return true;
+    }
+
+    // Fresh trigger: a sharp drop that leaves the advantage near parity, contact
+    // close enough to watch, nobody in sight yet, off cooldown, not already dug
+    // in — and cover actually available to duck into.
+    if (
+      target === null &&
+      this.reflexCooldown === 0 &&
+      this.mode !== "hold" &&
+      Number.isFinite(prev) &&
+      Number.isFinite(this.reflexAsym) &&
+      prev - this.reflexAsym >= REFLEX_ASYM_DROP &&
+      this.reflexAsym <= REFLEX_ASYM_KEEP &&
+      this.visDist <= REFLEX_VIS_MAX &&
+      this.tryPlanHold(ai)
+    ) {
+      this.reflexHold = true;
+      this.reflexArrived = false;
+      this.reflexWatchTicks = 0;
+      this.reflexAge = 0;
+      return true;
+    }
+    return false;
+  }
+
   /** Should this tick be spent dug in on an angle? The base soldier holds when
    *  nothing is in sight but contact is near enough to be worth waiting for —
    *  nearer than the RUN threshold, which is what separates "they're coming"
    *  from "they're nowhere near, go find them". Whether there is actually cover
    *  to hold is settled by planHold; a failure parks the posture (holdRetryIn).
    *  DominationOracle overrides this to hold the point it's standing on. */
-  protected wantsHold(_ai: AiContext, target: Character | null): boolean {
-    if (target) return false; // someone in sight: fight, don't dig in
-    // The distance band is an ENTRY gate only. Once dug in, whether to STAY is
-    // governed by the give-up timer (holdMaxTicks) and losing sight of a target —
-    // NOT by re-measuring fightDist from our live position. Re-checking it every
-    // tick let the retreat to cover, which GROWS the distance-to-contact, nudge
-    // fightDist just past RUN_DISTANCE one step short of the cover; that cancelled
-    // the hold, the bot approached (can't RUN — runDwell is starved during HOLD),
-    // fightDist dropped back under the line, it re-held, retreated again... a walk/
-    // retreat ping-pong that never settled. Committing to the hold breaks the loop.
-    if (this.mode === "hold") return true;
-    const fightDist = Math.min(this.visDist, this.enemyVisDist);
-    return fightDist > 0 && fightDist < RUN_DISTANCE;
+  protected wantsHold(_ai: AiContext, _target: Character | null): boolean {
+    // The base soldier no longer digs in on a distance band. "An enemy is vaguely
+    // near, so hold for a few seconds" was the random-feeling hold we're replacing:
+    // soldiers now hold ONLY via the principled reflex watch (reflexHoldWanted),
+    // which enters hold mode directly through wantHold. Returning false here also
+    // closes the path by which a reflex hold could bleed into an open-ended
+    // strategic one. DominationOracle overrides this with real point-defense holds.
+    return false;
   }
 
   /** May a hold spot sit here? Unrestricted for a plain soldier; the objective
@@ -1574,6 +1696,7 @@ export class TacOracle extends Oracle {
       const d = dist(this.pos, h.pos);
       let cost = this.shootCost(ai, h) + BETA_DIST * d;
       if (d > range) cost += OUT_OF_RANGE_PENALTY; // prefer anyone we can actually reach
+      cost += this.targetShareCost(ai, h); // spread fire: shun a mate-crowded target
       if (h === this.focus) cost -= FOCUS_STICKINESS;
       if (cost < bestCost) {
         best = h;
@@ -1600,6 +1723,20 @@ export class TacOracle extends Oracle {
       cost = Math.min(cost, Math.abs(c.offset) + poorLane);
     }
     return cost === Infinity ? NO_LANE_COST : cost;
+  }
+
+  /** Target-splitting penalty for focusing `h`: stepped by how many OTHER live
+   *  teammates already have `h` as their committed focus (self excluded, so a
+   *  bot never penalises its own sticky lock). 0-1 free, 2 "pretty big", 3+ a
+   *  near-forbid — see TARGET_SHARE_BIG. Only TacOracle mates carry a focus; a
+   *  human or other-AI ally simply doesn't count toward the crowd. */
+  private targetShareCost(ai: AiContext, h: Character): number {
+    let k = 0;
+    for (const c of ai.characters) {
+      if (c === this || c.hp <= 0 || areHostile(this.team, c.team)) continue;
+      if (c instanceof TacOracle && c.focus === h) k++;
+    }
+    return k <= 1 ? 0 : k === 2 ? TARGET_SHARE_BIG : TARGET_SHARE_FORBID;
   }
 
   /** Blind navigation target: the hostile reachable-and-shootable soonest by

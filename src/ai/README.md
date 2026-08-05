@@ -825,10 +825,13 @@ direction they're actually moving for a few hops — and publishes that. Standin
 still, entering a vehicle, or dying withdraws the claim. Bots then route around
 the player's corridor the same way they route around each other.
 
-Note the congestion field is **team-agnostic**: an enemy avoids a friendly
-corridor just as a teammate does. That falls out of there being one shared
-metric, and it's a deliberate simplification, not an oversight — making it
-team-aware means one metric per team.
+Note the congestion field is **per team**: a bot spreads out from its own side's
+committed routes and ignores where enemies are walking (you don't detour around a
+foe you may want to intercept). Each team gets its own surcharge array + congested
+metric, built lazily on first use (`teamCong`). The per-stamp and per-query cost is
+identical to one shared field — the work is just partitioned by team — so the only
+extra cost is a second customization pass when walkability changes (rare, a handful
+of arcs) and one metric's worth of memory per team.
 
 ## Symptom → where to look
 

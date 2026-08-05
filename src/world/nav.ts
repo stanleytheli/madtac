@@ -15,6 +15,7 @@
  * why CCH rather than the old all-pairs Dijkstra table.
  */
 import { BODY_RADIUS } from "../entities/character.ts";
+import type { TeamId } from "../entities/team.ts";
 import { circleIntersectsObstacle } from "../engine/collision.ts";
 import { profiler } from "../engine/profiler.ts";
 import { dist, vec, type Vec2 } from "../engine/vec.ts";
@@ -161,8 +162,8 @@ export function buildNodeSets(world: World): void {
  * topology never changes, because a blocked edge is just an Infinity weight on
  * an arc that still exists.
  */
-/** One customized weighting of the shared CCH topology (see NavGraph.plain /
- *  NavGraph.cong). */
+/** One customized weighting of the shared CCH topology (see NavGraph.plain and
+ *  the per-team congested metrics built by teamCong). */
 interface Metric {
   w: Float64Array;
   mid: Int32Array;
@@ -197,12 +198,15 @@ export class NavGraph {
    *  the plain metric). Infinity + surcharge is still Infinity, so a blocked edge
    *  stays blocked whatever the surcharge. */
   private plain!: Metric;
-  private cong!: Metric;
-  /** Per-arc congestion surcharge: how much traffic is routed over this edge (see
-   *  setRoute). Only the `cong` metric reads it. */
-  private congestion!: Float64Array;
+  /** Congestion is PER TEAM: a bot spreads out from its own teammates' committed
+   *  routes, and ignores where enemies are walking (you don't detour around a foe
+   *  you may want to intercept). Each team gets its own surcharge array + congested
+   *  metric, built lazily on first use (teamCong). Same per-stamp / per-query cost
+   *  as one shared field — just partitioned by team. */
+  private readonly congByTeam = new Map<TeamId, { congestion: Float64Array; cong: Metric }>();
   /** Each owner's currently-stamped route arcs, so a re-stamp only pays for the
-   *  difference (a bot re-planning to a similar route touches almost nothing). */
+   *  difference (a bot re-planning to a similar route touches almost nothing). An
+   *  owner never changes team, so the arcs always belong to that team's field. */
   private readonly stamped = new Map<object, number[]>();
 
   /** up[v] / down[v]: v's CCH neighbours of higher / lower rank, each with the
@@ -239,7 +243,8 @@ export class NavGraph {
     this.buildTopology();
     this.allocScratch();
     this.customizeFull(this.plain);
-    this.customizeFull(this.cong);
+    // Per-team congested metrics are built on demand (teamCong), so nothing to
+    // customize here beyond the plain baseline.
   }
 
   // ============================================================ topology =======
@@ -313,16 +318,7 @@ export class NavGraph {
     this.aLo = new Int32Array(loNodes);
     this.aHi = new Int32Array(hiNodes);
     this.aBase = new Float64Array(m);
-    this.congestion = new Float64Array(m);
-    const newMetric = (extra: Float64Array | null): Metric => ({
-      w: new Float64Array(m),
-      mid: new Int32Array(m).fill(-1),
-      child0: new Int32Array(m).fill(-1),
-      child1: new Int32Array(m).fill(-1),
-      extra,
-    });
-    this.plain = newMetric(null);
-    this.cong = newMetric(this.congestion);
+    this.plain = this.makeMetric(null);
     this.up = nodes.map(() => []);
     this.down = nodes.map(() => []);
     this.arcOf = new Map();
@@ -362,6 +358,19 @@ export class NavGraph {
    *  base distance plus this metric's surcharge (blocked stays Infinity). */
   private baseOf(m: Metric, a: number): number {
     return m.extra === null ? this.aBase[a] : this.aBase[a] + m.extra[a];
+  }
+
+  /** A fresh, uncustomized metric over the current arc set. `extra` is its per-arc
+   *  surcharge (null for the plain distance metric). */
+  private makeMetric(extra: Float64Array | null): Metric {
+    const m = this.aBase.length;
+    return {
+      w: new Float64Array(m),
+      mid: new Int32Array(m).fill(-1),
+      child0: new Int32Array(m).fill(-1),
+      child1: new Int32Array(m).fill(-1),
+      extra,
+    };
   }
 
   /** Stage 2 (full): weigh every arc of one metric. One bottom-up pass —
@@ -525,10 +534,12 @@ export class NavGraph {
         dirty.push(arc);
       }
     }
-    // A base change moves both metrics; the surcharge rides on top of it.
+    // A base change moves every metric; each surcharge rides on top of it. Rare
+    // (a vehicle moved / a crate broke) and only a handful of arcs, so re-doing it
+    // for each team's congested metric on top of plain is a couple extra passes.
     if (dirty.length) {
       this.customizeDirty(this.plain, dirty);
-      this.customizeDirty(this.cong, dirty);
+      for (const { cong } of this.congByTeam.values()) this.customizeDirty(cong, dirty);
     }
   }
 
@@ -552,16 +563,33 @@ export class NavGraph {
    *  different corridors. */
   static readonly ROUTE_SPREAD = true;
 
+  /** `team`'s congestion field + metric, built (and fully customized once) on
+   *  first use. A new field starts all-zero, so its metric equals `plain` until
+   *  the first route is stamped. */
+  private teamCong(team: TeamId): { congestion: Float64Array; cong: Metric } {
+    let tc = this.congByTeam.get(team);
+    if (!tc) {
+      const congestion = new Float64Array(this.aBase.length);
+      const cong = this.makeMetric(congestion);
+      this.customizeFull(cong);
+      tc = { congestion, cong };
+      this.congByTeam.set(team, tc);
+    }
+    return tc;
+  }
+
   /** Declare `owner`'s committed route as the node sequence `nodes`, replacing
-   *  whatever it declared before. Only the CONGESTED metric sees it — plain
+   *  whatever it declared before. Only `team`'s CONGESTED metric sees it — plain
    *  `route()` distances are untouched, which matters because several callers
    *  (contact scans, threat picks) use them as measurements rather than as a
-   *  choice of walk.
+   *  choice of walk — and enemy teams' fields are untouched, so a bot only ever
+   *  spreads out from its own side.
    *
    *  Only the difference against the owner's previous stamp is re-customized, so
    *  a bot re-planning onto a similar route pays for the few hops that changed.
    *  Pass an empty array to withdraw (death, or no route). */
-  setRoute(owner: object, nodes: readonly number[]): void {
+  setRoute(owner: object, nodes: readonly number[], team: TeamId): void {
+    const { congestion, cong } = this.teamCong(team);
     const next: number[] = [];
     for (let i = 0; i + 1 < nodes.length; i++) {
       const a = this.arc(nodes[i], nodes[i + 1]);
@@ -588,25 +616,27 @@ export class NavGraph {
     const dirty: number[] = [];
     for (const [a, d] of delta) {
       if (d === 0) continue;
-      this.congestion[a] = Math.max(0, this.congestion[a] + d * NavGraph.ROUTE_PENALTY);
+      congestion[a] = Math.max(0, congestion[a] + d * NavGraph.ROUTE_PENALTY);
       dirty.push(a);
     }
     if (next.length) this.stamped.set(owner, next);
     else this.stamped.delete(owner);
-    if (dirty.length) this.customizeDirty(this.cong, dirty);
+    if (dirty.length) this.customizeDirty(cong, dirty);
   }
 
-  /** Withdraw every stamp (match reset / level reload). */
+  /** Withdraw every stamp (match reset / level reload) across all teams. */
   clearRoutes(): void {
-    const dirty: number[] = [];
-    for (let a = 0; a < this.congestion.length; a++) {
-      if (this.congestion[a] !== 0) {
-        this.congestion[a] = 0;
-        dirty.push(a);
+    for (const { congestion, cong } of this.congByTeam.values()) {
+      const dirty: number[] = [];
+      for (let a = 0; a < congestion.length; a++) {
+        if (congestion[a] !== 0) {
+          congestion[a] = 0;
+          dirty.push(a);
+        }
       }
+      if (dirty.length) this.customizeDirty(cong, dirty);
     }
     this.stamped.clear();
-    if (dirty.length) this.customizeDirty(this.cong, dirty);
   }
 
   /** The nav edges the CCH should re-check for vehicle `v`: every real candidate
@@ -652,11 +682,13 @@ export class NavGraph {
   // ============================================================== query ========
 
   /** The cached route step: the next node to walk toward and the total path
-   *  distance from `from` to `to`, or null if `to` is unreachable. */
-  route(from: number, to: number, congested = false): { next: number; dist: number } | null {
+   *  distance from `from` to `to`, or null if `to` is unreachable. Pass a team to
+   *  route on THAT team's congestion field (spread out from its own routes); omit
+   *  it for the plain distance metric (measurements, and enemy-blind pathing). */
+  route(from: number, to: number, congest: TeamId | null = null): { next: number; dist: number } | null {
     if (from < 0 || to < 0 || from >= this.n || to >= this.n) return null;
     if (from === to) return { next: from, dist: 0 };
-    const mt = congested ? this.cong : this.plain;
+    const mt = congest !== null ? this.teamCong(congest).cong : this.plain;
     return profiler.measure("ai.route", () => this.query(mt, from, to));
   }
 

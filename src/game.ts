@@ -610,12 +610,12 @@ export class Game implements GameCtx {
     if (!nav || this.tick % PLAYER_ROUTE_TICKS !== 0) return;
     const p = this.player;
     if (p.hp <= 0 || p.vehicle || p.speed < PLAYER_ROUTE_MIN_SPEED) {
-      nav.setRoute(p, []);
+      nav.setRoute(p, [], p.team);
       return;
     }
     const start = nav.nearestWalkable(this.world, p.pos, p.z);
     if (start < 0) {
-      nav.setRoute(p, []);
+      nav.setRoute(p, [], p.team);
       return;
     }
     const dir = norm(p.vel);
@@ -641,7 +641,7 @@ export class Game implements GameCtx {
       nodes.push(best);
       cur = best;
     }
-    nav.setRoute(p, nodes);
+    nav.setRoute(p, nodes, p.team);
   }
 
   /** The weapon the player's aim actually drives: a turret when seated in one,
@@ -674,7 +674,7 @@ export class Game implements GameCtx {
 
       // Withdraw any committed route from the nav congestion field — a corpse
       // must not keep a corridor looking busy.
-      if (this.nav) this.nav.setRoute(c, []);
+      if (this.nav) this.nav.setRoute(c, [], c.team);
 
       this.gamemode.onDeath(c, this);
 

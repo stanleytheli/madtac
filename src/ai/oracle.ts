@@ -206,7 +206,7 @@ export class Oracle extends Robot {
     let remaining = FACE_NEXT_DISTANCE - dist(this.pos, dest);
     let curr = this.waypoint;
     for (let hops = 0; hops < MAX_HOPS && curr !== this.goal; hops++) {
-      const step = nav.route(curr, this.goal, true);
+      const step = nav.route(curr, this.goal, this.team);
       if (!step) break;
       const edge = dist(nav.nodes[curr].pos, nav.nodes[step.next].pos);
       if (edge > remaining) break; // the next node is past the look distance
@@ -245,7 +245,7 @@ export class Oracle extends Robot {
   private skipReachableHops(nav: NavGraph, world: World): void {
     if (this.atGoalNode || this.goal < 0) return;
     for (let hop = 0; hop < MAX_SKIP && this.waypoint >= 0 && this.waypoint !== this.goal; hop++) {
-      const step = nav.route(this.waypoint, this.goal, true);
+      const step = nav.route(this.waypoint, this.goal, this.team);
       if (!step) return;
       const next = nav.nodes[step.next];
       if (!walkable(world, this.pos, this.z, next.pos, next.z)) return;
@@ -260,13 +260,13 @@ export class Oracle extends Robot {
     // the congested metric, and routing around yesterday's version of ourselves
     // is both wrong and unstable. It goes back on at the end, so between plans
     // everyone else still sees where we intend to walk.
-    nav.setRoute(this, []);
+    nav.setRoute(this, [], this.team);
     try {
       this.planInner(nav, world, chase);
     } finally {
       // Declare the new route whatever happened, including the early returns
       // that leave us with no waypoint at all (which declares nothing).
-      nav.setRoute(this, this.routeNodes(nav));
+      nav.setRoute(this, this.routeNodes(nav), this.team);
     }
   }
 
@@ -276,7 +276,7 @@ export class Oracle extends Robot {
     const out: number[] = [this.waypoint];
     let cur = this.waypoint;
     for (let hop = 0; hop < ROUTE_STAMP_HOPS && cur !== this.goal; hop++) {
-      const step = nav.route(cur, this.goal, true);
+      const step = nav.route(cur, this.goal, this.team);
       if (!step || step.next === cur) break;
       cur = step.next;
       out.push(cur);
@@ -298,7 +298,7 @@ export class Oracle extends Robot {
       this.atGoalNode = true;
       return;
     }
-    const step = nav.route(curr, goal, true);
+    const step = nav.route(curr, goal, this.team);
     if (!step) return;
     const next = nav.nodes[step.next];
     // Head straight for the next hop when it's walkable from right here (we're
@@ -324,7 +324,7 @@ export class Oracle extends Robot {
       const cost = (w: number): number | null => {
         const leg = dist(this.pos, nav.nodes[w].pos);
         if (w === goal) return leg;
-        const r = nav.route(w, goal, true);
+        const r = nav.route(w, goal, this.team);
         return r ? leg + r.dist : null;
       };
       const prevCost = cost(prev);

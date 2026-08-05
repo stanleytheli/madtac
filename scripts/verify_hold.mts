@@ -706,103 +706,59 @@ function integrationSuite(level: string): void {
 // ------------------------------------------------------------ give-up timer --
 /** A base TacOracle that holds without ever seeing an enemy must give up after a
  *  bit and go hunt, rather than freezing on a dead angle forever. */
-function holdTimeoutSuite(level: string): void {
-  console.log(`\n--- hold give-up timeout: ${level} ---`);
+/** Soldiers no longer dig in on a distance band ("an enemy is vaguely near, so
+ *  hold for a few seconds" — the random hold we replaced). They hold ONLY via the
+ *  principled reflex watch. This guards that removal: the old give-up-timer and
+ *  walk/retreat-settle suites tested exactly the behaviour that's now gone. */
+function soldierHoldSuite(level: string): void {
+  console.log(`\n--- soldiers hold only via the reflex (no distance-band dig-in): ${level} ---`);
   const { world, nav } = loadWorld(level);
-
-  type Timed = {
+  type T = {
     mode: string;
     visDist: number;
     enemyVisDist: number;
     holdTicks: number;
     updatePosture(ai: AiContext, target: Robot | null): void;
-    holdMaxTicks(): number;
   };
 
-  // A soldier already dug in, with contact pinned near (< RUN_DISTANCE) but never
-  // seen (no target). wantsHold stays true every tick, so only the timeout ends it.
+  // A soldier artificially placed in HOLD with contact pinned near (< RUN_DISTANCE)
+  // but never seen. Under the old distance-band hold this stayed dug in until the
+  // give-up timer; now wantsHold is false, so it drops straight back to combat.
   const bot = new TacOracle(vec(0, 0), { team: "player", z: 0 });
-  const t = bot as unknown as Timed;
+  const t = bot as unknown as T;
   const ai: AiContext = { world, characters: [bot], nav, tick: 0 };
   t.mode = "hold";
   t.holdTicks = 0;
-  const max = t.holdMaxTicks();
-
-  let heldTicks = 0;
-  for (let i = 0; i < max + 400; i++) {
-    t.visDist = 500; // both < RUN_DISTANCE and > 0 => wantsHold true
+  let held = 0;
+  for (let i = 0; i < 120; i++) {
+    t.visDist = 500; // both < RUN_DISTANCE and > 0: the old dig-in gate
     t.enemyVisDist = 500;
     t.updatePosture(ai, null);
-    if (t.mode === "hold") heldTicks++;
+    if (t.mode === "hold") held++;
     else break;
   }
-  check("a fruitless hold is given up around holdMaxTicks", Math.abs(heldTicks - max) <= 1,
-    `held ${heldTicks} of ${max} (~${(heldTicks / 60).toFixed(1)}s) before giving up`);
-  check("giving up leaves the HOLD posture", t.mode !== "hold", `mode=${t.mode}`);
+  check("a soldier does not sustain a distance-band hold", held === 0, `held ${held} ticks`);
 
-  // Even with the threat still near, it doesn't immediately re-dig-in — the
-  // cooldown forces it to go hunt first.
-  let reHeld = false;
-  for (let i = 0; i < 60; i++) {
-    t.visDist = 500;
-    t.enemyVisDist = 500;
-    t.updatePosture(ai, null);
-    if (t.mode === "hold") { reHeld = true; break; }
+  // ...and one that starts in combat never digs in on that gate either. Contact is
+  // held at a constant distance, so there's also no asymmetry drop to fire the
+  // reflex — the only thing that would legitimately produce a hold here.
+  const fresh = new TacOracle(vec(0, 0), { team: "player", z: 0 });
+  const f = fresh as unknown as T;
+  const ai2: AiContext = { world, characters: [fresh], nav, tick: 0 };
+  let everHeld = false;
+  for (let i = 0; i < 300; i++) {
+    f.visDist = 500;
+    f.enemyVisDist = 500;
+    f.updatePosture(ai2, null);
+    if (f.mode === "hold") { everHeld = true; break; }
   }
-  check("it doesn't re-enter HOLD right away (stale cooldown)", !reHeld);
+  check("a soldier never enters HOLD on the distance band", !everHeld);
 
-  // A DominationOracle opts out of the give-up timer (it runs its own vigil).
+  // A DominationOracle still runs its own principled point-defense vigil, opting
+  // out of the base give-up timer.
   const dom = new DominationOracle(vec(0, 0), { team: "player", z: 0 });
-  check("DominationOracle disables the base give-up timer",
+  check("DominationOracle keeps its own vigil (no base give-up timer)",
     (dom as unknown as { holdMaxTicks(): number }).holdMaxTicks() === Infinity);
-}
-
-// ------------------------------------------------------------- hold settles --
-/** A hold whose cover sits far enough that the retreat to it grows the distance-
- *  to-contact past RUN_DISTANCE must NOT cancel mid-walk: the bot has to actually
- *  arrive and sit still, not ping-pong between approaching and retreating. This
- *  reproduces the cross-z long-retreat case that oscillated (fightDist crossing
- *  1000 one step short of the cover). */
-function holdSettleSuite(level: string): void {
-  console.log(`\n--- hold settles (no walk/retreat loop): ${level} ---`);
-  const { world, nav } = loadWorld(level);
-  type Peek = { mode: string };
-
-  // Each pair: a z0 home whose hold cover lies a long retreat away, and a cross-z
-  // foe ~contact-distance off by route. (Found by scanning the map.)
-  const cases: [Vec2, number, Vec2, number][] = [
-    [vec(1348, -988), 0, vec(997, -1424), -1],
-    [vec(1260, -1117), 0, vec(699, -1422), -1],
-    [vec(747, -2142), 0, vec(720, -1405), 1],
-  ];
-  for (const [home, hz, foe, fz] of cases) {
-    const bot = new TacOracle(vec(home.x, home.y), { team: "player", z: hz, realGun: true, stagger: 5 });
-    const enemy = new Robot(vec(foe.x, foe.y), { team: "enemy", z: fz });
-    const pk = bot as unknown as Peek;
-    let holdModeTicks = 0;
-    let bestStill = 0;
-    let still = 0;
-    let holdExits = 0;
-    let prev = "";
-    let last = vec(bot.pos.x, bot.pos.y);
-    for (let t = 0; t < 500; t++) {
-      bot.think({ world, characters: [bot, enemy], nav, tick: t });
-      const moved = dist(bot.pos, last);
-      last = vec(bot.pos.x, bot.pos.y);
-      if (pk.mode === "hold") {
-        holdModeTicks++;
-        if (moved < 0.3) { still++; bestStill = Math.max(bestStill, still); } else still = 0;
-      } else still = 0;
-      if (prev === "hold" && pk.mode !== "hold") holdExits++;
-      prev = pk.mode;
-    }
-    const tag = `(${home.x},${home.y})->z${fz}`;
-    // Settles: a long uninterrupted still-stretch while holding (arrived at cover),
-    // and it leaves hold at most once (the give-up), not the ping-pong (2+ exits).
-    check(`${tag} settles still while holding`, bestStill >= 60,
-      `holdTicks=${holdModeTicks} bestStill=${bestStill} exits=${holdExits}`);
-    check(`${tag} no walk/retreat oscillation`, holdExits <= 1, `exits=${holdExits}`);
-  }
 }
 
 // -------------------------------------------------------------------- run ---
@@ -814,8 +770,7 @@ laneSuite("tdm-arena-big");
 refreshSuite("tdm-arena-big");
 dominationSuite("dom-arena-big");
 oscillationSuite("dom-arena-big");
-holdTimeoutSuite("tdm-arena-big");
-holdSettleSuite("dom-arena-big");
+soldierHoldSuite("tdm-arena-big");
 claimSuite("tdm-arena-big");
 ambushSuite("dom-arena-big");
 integrationSuite("tdm-arena-big");
