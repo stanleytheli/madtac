@@ -57,6 +57,13 @@ const HOLD_MAX = 8 * 60;
  *  brewing, hold); beyond it the bot is more useful working another point. */
 const HOLD_MAX_SAFE_DIST = 500;
 
+/** How often (ticks) bestChase re-runs the routed site ranking. bestChase is
+ *  called every tick, but the nav queries behind the ranking are far too costly
+ *  to pay per tick and the pick barely moves over a third of a second — so cache
+ *  it this long, re-resolving the cached point against the rebuilt objective list
+ *  in between (and re-ranking early the moment it's captured/gone). */
+const SITE_EVAL_TICKS = 20;
+
 export class DominationOracle extends TacOracle {
   /** A throwaway waypoint (never in the world/roster) parked on the target
    *  objective, so the base's navChase can steer toward a position. */
@@ -73,6 +80,13 @@ export class DominationOracle extends TacOracle {
    *  is released so the bot goes to work another point; reset whenever security
    *  lapses or the bot leaves the ring. */
   private secureTicks = 0;
+
+  /** The site bestChase last committed to (pos+level), and the countdown to the
+   *  next routed re-rank. bestChase runs every tick; the nav ranking behind it
+   *  does not — see SITE_EVAL_TICKS. Between refreshes the cached point is
+   *  re-resolved against the rebuilt objective list, so it stays a live point. */
+  private siteChoice: { pos: Vec2; z: number } | null = null;
+  private siteEvalIn = 0;
 
   /** Objective holds run on their own clock — the HOLD_MAX vigil in wantsHold,
    *  which only fires once the point is won AND quiet. A defender must NOT abandon
@@ -100,13 +114,19 @@ export class DominationOracle extends TacOracle {
    *  we're fighting near it — so an engagement on/around a capture point is waged
    *  FROM the point (capturing while shooting) rather than wherever the enemy
    *  happens to pull us. Null when the nearest workable point is too far, or we
-   *  already hold it outright. */
+   *  already hold it outright.
+   *
+   *  Straight-line distance is right HERE (unlike bestChase's routed pick): this
+   *  is a local "is there a point right under this fight to drag it onto" test,
+   *  gated to ~OBJ_PULL_MARGIN, not a cross-map destination choice — but it must
+   *  stay on THIS bot's level, or a point a floor up/down reads as underfoot. */
   protected override biasObjective(ai: AiContext): { pos: Vec2; radius: number } | null {
     const objs = ai.objectives;
     if (!objs || objs.length === 0) return null;
     let best: ObjectivePoint | null = null;
     let bestD = Infinity;
     for (const o of objs) {
+      if (o.z !== this.z) continue; // can't fight FROM a point on another level
       if (o.owner === this.team && o.progress >= 2) continue; // fully ours: nothing to gain
       const d = dist(this.pos, o.pos);
       if (d < bestD) {
@@ -215,16 +235,18 @@ export class DominationOracle extends TacOracle {
     const objs = ai.objectives;
     if (!objs || objs.length === 0) return super.bestChase(ai);
 
-    // Nearest (straight-line) point we don't already hold at full strength.
-    let best: ObjectivePoint | null = null;
-    let bestD = Infinity;
-    for (const o of objs) {
-      if (o.owner === this.team && o.progress >= 2) continue; // already ours, fully locked
-      const d = dist(this.pos, o.pos);
-      if (d < bestD) {
-        bestD = d;
-        best = o;
-      }
+    // The nearest workable point BY TRAVEL DISTANCE — routed through the nav
+    // graph, so a point a floor up behind a stair climb isn't judged "close" by a
+    // straight line that ignores the detour. bestChase runs every tick but the
+    // ranking's nav queries are far too costly to; the pick is cached
+    // (SITE_EVAL_TICKS), re-resolved against this tick's rebuilt objective list in
+    // between, and re-ranked early the moment the cached point is captured/gone.
+    this.siteEvalIn -= 1;
+    let best = this.resolveChoice(objs);
+    if (!best || this.siteEvalIn <= 0) {
+      best = this.rankNearestSite(ai, objs);
+      this.siteChoice = best ? { pos: best.pos, z: best.z } : null;
+      this.siteEvalIn = SITE_EVAL_TICKS;
     }
     if (!best) return super.bestChase(ai); // we own it all — go hunt/defend
 
@@ -259,22 +281,71 @@ export class DominationOracle extends TacOracle {
     return m;
   }
 
+  /** The workable point (not already ours at full strength) nearest by ACTUAL
+   *  travel distance — `route().dist` through the nav graph, so walls and stair
+   *  climbs to another z count, unlike a straight line. Ranks on this bot's own
+   *  team-congested metric (the cost it will really pay). Falls back to
+   *  straight-line only with no nav graph or a nodeless endpoint; unreachable
+   *  points rank last. Null when every point is already locked down. */
+  private rankNearestSite(ai: AiContext, objs: readonly ObjectivePoint[]): ObjectivePoint | null {
+    const nav = ai.nav;
+    const from = nav ? nav.nearestWalkable(ai.world, this.pos, this.z) : -1;
+    let best: ObjectivePoint | null = null;
+    let bestD = Infinity;
+    for (const o of objs) {
+      if (o.owner === this.team && o.progress >= 2) continue; // already ours, fully locked
+      let d: number;
+      if (nav && from >= 0) {
+        const to = this.siteNode(ai, o);
+        const r = to >= 0 ? nav.route(from, to, this.team) : null;
+        d = r ? r.dist : Infinity; // unreachable: only picked if nothing else is
+      } else {
+        d = dist(this.pos, o.pos); // no graph / no start node: best effort
+      }
+      if (d < bestD) {
+        bestD = d;
+        best = o;
+      }
+    }
+    return best;
+  }
+
+  /** Re-resolve the cached site pick against this tick's rebuilt objective list,
+   *  or null if it's gone or has since been locked down (which forces a fresh
+   *  routed rank in bestChase). */
+  private resolveChoice(objs: readonly ObjectivePoint[]): ObjectivePoint | null {
+    const c = this.siteChoice;
+    if (!c) return null;
+    for (const o of objs) {
+      if (o.z === c.z && dist(o.pos, c.pos) < 1) {
+        return o.owner === this.team && o.progress >= 2 ? null : o;
+      }
+    }
+    return null;
+  }
+
+  /** The nav node id nearest `pt`'s centre on its level, or -1 if the graph has
+   *  no node there. Routing needs a real graph node as an endpoint, and the point
+   *  centre itself can sit in a wall with no node on it. */
+  private siteNode(ai: AiContext, pt: ObjectivePoint): number {
+    let bestId = -1;
+    let bestD = Infinity;
+    for (const n of ai.nav?.nodes ?? []) {
+      if (n.z !== pt.z) continue;
+      const d = dist(n.pos, pt.pos);
+      if (d < bestD) {
+        bestD = d;
+        bestId = n.id;
+      }
+    }
+    return bestId;
+  }
+
   /** Where to stand to work `pt`: the nearest nav node on its level (navigation
    *  needs a real graph node as its goal), falling back to the centre only if the
    *  graph has no node on that level. */
   private captureSpot(ai: AiContext, pt: ObjectivePoint): Vec2 {
-    let bestPos: Vec2 = pt.pos;
-    let bestD = Infinity;
-    if (ai.nav) {
-      for (const n of ai.nav.nodes) {
-        if (n.z !== pt.z) continue;
-        const d = dist(n.pos, pt.pos);
-        if (d < bestD) {
-          bestD = d;
-          bestPos = n.pos;
-        }
-      }
-    }
-    return bestPos;
+    const id = this.siteNode(ai, pt);
+    return id >= 0 && ai.nav ? ai.nav.nodes[id].pos : pt.pos;
   }
 }
