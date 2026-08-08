@@ -901,10 +901,12 @@ export class NavGraph {
    *  expensive body-march only runs on nodes closer than the answer — a far node
    *  is tested only if every nearer node failed. */
   nearestWalkable(world: World, pos: Vec2, z: number): number {
-    for (const nd of this.byDistance(pos, this.nodes)) {
-      if (walkable(world, pos, z, nd.pos, nd.z)) return nd.id;
-    }
-    return -1;
+    return profiler.measure("ai.nearestWalkable", () => {
+      for (const nd of this.byDistance(pos, this.nodes)) {
+        if (walkable(world, pos, z, nd.pos, nd.z)) return nd.id;
+      }
+      return -1;
+    });
   }
 
   /** The nearest node on `z` with clear line of sight to `pos`, or -1. This is
@@ -912,10 +914,12 @@ export class NavGraph {
    *  nearestWalkable, it raycasts nodes nearest-first and stops at the first
    *  visible one, so far nodes are never tested unless all nearer ones are hidden. */
   nearestInSight(world: World, pos: Vec2, z: number): number {
-    for (const nd of this.byDistance(pos, this.nodes.filter((n) => n.z === z))) {
-      if (losClear(world, pos, nd.pos, z)) return nd.id;
-    }
-    return -1;
+    return profiler.measure("ai.nearestInSight", () => {
+      for (const nd of this.byDistance(pos, this.nodes.filter((n) => n.z === z))) {
+        if (losClear(world, pos, nd.pos, z)) return nd.id;
+      }
+      return -1;
+    });
   }
 
   /** `nodes` ordered by straight-line distance to `pos` (ascending). The sort is

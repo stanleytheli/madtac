@@ -976,11 +976,77 @@ let pDown = false;
 function drawProfilerOverlay(ctx: CanvasRenderingContext2D, w: number): void {
   const pad = 8;
   const lineH = 15;
-  const rows = profReport;
-  const boxW = 240;
-  const boxH = pad * 2 + lineH * (rows.length + 2);
+
+  // Group by section (the label prefix before the first "."). A dotless label is
+  // its section's header (e.g. "ai", "render"); dotted labels are that section's
+  // children. Flattening everything and sorting purely by time — the old way —
+  // let a sub-span like "ai.route" render directly beneath an unrelated section's
+  // header (or above its own), which read as it belonging to the wrong section.
+  // Build a cost TREE from the flat spans. Dotted labels nest under their prefix
+  // (ai.route -> ai, render.hud -> render); the per-tick phases (ai, collide, ...)
+  // nest under "update" — begun inside the update span but not prefixed.
+  // Everything else is a root. The tree drives indentation and ordering; EVERY
+  // row's % is of the grand TOTAL (not its parent), so a number reads directly as
+  // "this much of the frame" — the share you'd claw back by optimizing it. Rows
+  // are contained in their parent, so a parent's % >= the sum of its children's.
+  const UPDATE_PHASES = new Set(["surfaces", "ai", "collide", "bullets", "items", "rules"]);
+  const parentOf = (label: string): string | null => {
+    const dot = label.indexOf(".");
+    if (dot >= 0) return label.slice(0, dot);
+    return UPDATE_PHASES.has(label) ? "update" : null;
+  };
+  interface Node {
+    label: string;
+    ms: number;
+    kids: Node[];
+  }
+  const nodes = new Map<string, Node>();
+  for (const r of profReport) nodes.set(r.label, { label: r.label, ms: r.msPerFrame, kids: [] });
+  const roots: Node[] = [];
+  for (const n of nodes.values()) {
+    const p = parentOf(n.label);
+    const parent = p ? nodes.get(p) : undefined;
+    if (parent) parent.kids.push(n);
+    else roots.push(n);
+  }
+  const total = roots.reduce((s, n) => s + n.ms, 0);
+
+  // Fixed order so rows keep their place frame-to-frame: roots then phases by
+  // execution order, everything else alphabetical.
+  const ROOT_ORDER = ["update", "render"];
+  const PHASE_ORDER = ["surfaces", "ai", "collide", "bullets", "items", "rules"];
+  const orderBy = (order: string[]) => (a: Node, b: Node): number => {
+    const ia = order.indexOf(a.label);
+    const ib = order.indexOf(b.label);
+    return (ia < 0 ? order.length : ia) - (ib < 0 ? order.length : ib) || a.label.localeCompare(b.label);
+  };
+  roots.sort(orderBy(ROOT_ORDER));
+
+  // Flatten depth-first; a child drops its parent prefix for a compact label.
+  const leaf = (label: string): string => {
+    const dot = label.indexOf(".");
+    return dot < 0 ? label : label.slice(dot + 1);
+  };
+  interface Line {
+    text: string;
+    ms: number;
+    pct: number;
+    depth: number;
+  }
+  const lines: Line[] = [];
+  const walk = (n: Node, depth: number): void => {
+    lines.push({ text: leaf(n.label), ms: n.ms, pct: total > 0 ? (100 * n.ms) / total : 0, depth });
+    n.kids.sort(n.label === "update" ? orderBy(PHASE_ORDER) : orderBy([]));
+    for (const k of n.kids) walk(k, depth + 1);
+  };
+  for (const r of roots) walk(r, 0);
+
+  const boxW = 264;
+  const boxH = pad * 2 + lineH * (lines.length + 3); // title + TOTAL + rows
   const x = w - boxW - 10;
   const y = 10;
+  const msX = x + boxW - pad - 52; // right edge of the ms column
+  const pctX = x + boxW - pad; // right edge of the % column
   ctx.save();
   ctx.fillStyle = "rgba(0,0,0,0.72)";
   ctx.fillRect(x, y, boxW, boxH);
@@ -988,16 +1054,25 @@ function drawProfilerOverlay(ctx: CanvasRenderingContext2D, w: number): void {
   ctx.textBaseline = "top";
   ctx.textAlign = "left";
   ctx.fillStyle = "#8fd6ff";
-  ctx.fillText("PROFILER (P)  ms/frame", x + pad, y + pad);
+  ctx.fillText("PROFILER (P)      ms   %total", x + pad, y + pad);
+
   let ly = y + pad + lineH * 2 - 4;
-  for (const r of rows) {
-    // update/render are totals; indent the sub-spans under them.
-    const sub = r.label.includes(".");
-    ctx.fillStyle = sub ? "#9aa4af" : "#e6e9ee";
-    ctx.fillText((sub ? "  " : "") + r.label, x + pad, ly);
-    ctx.textAlign = "right";
-    ctx.fillText(r.msPerFrame.toFixed(2), x + boxW - pad, ly);
+  // TOTAL first — the frame's measured cost; every root's % is a share of it.
+  ctx.fillStyle = "#8fd6ff";
+  ctx.textAlign = "left";
+  ctx.fillText("TOTAL", x + pad, ly);
+  ctx.textAlign = "right";
+  ctx.fillText(total.toFixed(2), msX, ly);
+  ctx.fillText("100%", pctX, ly);
+  ly += lineH;
+
+  for (const l of lines) {
+    ctx.fillStyle = l.depth === 0 ? "#e6e9ee" : l.depth === 1 ? "#c3c9d0" : "#9aa4af";
     ctx.textAlign = "left";
+    ctx.fillText("  ".repeat(l.depth) + l.text, x + pad, ly);
+    ctx.textAlign = "right";
+    ctx.fillText(l.ms.toFixed(2), msX, ly);
+    ctx.fillText(l.pct.toFixed(0) + "%", pctX, ly);
     ly += lineH;
   }
   ctx.restore();
