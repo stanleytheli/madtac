@@ -255,6 +255,17 @@ export function makeBarrelWood(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
   return { pos, w: d, h: d, z, round: true, style: "barrel_wood", fill: "#9a6a2f", stroke: "#4a300f", strokeWidth: 5, cross: false, particle: CRATE_SHRAPNEL };
 }
 
+/** The shrapnel burst thrown when a bullet hits `o`, recolored to match the
+ *  object. A generic obstacle debris-colors to its own paint — its stroke, or
+ *  fill if the stroke is empty — so chips read as coming off *that* object even
+ *  when a level overrides the paint. Obstacles with a dedicated renderer (`style`,
+ *  e.g. barrels) keep the hand-authored `particle` color, since their on-screen
+ *  look comes from that special pipeline, not the fill/stroke fields. */
+export function obstacleShrapnel(o: Obstacle): ParticleStyle {
+  if (o.style) return o.particle;
+  return { ...o.particle, color: o.stroke || o.fill };
+}
+
 /**
  * Bake the static render order: stable-sort each static array by depth
  * (default 0), so ties keep authoring order. The render loop just walks the
@@ -850,7 +861,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       }
       if (struck) {
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
-        spawnParticles(w.particles, at, backDir, struck.particle, b.z);
+        spawnParticles(w.particles, at, backDir, obstacleShrapnel(struck), b.z);
         consumed = true;
         break;
       }
