@@ -1473,22 +1473,28 @@ export class TacOracle extends Oracle {
     const goal = tgtGoal ?? nav.nearestInSight(ai.world, tgt.pos, tgt.z);
     if (curr < 0 || goal < 0) return dist(fromPos, tgt.pos);
 
-    // The old doorstep answer, kept as the ceiling: it's what this used to
-    // report, so the march can only ever improve on it, and it bounds the work —
-    // once we've marched that far there is nothing left to win.
-    const first = curr === goal ? null : nav.route(curr, goal);
-    if (curr !== goal && !first) return Infinity;
-    const ceiling = dist(fromPos, nav.nodes[curr].pos) + (first?.dist ?? 0) + gapAt(nav.nodes[goal].pos);
+    // Build the whole route in ONE query, then walk the node list. This used to
+    // call nav.route(cur, goal) once PER HOP — re-running a full CH search from
+    // every node just to advance one step — which dominated the AI's cost. The
+    // path is a single consistent snapshot; the march reads it, no re-querying.
+    // `.dist` is exactly route().dist, so the ceiling is bit-identical to before.
+    const rp = curr === goal ? { nodes: [curr], dist: 0 } : nav.routePath(curr, goal);
+    if (rp === null) return Infinity; // curr !== goal and unreachable
+    const path = rp.nodes;
 
-    // March the route, sampling for the line at SIGHT_MARCH_STEP intervals, and
+    // The old doorstep answer, kept as the ceiling: the march can only ever
+    // improve on it, and it bounds the work — once we've marched that far there is
+    // nothing left to win.
+    const ceiling = dist(fromPos, nav.nodes[curr].pos) + rp.dist + gapAt(nav.nodes[goal].pos);
+
+    // March the path, sampling for the line at SIGHT_MARCH_STEP intervals, and
     // stop the instant it opens. Cost tracks the ANSWER (a line that opens in one
     // peek costs one or two samples), not the length of the route.
     let travelled = 0;
     let from = fromPos;
     let fromLevel = fromZ;
-    let cur = curr;
-    for (let hop = 0; hop < SIGHT_MARCH_HOPS && travelled < ceiling; hop++) {
-      const nd = nav.nodes[cur];
+    for (let hop = 0; hop < path.length && hop < SIGHT_MARCH_HOPS && travelled < ceiling; hop++) {
+      const nd = nav.nodes[path[hop]];
       const segLen = dist(from, nd.pos);
       // Samples along this hop carry the level they're walking on; a hop that
       // isn't on the target's level can't open a line, so it's just distance.
@@ -1500,12 +1506,8 @@ export class TacOracle extends Oracle {
         }
       }
       travelled += segLen;
-      if (cur === goal) break;
-      const step = hop === 0 ? first : nav.route(cur, goal);
-      if (!step) break;
       from = nd.pos;
       fromLevel = nd.z;
-      cur = step.next;
     }
     return ceiling;
   }

@@ -270,18 +270,15 @@ export class Oracle extends Robot {
     }
   }
 
-  /** Walk the committed route and list its nodes, for the congestion field. */
+  /** The committed route's nodes, for the congestion field — built in ONE query
+   *  (not one per hop) and capped at ROUTE_STAMP_HOPS edges, since we only stamp
+   *  the near corridor rather than the whole map. */
   private routeNodes(nav: NavGraph): number[] {
     if (this.waypoint < 0 || this.goal < 0) return [];
-    const out: number[] = [this.waypoint];
-    let cur = this.waypoint;
-    for (let hop = 0; hop < ROUTE_STAMP_HOPS && cur !== this.goal; hop++) {
-      const step = nav.route(cur, this.goal, this.team);
-      if (!step || step.next === cur) break;
-      cur = step.next;
-      out.push(cur);
-    }
-    return out;
+    const rp = nav.routePath(this.waypoint, this.goal, this.team);
+    if (!rp) return [this.waypoint];
+    const path = rp.nodes;
+    return path.length > ROUTE_STAMP_HOPS + 1 ? path.slice(0, ROUTE_STAMP_HOPS + 1) : path;
   }
 
   private planInner(nav: NavGraph, world: World, chase: Character): void {

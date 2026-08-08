@@ -229,6 +229,7 @@ export class NavGraph {
   private fseen!: Int32Array; // forward-settled node ids, for a tight meeting scan
   private fseenLen = 0;
   private gen = 0;
+  private lastMeetDist = 0; // total path distance from the most recent searchMeet
   private hNode!: Int32Array; // binary heap payload (node ids)
   private hKey!: Float64Array; // binary heap keys (distances)
   private hSize = 0;
@@ -692,7 +693,33 @@ export class NavGraph {
     return profiler.measure("ai.route", () => this.query(mt, from, to));
   }
 
-  private query(mt: Metric, s: number, t: number): { next: number; dist: number } | null {
+  /** The whole node path `from`..`to` (inclusive) as real node ids, or null if
+   *  unreachable. Same metric selection as `route` (`congest` picks the plain or a
+   *  team's congested field) and the SAME result as iterating `route().next` hop by
+   *  hop — but from ONE search instead of one per hop. Reads a single consistent
+   *  snapshot of the (possibly congested) metric, so it preserves adaptivity: the
+   *  caller still re-derives the path on its own cadence, just without re-querying
+   *  every hop within a single derivation. Use it wherever a caller WALKS a path. */
+  routePath(
+    from: number,
+    to: number,
+    congest: TeamId | null = null,
+  ): { nodes: number[]; dist: number } | null {
+    if (from < 0 || to < 0 || from >= this.n || to >= this.n) return null;
+    if (from === to) return { nodes: [from], dist: 0 };
+    const mt = congest !== null ? this.teamCong(congest).cong : this.plain;
+    const nodes = profiler.measure("ai.routePath", () => this.fullPath(mt, from, to));
+    // `dist` is the SAME bestDist route() returns (searchMeet stored it), so a
+    // caller that used route().dist stays bit-identical, not just numerically close.
+    return nodes.length ? { nodes, dist: this.lastMeetDist } : null;
+  }
+
+  /** Run both up-searches and return the apex (meeting node) minimising forward +
+   *  backward up-distance, or -1 if `s` and `t` are disconnected. Stores the total
+   *  path distance in `lastMeetDist`, and leaves the forward/backward parent trees
+   *  in the scratch arrays so `query` (first hop) and `fullPath` (whole path) can
+   *  reconstruct from the same one search. */
+  private searchMeet(mt: Metric, s: number, t: number): number {
     const gen = ++this.gen;
     this.fseenLen = 0;
     this.upSearch(mt, s, this.df, this.fpar, this.fparArc, this.fstamp, gen, true);
@@ -712,7 +739,13 @@ export class NavGraph {
         meet = v;
       }
     }
-    if (meet < 0 || bestDist === Infinity) return null;
+    this.lastMeetDist = bestDist;
+    return bestDist === Infinity ? -1 : meet;
+  }
+
+  private query(mt: Metric, s: number, t: number): { next: number; dist: number } | null {
+    const meet = this.searchMeet(mt, s, t);
+    if (meet < 0) return null;
 
     // First real hop. The s->t path is s..meet (forward, up) then meet..t
     // (backward). If it ascends first, take the forward arc leaving s; if the
@@ -726,7 +759,44 @@ export class NavGraph {
     } else {
       firstArc = this.bparArc[s];
     }
-    return { next: this.firstHop(mt, s, firstArc), dist: bestDist };
+    return { next: this.firstHop(mt, s, firstArc), dist: this.lastMeetDist };
+  }
+
+  /** The full real-node path s..t (inclusive), or `[]` if unreachable. The
+   *  one-query equivalent of walking `route().next` node by node: one bidirectional
+   *  search, then reconstruct the up-tree (s..meet forward, meet..t backward) and
+   *  unpack every shortcut into its real edges. */
+  private fullPath(mt: Metric, s: number, t: number): number[] {
+    const meet = this.searchMeet(mt, s, t);
+    if (meet < 0) return [];
+    const out: number[] = [s];
+    // Forward leg s..meet: the up-tree arcs run meet->s, so collect and reverse.
+    const fwd: number[] = [];
+    for (let cur = meet; cur !== s; cur = this.fpar[cur]) fwd.push(this.fparArc[cur]);
+    let node = s;
+    for (let i = fwd.length - 1; i >= 0; i--) {
+      this.unpackArc(mt, fwd[i], node, out);
+      node = out[out.length - 1];
+    }
+    // Backward leg meet..t: walk the backward up-tree straight from meet toward t.
+    for (let cur = meet; cur !== t; cur = this.bpar[cur]) {
+      this.unpackArc(mt, this.bparArc[cur], cur, out);
+    }
+    return out;
+  }
+
+  /** Append to `out` the real nodes crossed traversing `arc` from `from` —
+   *  EXCLUDING `from`, INCLUDING the far endpoint. A shortcut bypasses `mid`, so
+   *  recurse into its `from`-side leg (from->mid) then the other leg (mid->far). */
+  private unpackArc(mt: Metric, arc: number, from: number, out: number[]): void {
+    const mid = mt.mid[arc];
+    if (mid < 0) {
+      out.push(this.aLo[arc] === from ? this.aHi[arc] : this.aLo[arc]);
+      return;
+    }
+    const fromIsLo = this.aLo[arc] === from;
+    this.unpackArc(mt, fromIsLo ? mt.child0[arc] : mt.child1[arc], from, out); // -> mid
+    this.unpackArc(mt, fromIsLo ? mt.child1[arc] : mt.child0[arc], mid, out); // -> far end
   }
 
   /** Dijkstra from `src` relaxing only upward arcs, writing dist/parent/parentArc
