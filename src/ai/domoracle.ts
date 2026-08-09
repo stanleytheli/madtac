@@ -74,21 +74,13 @@ const SITE_COMMIT_TICKS = 10 * 60;
  *  (hard spread); large a → distance dominates. Shares are team-FRACTIONS and the
  *  weight is DIMENSIONLESS, so the pick is invariant to team size and to scaling
  *  every map distance by a constant. */
-/** Load balancing. Our bodies on a point beyond a WINNING MARGIN — one more than
- *  the enemy present — are SURPLUS: the point is already ours to take, so piling on
- *  more of us is wasted. Each surplus body multiplies that point's routed distance
- *  by this, so bots peel off over-garrisoned points toward ones that still need
- *  bodies. ONLY over-garrison repels — a free point, an evenly contested one, or
- *  one the enemy is taking all read as full value (distance alone); the sole
- *  low-value state is "we already hold it in force with nobody contesting" (e.g. 3
- *  of us, 0 of them). Enemy presence PROTECTS our bodies from counting as surplus
- *  (3 v 3 is needed to hold, not wasted).
- *
- *  Deliberately COUNTS, not fractions: one net body captures, so a point never
- *  needs more than enemy+1 no matter the team size — that fixed margin, not a
- *  team-fraction, is the size-independent quantity. The multiplier is
- *  dimensionless, so the pick is unchanged if every map distance is scaled. */
-const SURPLUS_PENALTY = 1;
+/** Load balancing: spread evenly across the not-yet-ours points instead of piling
+ *  onto one. A point's routed distance is multiplied by `1 + this × (teammates
+ *  already headed there)`, so each committed teammate makes it a little less
+ *  attractive and the next bot peels off to an emptier point. No enemy term — pure
+ *  even distribution. Counts (same at any team size) and dimensionless (the pick is
+ *  unchanged if every map distance is scaled). */
+const SPREAD_PENALTY = 1;
 
 /** Longest an objective bot will chase/fight an enemy that ISN'T on or contesting
  *  a site (ticks, 60/s → 3s) before breaking off. Enemies on a point are always
@@ -372,16 +364,16 @@ export class DominationOracle extends TacOracle {
   }
 
   /** The best workable point (not already ours at full strength) to head for:
-   *  routed travel distance × a load-balancing surplus multiplier. Distance is
+   *  routed travel distance × a load-balancing spread multiplier. Distance is
    *  `route().dist` through the nav graph on this bot's own team-congested metric
    *  (walls and stair climbs count, unlike a straight line); the multiplier (see
-   *  siteSurplusMult) pushes the bot off points our team already holds in force.
+   *  siteSpreadMult) pushes the bot off points teammates are already headed for.
    *  Straight-line only as a no-graph fallback; unreachable points rank last. Null
    *  when every point is already locked down. */
   private rankNearestSite(ai: AiContext, objs: readonly ObjectivePoint[]): ObjectivePoint | null {
     const nav = ai.nav;
     const from = nav ? nav.nearestWalkable(ai.world, this.pos, this.z) : -1;
-    const mult = this.siteSurplusMult(ai, objs);
+    const mult = this.siteSpreadMult(ai, objs);
     let best: ObjectivePoint | null = null;
     let bestCost = Infinity;
     for (let i = 0; i < objs.length; i++) {
@@ -405,22 +397,19 @@ export class DominationOracle extends TacOracle {
   }
 
   /** Per-site distance multiplier for load balancing, indexed like `objs`:
-   *  `1 + SURPLUS_PENALTY · max(0, ourCount − enemyCount − 1)`. Points our team
-   *  already holds past a winning margin get inflated (bots peel off); free,
-   *  contested, and enemy-pressed points stay at 1 (full value) — see
-   *  SURPLUS_PENALTY.
+   *  `1 + SPREAD_PENALTY · (teammates headed for it)`, so the team spreads across
+   *  the not-yet-ours points instead of piling on one.
    *
-   *  Counts are by INTENT, not raw position, the same way for both teams: a body on
-   *  a ring counts for that point; otherwise a bot counts for its committed target
-   *  site (a body crossing mid toward C is a body on C, not on the B it passes
-   *  through), and a human player counts for the point they're closest to. Self is
-   *  excluded: we're re-deciding our own slot. Because bots think in a fixed order
-   *  and a re-rank reads others' already-updated picks this same tick, bots released
-   *  together fan out instead of herding onto one point. */
-  private siteSurplusMult(ai: AiContext, objs: readonly ObjectivePoint[]): number[] {
+   *  Teammates are counted by INTENT, not raw position: a body on a ring counts for
+   *  that point; otherwise a bot counts for its committed target site (a body
+   *  crossing mid toward C is a body on C, not on the B it passes through), and a
+   *  human player counts for the point they're closest to. Self is excluded: we're
+   *  re-deciding our own slot. Because bots think in a fixed order and a re-rank
+   *  reads teammates' already-updated picks this same tick, bots released together
+   *  fan out instead of herding onto one point. */
+  private siteSpreadMult(ai: AiContext, objs: readonly ObjectivePoint[]): number[] {
     const n = objs.length;
     const ours = new Array<number>(n).fill(0);
-    const enemy = new Array<number>(n).fill(0);
     for (const c of ai.characters) {
       if (c === this || c.hp <= 0 || c.team !== this.team) continue;
       const ring = this.ringIndexAt(c.pos, c.z, objs);
@@ -430,18 +419,8 @@ export class DominationOracle extends TacOracle {
         : this.nearestSiteIndex(ai, c.pos, c.z, objs); // player: closest site
       if (idx >= 0) ours[idx]++;
     }
-    for (const e of this.hostiles(ai)) {
-      const ring = this.ringIndexAt(e.pos, e.z, objs);
-      const idx =
-        ring >= 0 ? ring
-        : e instanceof DominationOracle ? this.choiceIndex(e.siteChoice, objs)
-        : this.nearestSiteIndex(ai, e.pos, e.z, objs); // enemy player: closest site
-      if (idx >= 0) enemy[idx]++;
-    }
     const mult = new Array<number>(n);
-    for (let i = 0; i < n; i++) {
-      mult[i] = 1 + SURPLUS_PENALTY * Math.max(0, ours[i] - enemy[i] - 1);
-    }
+    for (let i = 0; i < n; i++) mult[i] = 1 + SPREAD_PENALTY * ours[i];
     return mult;
   }
 
