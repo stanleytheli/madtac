@@ -57,12 +57,48 @@ const HOLD_MAX = 8 * 60;
  *  brewing, hold); beyond it the bot is more useful working another point. */
 const HOLD_MAX_SAFE_DIST = 500;
 
-/** How often (ticks) bestChase re-runs the routed site ranking. bestChase is
- *  called every tick, but the nav queries behind the ranking are far too costly
- *  to pay per tick and the pick barely moves over a third of a second — so cache
- *  it this long, re-resolving the cached point against the rebuilt objective list
- *  in between (and re-ranking early the moment it's captured/gone). */
-const SITE_EVAL_TICKS = 20;
+/** Once a bot commits to a target site it can't switch for at least this long
+ *  (ticks, 60/s → 10s), unless the site is captured out from under it — see
+ *  bestChase. Two comparably-distant workable points (e.g. house-3's B up the
+ *  stairs vs. C across the map) otherwise sit near the routed-distance tie line,
+ *  and the per-tick argmin chatters between them: the bot stalls at the boundary,
+ *  reversing course every re-rank, never committing to either. A hard dwell ends
+ *  that — pick one, go. Doubles as the re-rank cadence (routing runs only on
+ *  (re)commit), so it's cheaper than the old fixed cadence too. */
+const SITE_COMMIT_TICKS = 10 * 60;
+
+/** Load-balancing smoothing (a pseudo-count, in team-fraction units). A site's
+ *  routed distance is multiplied by (ourShare + a)/(enemyShare + a): > 1 where our
+ *  team already crowds it (spread out), < 1 where the enemy presses and we're thin
+ *  (go contest), ≈ 1 for a free or evenly-matched point. Small a → shares dominate
+ *  (hard spread); large a → distance dominates. Shares are team-FRACTIONS and the
+ *  weight is DIMENSIONLESS, so the pick is invariant to team size and to scaling
+ *  every map distance by a constant. */
+/** Load balancing. Our bodies on a point beyond a WINNING MARGIN — one more than
+ *  the enemy present — are SURPLUS: the point is already ours to take, so piling on
+ *  more of us is wasted. Each surplus body multiplies that point's routed distance
+ *  by this, so bots peel off over-garrisoned points toward ones that still need
+ *  bodies. ONLY over-garrison repels — a free point, an evenly contested one, or
+ *  one the enemy is taking all read as full value (distance alone); the sole
+ *  low-value state is "we already hold it in force with nobody contesting" (e.g. 3
+ *  of us, 0 of them). Enemy presence PROTECTS our bodies from counting as surplus
+ *  (3 v 3 is needed to hold, not wasted).
+ *
+ *  Deliberately COUNTS, not fractions: one net body captures, so a point never
+ *  needs more than enemy+1 no matter the team size — that fixed margin, not a
+ *  team-fraction, is the size-independent quantity. The multiplier is
+ *  dimensionless, so the pick is unchanged if every map distance is scaled. */
+const SURPLUS_PENALTY = 1;
+
+/** Longest an objective bot will chase/fight an enemy that ISN'T on or contesting
+ *  a site (ticks, 60/s → 3s) before breaking off. Enemies on a point are always
+ *  worth fighting; enemies loitering in open ground just drag the bot off the
+ *  objective, so cap the pursuit. */
+const PURSUE_MAX = 3 * 60;
+/** After breaking off, ignore off-site enemies for this long (ticks → 4s) and
+ *  commit to the objective, so a followed bot doesn't instantly re-lock the same
+ *  runner and pursue it again. An enemy that steps onto a site is still engaged. */
+const PURSUE_COOLDOWN = 4 * 60;
 
 export class DominationOracle extends TacOracle {
   /** A throwaway waypoint (never in the world/roster) parked on the target
@@ -81,12 +117,20 @@ export class DominationOracle extends TacOracle {
    *  lapses or the bot leaves the ring. */
   private secureTicks = 0;
 
-  /** The site bestChase last committed to (pos+level), and the countdown to the
-   *  next routed re-rank. bestChase runs every tick; the nav ranking behind it
-   *  does not — see SITE_EVAL_TICKS. Between refreshes the cached point is
-   *  re-resolved against the rebuilt objective list, so it stays a live point. */
+  /** The site bestChase committed to (pos+level), the ticks left on its 10s lock,
+   *  and whether it was already ours when we committed. The last one distinguishes
+   *  "went to capture a point and it flipped to us" (the early-release event) from
+   *  "chose an already-ours point to reinforce" (no capture event to release on).
+   *  See SITE_COMMIT_TICKS / bestChase / committedSite. */
   private siteChoice: { pos: Vec2; z: number } | null = null;
-  private siteEvalIn = 0;
+  private siteCommitIn = 0;
+  private siteWasOurs = false;
+
+  /** Pursuit leash (see selectTarget / PURSUE_MAX): consecutive ticks spent
+   *  chasing an off-site enemy, and the cooldown after breaking one off during
+   *  which off-site enemies are ignored so the bot commits back to the objective. */
+  private pursueTicks = 0;
+  private pursueCooldown = 0;
 
   /** Objective holds run on their own clock — the HOLD_MAX vigil in wantsHold,
    *  which only fires once the point is won AND quiet. A defender must NOT abandon
@@ -108,6 +152,48 @@ export class DominationOracle extends TacOracle {
    *  short and hovering just off the node. */
   protected override standoffFor(chase: Character): number {
     return chase === this.objMarker ? 0 : super.standoffFor(chase);
+  }
+
+  /** Leash the base's target picker to the objective: an enemy that's ON or
+   *  contesting a site is always fair game, but one loitering in open ground is
+   *  only chased for PURSUE_MAX before we break off (and then ignore off-site
+   *  enemies for PURSUE_COOLDOWN, committing back to the point). Dropping the
+   *  target AND the remembered focus is what actually ends the pursuit — `act`
+   *  chases `target ?? focus ?? bestChase`, so with both cleared it falls to the
+   *  objective. On-site enemies never trip the leash, so defending/capturing
+   *  firefights are untouched; only the "chase a runner across the map" case is. */
+  protected override selectTarget(ai: AiContext): Character | null {
+    const t = super.selectTarget(ai);
+    const offSite = t !== null && !this.nearAnySite(ai, t);
+    if (this.pursueCooldown > 0) {
+      this.pursueCooldown -= 1;
+      this.pursueTicks = 0;
+      if (offSite) {
+        this.focus = null;
+        return null;
+      }
+      return t; // an enemy that reached a site is worth engaging again
+    }
+    if (!offSite) {
+      this.pursueTicks = 0;
+      return t;
+    }
+    this.pursueTicks += 1;
+    if (this.pursueTicks < PURSUE_MAX) return t;
+    this.pursueTicks = 0;
+    this.pursueCooldown = PURSUE_COOLDOWN;
+    this.focus = null;
+    return null;
+  }
+
+  /** Is `e` on or contesting any capture point — within a ring plus the contest
+   *  pad, the same reach the site logic uses? Off that, it's an open-ground runner
+   *  the pursuit leash caps chasing. */
+  private nearAnySite(ai: AiContext, e: Character): boolean {
+    for (const o of ai.objectives ?? []) {
+      if (o.z === e.z && dist(e.pos, o.pos) <= o.radius + CONTEST_PAD) return true;
+    }
+    return false;
   }
 
   /** Bias combat maneuvering toward the nearest point that still needs work when
@@ -235,18 +321,22 @@ export class DominationOracle extends TacOracle {
     const objs = ai.objectives;
     if (!objs || objs.length === 0) return super.bestChase(ai);
 
-    // The nearest workable point BY TRAVEL DISTANCE — routed through the nav
-    // graph, so a point a floor up behind a stair climb isn't judged "close" by a
-    // straight line that ignores the detour. bestChase runs every tick but the
-    // ranking's nav queries are far too costly to; the pick is cached
-    // (SITE_EVAL_TICKS), re-resolved against this tick's rebuilt objective list in
-    // between, and re-ranked early the moment the cached point is captured/gone.
-    this.siteEvalIn -= 1;
-    let best = this.resolveChoice(objs);
-    if (!best || this.siteEvalIn <= 0) {
+    // Stick with the committed site for its 10s lock, then re-rank. The pick is
+    // the nearest workable point BY TRAVEL DISTANCE — routed through the nav graph
+    // (so a point up a stair climb isn't judged "close" by a straight line that
+    // ignores the detour). Committing hard past the routed-distance tie line is
+    // what stops the boundary chatter (see SITE_COMMIT_TICKS); the lock also means
+    // the costly ranking runs only on (re)commit, not every tick.
+    this.siteCommitIn -= 1;
+    const held = this.committedSite(objs);
+    let best: ObjectivePoint | null;
+    if (held && this.siteCommitIn > 0) {
+      best = held; // locked in — no re-rank, no switching
+    } else {
       best = this.rankNearestSite(ai, objs);
       this.siteChoice = best ? { pos: best.pos, z: best.z } : null;
-      this.siteEvalIn = SITE_EVAL_TICKS;
+      this.siteWasOurs = best ? best.owner === this.team : false;
+      this.siteCommitIn = SITE_COMMIT_TICKS;
     }
     if (!best) return super.bestChase(ai); // we own it all — go hunt/defend
 
@@ -281,18 +371,21 @@ export class DominationOracle extends TacOracle {
     return m;
   }
 
-  /** The workable point (not already ours at full strength) nearest by ACTUAL
-   *  travel distance — `route().dist` through the nav graph, so walls and stair
-   *  climbs to another z count, unlike a straight line. Ranks on this bot's own
-   *  team-congested metric (the cost it will really pay). Falls back to
-   *  straight-line only with no nav graph or a nodeless endpoint; unreachable
-   *  points rank last. Null when every point is already locked down. */
+  /** The best workable point (not already ours at full strength) to head for:
+   *  routed travel distance × a load-balancing surplus multiplier. Distance is
+   *  `route().dist` through the nav graph on this bot's own team-congested metric
+   *  (walls and stair climbs count, unlike a straight line); the multiplier (see
+   *  siteSurplusMult) pushes the bot off points our team already holds in force.
+   *  Straight-line only as a no-graph fallback; unreachable points rank last. Null
+   *  when every point is already locked down. */
   private rankNearestSite(ai: AiContext, objs: readonly ObjectivePoint[]): ObjectivePoint | null {
     const nav = ai.nav;
     const from = nav ? nav.nearestWalkable(ai.world, this.pos, this.z) : -1;
+    const mult = this.siteSurplusMult(ai, objs);
     let best: ObjectivePoint | null = null;
-    let bestD = Infinity;
-    for (const o of objs) {
+    let bestCost = Infinity;
+    for (let i = 0; i < objs.length; i++) {
+      const o = objs[i];
       if (o.owner === this.team && o.progress >= 2) continue; // already ours, fully locked
       let d: number;
       if (nav && from >= 0) {
@@ -302,37 +395,136 @@ export class DominationOracle extends TacOracle {
       } else {
         d = dist(this.pos, o.pos); // no graph / no start node: best effort
       }
-      if (d < bestD) {
-        bestD = d;
+      const cost = d * mult[i];
+      if (cost < bestCost) {
+        bestCost = cost;
         best = o;
       }
     }
     return best;
   }
 
-  /** Re-resolve the cached site pick against this tick's rebuilt objective list,
-   *  or null if it's gone or has since been locked down (which forces a fresh
-   *  routed rank in bestChase). */
-  private resolveChoice(objs: readonly ObjectivePoint[]): ObjectivePoint | null {
+  /** Per-site distance multiplier for load balancing, indexed like `objs`:
+   *  `1 + SURPLUS_PENALTY · max(0, ourCount − enemyCount − 1)`. Points our team
+   *  already holds past a winning margin get inflated (bots peel off); free,
+   *  contested, and enemy-pressed points stay at 1 (full value) — see
+   *  SURPLUS_PENALTY.
+   *
+   *  Counts are by INTENT, not raw position, the same way for both teams: a body on
+   *  a ring counts for that point; otherwise a bot counts for its committed target
+   *  site (a body crossing mid toward C is a body on C, not on the B it passes
+   *  through), and a human player counts for the point they're closest to. Self is
+   *  excluded: we're re-deciding our own slot. Because bots think in a fixed order
+   *  and a re-rank reads others' already-updated picks this same tick, bots released
+   *  together fan out instead of herding onto one point. */
+  private siteSurplusMult(ai: AiContext, objs: readonly ObjectivePoint[]): number[] {
+    const n = objs.length;
+    const ours = new Array<number>(n).fill(0);
+    const enemy = new Array<number>(n).fill(0);
+    for (const c of ai.characters) {
+      if (c === this || c.hp <= 0 || c.team !== this.team) continue;
+      const ring = this.ringIndexAt(c.pos, c.z, objs);
+      const idx =
+        ring >= 0 ? ring
+        : c instanceof DominationOracle ? this.choiceIndex(c.siteChoice, objs)
+        : this.nearestSiteIndex(ai, c.pos, c.z, objs); // player: closest site
+      if (idx >= 0) ours[idx]++;
+    }
+    for (const e of this.hostiles(ai)) {
+      const ring = this.ringIndexAt(e.pos, e.z, objs);
+      const idx =
+        ring >= 0 ? ring
+        : e instanceof DominationOracle ? this.choiceIndex(e.siteChoice, objs)
+        : this.nearestSiteIndex(ai, e.pos, e.z, objs); // enemy player: closest site
+      if (idx >= 0) enemy[idx]++;
+    }
+    const mult = new Array<number>(n);
+    for (let i = 0; i < n; i++) {
+      mult[i] = 1 + SURPLUS_PENALTY * Math.max(0, ours[i] - enemy[i] - 1);
+    }
+    return mult;
+  }
+
+  /** Index in `objs` of the ring `(pos, z)` sits inside, or -1. */
+  private ringIndexAt(pos: Vec2, z: number, objs: readonly ObjectivePoint[]): number {
+    for (let i = 0; i < objs.length; i++) {
+      if (objs[i].z === z && dist(pos, objs[i].pos) <= objs[i].radius) return i;
+    }
+    return -1;
+  }
+
+  /** Index in `objs` matching a committed site ref, or -1 (uncommitted / gone). */
+  private choiceIndex(c: { pos: Vec2; z: number } | null, objs: readonly ObjectivePoint[]): number {
+    if (!c) return -1;
+    for (let i = 0; i < objs.length; i++) {
+      if (objs[i].z === c.z && dist(objs[i].pos, c.pos) < 1) return i;
+    }
+    return -1;
+  }
+
+  /** Index in `objs` of the point nearest `(pos, z)` by route (plain metric — this
+   *  estimates where an OTHER body is effectively headed, not our own cost), or -1.
+   *  Uses the geometrically-nearest node as the start (cheap; no walkable march). */
+  private nearestSiteIndex(ai: AiContext, pos: Vec2, z: number, objs: readonly ObjectivePoint[]): number {
+    const nav = ai.nav;
+    const from = nav ? this.nearestNodeId(ai, pos, z) : -1;
+    let bi = -1;
+    let bd = Infinity;
+    for (let i = 0; i < objs.length; i++) {
+      let d: number;
+      if (nav && from >= 0) {
+        const to = this.siteNode(ai, objs[i]);
+        const r = to >= 0 ? nav.route(from, to) : null;
+        d = r ? r.dist : Infinity;
+      } else {
+        d = dist(pos, objs[i].pos);
+      }
+      if (d < bd) {
+        bd = d;
+        bi = i;
+      }
+    }
+    return bi;
+  }
+
+  /** The committed site re-resolved against this tick's rebuilt objective list, or
+   *  null to release the lock and force a fresh routed rank. The lock is released
+   *  early ONLY by the target being captured by our team — the one "something
+   *  happened" event: `owner` flips to us on a point that wasn't ours when we
+   *  committed (a point starts owned by whoever holds it, so owner === team ⇒ we
+   *  control it). A point we deliberately chose while it was already ours has no
+   *  such capture event, so it just serves out the dwell (until fully locked, when
+   *  there's nothing left to do there either). Otherwise the lock holds — an enemy
+   *  contesting or taking the point does NOT free us, we still want to go fight for
+   *  it. */
+  private committedSite(objs: readonly ObjectivePoint[]): ObjectivePoint | null {
     const c = this.siteChoice;
     if (!c) return null;
     for (const o of objs) {
-      if (o.z === c.z && dist(o.pos, c.pos) < 1) {
-        return o.owner === this.team && o.progress >= 2 ? null : o;
-      }
+      if (o.z !== c.z || dist(o.pos, c.pos) >= 1) continue;
+      if (o.owner === this.team && !this.siteWasOurs) return null; // we captured it
+      if (o.owner === this.team && o.progress >= 2) return null; // reinforced to fully locked
+      return o;
     }
-    return null;
+    return null; // vanished from the list (shouldn't happen mid-match)
   }
 
   /** The nav node id nearest `pt`'s centre on its level, or -1 if the graph has
    *  no node there. Routing needs a real graph node as an endpoint, and the point
    *  centre itself can sit in a wall with no node on it. */
   private siteNode(ai: AiContext, pt: ObjectivePoint): number {
+    return this.nearestNodeId(ai, pt.pos, pt.z);
+  }
+
+  /** The nav node id nearest `(pos, z)` by straight line (no walkable march — this
+   *  is just an endpoint for a route estimate), or -1 if the graph has no node on
+   *  that level. */
+  private nearestNodeId(ai: AiContext, pos: Vec2, z: number): number {
     let bestId = -1;
     let bestD = Infinity;
     for (const n of ai.nav?.nodes ?? []) {
-      if (n.z !== pt.z) continue;
-      const d = dist(n.pos, pt.pos);
+      if (n.z !== z) continue;
+      const d = dist(n.pos, pos);
       if (d < bestD) {
         bestD = d;
         bestId = n.id;

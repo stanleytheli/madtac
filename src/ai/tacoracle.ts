@@ -459,7 +459,7 @@ export class TacOracle extends Oracle {
   private clickIn = 0;
   /** The hostile it's currently locked onto (kept across short sight losses —
    *  see FOCUS_MEMORY), and the reselection timer. */
-  private focus: Character | null = null;
+  protected focus: Character | null = null;
   private targetEvalIn = 0;
   /** Cached route-nearest hostile for blind navigation (see bestChase). */
   private chaseCache: Character | null = null;
