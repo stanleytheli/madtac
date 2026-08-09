@@ -14,7 +14,11 @@ import { makeTroop } from "../ai/enemies.ts";
 import type { TeamConfig } from "../world/level.ts";
 import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
 import { TEAMS, areHostile } from "../entities/team.ts";
+import { KILLFEED_MAX } from "./gamemode.ts";
 import type { GameCtx, Gamemode, GamemodeHud, PlayerLoadout, PlayerRow, TeamScore } from "./gamemode.ts";
+
+/** Kill-feed distance scale: how many world px make one displayed meter. */
+const PX_PER_METER = 50;
 
 /** Config common to every team match. Modes add their own win parameter
  *  (killLimit, ticket count, …) on top. */
@@ -197,6 +201,10 @@ export abstract class TeamMatchMode implements Gamemode {
   protected queue: RespawnSlot[] = [];
   /** The player's identity, kept for the respawn-screen loadout dropdown. */
   protected playerAgent: Agent | null = null;
+
+  /** The player's most recent death (killer / weapon / range), to headline the
+   *  respawn screen. Null until they first go down; reset each match in start(). */
+  private playerDeath: { killerName: string; gunName: string | null; meters: number } | null = null;
   /** Character -> its Agent, kept even after the character dies, so a kill that
    *  lands after the shooter died/respawned still credits the right agent. */
   protected charAgent = new WeakMap<Character, Agent>();
@@ -216,6 +224,7 @@ export abstract class TeamMatchMode implements Gamemode {
     this.phase = "playing";
     this.agents = [];
     this.queue = [];
+    this.playerDeath = null;
     this.charAgent = new WeakMap();
 
     const names = shuffle(NAMES.slice());
@@ -372,6 +381,28 @@ export abstract class TeamMatchMode implements Gamemode {
     const killer = attacker ? this.charAgent.get(attacker) : undefined;
     if (killer && killer !== victim && areHostile(attacker!.team, dead.team)) killer.kills += 1;
 
+    // Kill feed: any kill the local player is part of — as the killer (enemies AND
+    // team kills) or as the victim — but never a self-kill (no one to name). Newest
+    // on top (unshift); the Game ages them out and a 5th kill evicts the oldest.
+    if (attacker && killer && killer !== victim && (attacker === ctx.player || dead === ctx.player)) {
+      const meters = Math.hypot(attacker.pos.x - dead.pos.x, attacker.pos.y - dead.pos.y) / PX_PER_METER;
+      ctx.killFeed.unshift({
+        killerName: killer.name,
+        killerColor: TEAMS[killer.team].color,
+        victimName: victim.name,
+        victimColor: TEAMS[victim.team].color,
+        gun: dead.lastAttackerGun,
+        meters,
+        age: 0,
+      });
+      if (ctx.killFeed.length > KILLFEED_MAX) ctx.killFeed.length = KILLFEED_MAX;
+
+      // When it's the player who went down, headline the respawn screen with it.
+      if (dead === ctx.player) {
+        this.playerDeath = { killerName: killer.name, gunName: dead.lastAttackerGun?.name ?? null, meters };
+      }
+    }
+
     this.afterDeath(victim, ctx); // subclass may end the match (TDM: killLimit)
     if (this.matchOver) return;
     this.queue.push({ agent: victim, at: ctx.tick + this.cfg.respawnDelay, diedAt: ctx.tick });
@@ -423,6 +454,11 @@ export abstract class TeamMatchMode implements Gamemode {
       over: this.matchOver,
       players,
       choosingLoadout,
+      deathTitle: this.playerDeath
+        ? `Killed by ${this.playerDeath.killerName}` +
+          (this.playerDeath.gunName ? ` using ${this.playerDeath.gunName}` : "") +
+          ` at ${this.playerDeath.meters.toFixed(1)} meters`
+        : undefined,
       loadout: this.playerAgent?.loadout,
       randomLoadout: !!this.playerAgent?.random,
       respawnIn: choosingLoadout ? (this.respawnIn(ctx) ?? 0) : undefined,

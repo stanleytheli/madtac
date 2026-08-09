@@ -194,6 +194,36 @@ export function outlinedIcon(img: HTMLImageElement, scale: number): HTMLCanvasEl
   return out;
 }
 
+// Flat-white silhouettes, cached per source image. The kill feed draws a gun's
+// icon as a monochrome glyph — same alpha-keyed 'source-in' fill outlinedIcon
+// uses for its ring, minus the ring and the colored sprite on top.
+const whiteCache = new WeakMap<HTMLImageElement, HTMLCanvasElement>();
+
+/**
+ * A copy of `img` filled flat white over the sprite's exact alpha shape — its
+ * silhouette. Returns null until the image has decoded. Cached, so repeated HUD
+ * draws are a single blit.
+ */
+export function whiteIcon(img: HTMLImageElement): HTMLCanvasElement | null {
+  if (!img.complete || img.naturalWidth === 0) return null;
+  const hit = whiteCache.get(img);
+  if (hit) return hit;
+
+  const w = img.naturalWidth;
+  const h = img.naturalHeight;
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const oc = out.getContext("2d")!;
+  oc.drawImage(img, 0, 0);
+  oc.globalCompositeOperation = "source-in";
+  oc.fillStyle = "#fff";
+  oc.fillRect(0, 0, w, h);
+
+  whiteCache.set(img, out);
+  return out;
+}
+
 const ICON_SIZE = 72; // world px for the icon's longer side
 const ICON_ROT = -Math.PI / 4; // drawn rotated 45° counter-clockwise
 const ICON_SCALE = 0.5; // sprite -> world px scale for ground icons

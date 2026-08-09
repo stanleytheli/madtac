@@ -18,7 +18,7 @@ import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
 import { startingUtilities } from "./entities/consumable.ts";
 import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsObstacle } from "./engine/collision.ts";
-import type { GameCtx, Gamemode, PlayerLoadout } from "./gamemodes/gamemode.ts";
+import { KILLFEED_TTL, type GameCtx, type Gamemode, type KillFeedEntry, type PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
 import { isDown, mouse, moveAxis, pointer } from "./engine/input.ts";
@@ -98,6 +98,11 @@ export class Game implements GameCtx {
   /** Recent FRIENDLY death locations (non-hostile to the player), for the minimap
    *  X's. Appended in reapDead, aged + pruned in despawnStale, cleared on reset. */
   readonly minimapDeaths: DeathMark[] = [];
+
+  /** The local player's recent-kills feed (the stacked bars above the ammo). The
+   *  gamemode unshifts a credited player kill (newest first); despawnStale ages
+   *  them and drops any past KILLFEED_TTL; cleared on reset. */
+  readonly killFeed: KillFeedEntry[] = [];
 
   /** Ground items the level shipped with — restored on reset so death-drops
    *  from a finished match don't pile up across restarts. */
@@ -186,6 +191,7 @@ export class Game implements GameCtx {
     this.world.items.length = 0;
     this.world.items.push(...this.initialItems);
     this.minimapDeaths.length = 0;
+    this.killFeed.length = 0;
 
     // Rebuild vehicles fresh from the authored transforms (drops any occupants,
     // restores positions), then apply each one's footprint to the CCH — a first
@@ -711,6 +717,10 @@ export class Game implements GameCtx {
     // Age + prune the minimap's recent-death marks.
     for (let i = this.minimapDeaths.length - 1; i >= 0; i--) {
       if (++this.minimapDeaths[i].age > MINIMAP_DEATH_TTL) this.minimapDeaths.splice(i, 1);
+    }
+    // Age + prune the kill feed (the count cap is enforced at push time).
+    for (let i = this.killFeed.length - 1; i >= 0; i--) {
+      if (++this.killFeed[i].age > KILLFEED_TTL) this.killFeed.splice(i, 1);
     }
   }
 

@@ -5,9 +5,9 @@
 
 import type { Character } from "../entities/actor.ts";
 import type { Armor } from "../entities/armor.ts";
-import type { GamemodeHud, PlayerRow } from "../gamemodes/gamemode.ts";
+import { KILLFEED_TTL, type GamemodeHud, type KillFeedEntry, type PlayerRow } from "../gamemodes/gamemode.ts";
 import type { Gun } from "../entities/gun.ts";
-import { armorIcon, assetImage, gunIcon, OUTLINE_PX, outlinedIcon, utilityIcon } from "../entities/item.ts";
+import { armorIcon, assetImage, gunIcon, OUTLINE_PX, outlinedIcon, utilityIcon, whiteIcon } from "../entities/item.ts";
 import { Minimap, type DeathMark } from "./minimap.ts";
 import type { Vec2 } from "../engine/vec.ts";
 
@@ -275,6 +275,8 @@ export interface HudOptions {
   gamemode?: GamemodeHud;
   /** Whether to show the full K/D player list (Tab held). */
   showScoreboard?: boolean;
+  /** The local player's recent-kills feed (newest first), stacked above the ammo. */
+  killFeed?: readonly KillFeedEntry[];
   /** Bottom-left minimap (built once at load), plus the live roster + recent
    *  friendly deaths it overlays. Undefined in the editor / when unavailable. */
   minimap?: Minimap;
@@ -321,6 +323,10 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
     drawKeyPrompt(ctx, promptX, promptY, "X", cancelLabel);
   }
 
+  // Kill feed: bars centered horizontally, stacked below the interaction prompts
+  // and above the bottom-center ammo. Newest on top; older bars sit below it.
+  if (o.killFeed && o.killFeed.length) drawKillFeed(ctx, o.killFeed, w, center.y + 200);
+
   // Bottom block, stacked upward: health bar, then the armor bar (only when worn),
   // then the ammo readout above whichever bar is topmost.
   const BAR_GAP = 5;
@@ -366,66 +372,163 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
 }
 
 /**
- * The Tab scoreboard: a centered panel listing every combatant's callsign and
- * K/D, grouped by team (blue then red) and ranked by kills. The human's own row
+ * The Tab scoreboard: a centered panel with one column per team, each listing
+ * that team's combatants' callsigns and K/D ranked by kills. The human's own row
  * is highlighted. Drawn in logical HUD units.
  */
 function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: number, h: number): void {
-  const rows = [...players].sort((a, b) => {
-    if (a.team !== b.team) return a.team < b.team ? -1 : 1; // blue before red
-    return b.kills - a.kills;
-  });
+  // Distinct teams in stable order (blue before red), each ranked by kills.
+  const teams = [...new Set(players.map((p) => p.team))].sort((a, b) => (a < b ? -1 : 1));
+  const cols = teams.map((team) => ({
+    team,
+    color: players.find((p) => p.team === team)?.color ?? "#d7dbe2",
+    rows: players.filter((p) => p.team === team).sort((a, b) => b.kills - a.kills),
+  }));
 
-  const PANEL_W = 460;
+  const COL_W = 300;
+  const COL_GAP = 20;
+  const PAD = 12; // panel edge padding around the columns
   const ROW_H = 26;
   const HEAD_H = 40;
-  const panelH = HEAD_H + rows.length * ROW_H + 14;
+  const maxRows = cols.reduce((m, c) => Math.max(m, c.rows.length), 0);
+
+  const PANEL_W = PAD * 2 + cols.length * COL_W + (cols.length - 1) * COL_GAP;
+  const panelH = HEAD_H + maxRows * ROW_H + 14;
   const x = (w - PANEL_W) / 2;
   const y = (h - panelH) / 2;
 
   fillSquircle(ctx, x, y, PANEL_W, panelH, 0, "rgba(0,0,0,0.78)");
 
+  ctx.textBaseline = "middle";
   const padX = 22;
-  const kCol = x + PANEL_W - 130;
-  const dCol = x + PANEL_W - 60;
 
+  cols.forEach((col, ci) => {
+    const cx = x + PAD + ci * (COL_W + COL_GAP);
+    const kCol = cx + COL_W - 130;
+    const dCol = cx + COL_W - 60;
+
+    // Column header: team name (in team color) + K / D labels.
+    ctx.textAlign = "left";
+    ctx.fillStyle = col.color;
+    ctx.font = uiFont("bold 13px");
+    ctx.fillText(col.team.toUpperCase(), cx + padX, y + 20);
+    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.textAlign = "right";
+    ctx.fillText("K", kCol + 14, y + 20);
+    ctx.fillText("D", dCol + 14, y + 20);
+
+    let ry = y + HEAD_H + ROW_H / 2;
+    let i = 0;
+    for (const r of col.rows) {
+      if (r.isPlayer) {
+        fillSquircle(ctx, cx + 8, ry - ROW_H / 2 + 2, COL_W - 16, ROW_H - 4, 0, "rgba(255,255,255,0.10)");
+      }
+      if (i % 2 == 0) {
+        fillSquircle(ctx, cx + 8, ry - ROW_H / 2, COL_W - 16, ROW_H, 0, "rgba(255,255,255,0.05)");
+      }
+
+      // Team color dot + name.
+      ctx.fillStyle = r.color;
+      ctx.beginPath();
+      ctx.arc(cx + padX + 5, ry, 5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.textAlign = "left";
+      ctx.fillStyle = r.isPlayer ? "#ffffff" : "#d7dbe2";
+      ctx.font = uiFont(`${r.isPlayer ? "bold " : ""}15px`);
+      ctx.fillText(r.isPlayer ? `${r.name} (you)` : r.name, cx + padX + 18, ry + 1);
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#d7dbe2";
+      ctx.font = uiFont("15px");
+      ctx.fillText(String(r.kills), kCol + 14, ry + 1);
+      ctx.fillText(String(r.deaths), dCol + 14, ry + 1);
+      ry += ROW_H;
+
+      i++;
+    }
+  });
+}
+
+/**
+ * The kill feed: one squircle bar per recent player kill, centered horizontally
+ * and stacked downward from `topY` with the newest on top. Each bar reads
+ * "killer  [white gun glyph]  victim  (N meters)". Bars fade out over their last
+ * moments before the Game prunes them. Drawn in logical HUD units.
+ */
+function drawKillFeed(
+  ctx: CanvasRenderingContext2D,
+  feed: readonly KillFeedEntry[],
+  w: number,
+  topY: number,
+): void {
+  const BAR_H = 30;
+  const GAP = 6;
+  const PAD_X = 14; // squircle inner horizontal padding
+  const ITEM_GAP = 10; // spacing between name / icon / name / distance
+  const ICON_MAX = 44; // gun glyph's longest side
+  const FADE_TICKS = 40; // fade window before a bar is pruned
+
+  const nameFont = uiFont("bold 15px");
+  const distFont = uiFont("13px");
+
+  ctx.save();
   ctx.textBaseline = "middle";
   ctx.textAlign = "left";
-  ctx.fillStyle = "rgba(255,255,255,0.55)";
-  ctx.font = uiFont("bold 13px");
-  ctx.fillText("SCOREBOARD", x + padX, y + 20);
-  ctx.textAlign = "right";
-  ctx.fillText("K", kCol + 14, y + 20);
-  ctx.fillText("D", dCol + 14, y + 20);
 
-  let ry = y + HEAD_H + ROW_H / 2;
-  let i = 0;
-  for (const r of rows) {
-    if (r.isPlayer) {
-      fillSquircle(ctx, x + 8, ry - ROW_H / 2 + 2, PANEL_W - 16, ROW_H - 4, 0, "rgba(255,255,255,0.10)");
+  feed.forEach((e, i) => {
+    // Measure the row so the squircle hugs its contents.
+    ctx.font = nameFont;
+    const killerW = ctx.measureText(e.killerName).width;
+    const victimW = ctx.measureText(e.victimName).width;
+    const distText = `(${e.meters.toFixed(1)}m)`;
+    ctx.font = distFont;
+    const distW = ctx.measureText(distText).width;
+
+    // Melee kills carry the fists spec (no gun icon), so show the hand glyph;
+    // ranged kills use the weapon's own icon. Both drawn as white silhouettes.
+    const img = e.gun ? (e.gun.melee ? assetImage("fists.svg") : gunIcon(e.gun)) : null;
+    const sprite = img ? whiteIcon(img) : null;
+    let iconW = 0;
+    let iconH = 0;
+    if (sprite) {
+      const k = ICON_MAX / Math.max(sprite.width, sprite.height);
+      iconW = sprite.width * k;
+      iconH = sprite.height * k;
     }
-    if (i % 2 == 0) {
-      fillSquircle(ctx, x + 8, ry - ROW_H / 2, PANEL_W - 16, ROW_H, 0, "rgba(255,255,255,0.05)");
-    }
-    
-    // Team color dot + name.
-    ctx.fillStyle = r.color;
-    ctx.beginPath();
-    ctx.arc(x + padX + 5, ry, 5, 0, Math.PI * 2);
-    ctx.fill();
+
+    const contentW = killerW + ITEM_GAP + iconW + ITEM_GAP + victimW + ITEM_GAP + distW;
+    const barW = contentW + PAD_X * 2;
+    const x = (w - barW) / 2;
+    const y = topY + i * (BAR_H + GAP);
+    const cy = y + BAR_H / 2;
+
+    // Fade the bar out over its final FADE_TICKS before the Game removes it.
+    ctx.globalAlpha = Math.max(0, Math.min(1, (KILLFEED_TTL - e.age) / FADE_TICKS));
+
+    fillSquircle(ctx, x, y, barW, BAR_H, 8, SQUIRCLE_BG);
+
+    let cursor = x + PAD_X;
     ctx.textAlign = "left";
-    ctx.fillStyle = r.isPlayer ? "#ffffff" : "#d7dbe2";
-    ctx.font = uiFont(`${r.isPlayer ? "bold " : ""}15px`);
-    ctx.fillText(r.isPlayer ? `${r.name} (you)` : r.name, x + padX + 18, ry + 1);
-    ctx.textAlign = "right";
-    ctx.fillStyle = "#d7dbe2";
-    ctx.font = uiFont("15px");
-    ctx.fillText(String(r.kills), kCol + 14, ry + 1);
-    ctx.fillText(String(r.deaths), dCol + 14, ry + 1);
-    ry += ROW_H;
+    ctx.font = nameFont;
+    ctx.fillStyle = e.killerColor;
+    ctx.fillText(e.killerName, cursor, cy + 1);
+    cursor += killerW + ITEM_GAP;
 
-    i++;
-  }
+    if (sprite) {
+      ctx.drawImage(sprite, cursor, cy - iconH / 2, iconW, iconH);
+      cursor += iconW + ITEM_GAP;
+    }
+
+    ctx.font = nameFont;
+    ctx.fillStyle = e.victimColor;
+    ctx.fillText(e.victimName, cursor, cy + 1);
+    cursor += victimW + ITEM_GAP;
+
+    ctx.font = distFont;
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
+    ctx.fillText(distText, cursor, cy + 1);
+  });
+
+  ctx.restore();
 }
 
 /**

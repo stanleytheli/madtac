@@ -79,6 +79,10 @@ export class Character {
    *  attribution — see gamemodes/tdm.ts K/D). Null if never shot. */
   lastAttacker: Hittable | null = null;
 
+  /** The gun spec behind the most recent damaging hit — read on death to label the
+   *  kill feed with the weapon used. Null if never shot, or shot by no gun. */
+  lastAttackerGun: GunSpec | null = null;
+
   /** Worn armor, or null. Soaks bullet damage and renders on the head (see draw). */
   armor: Armor | null = null;
 
@@ -520,9 +524,17 @@ export class Character {
    * dealing `damage`. (Armor mitigation will hook in here later.) The world
    * spawns the blood particle for the impact.
    */
-  registerHit(dir: Vec2, _point: Vec2, damage: number, armorPen: ArmorPen, attacker: Hittable | null = null): void {
+  registerHit(
+    dir: Vec2,
+    _point: Vec2,
+    damage: number,
+    armorPen: ArmorPen,
+    attacker: Hittable | null = null,
+    gun: GunSpec | null = null,
+  ): void {
     this.lastHitDir = dir;
     this.lastAttacker = attacker;
+    this.lastAttackerGun = gun;
 
     let toBody = damage;
     const armor = this.armor;

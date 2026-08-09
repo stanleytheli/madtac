@@ -958,6 +958,7 @@ function render(): void {
       interactableLabel: game.interactLabel(),
       gamemode: gh ?? undefined,
       showScoreboard: isDown("tab"),
+      killFeed: game.killFeed,
       minimap: minimap ?? undefined,
       characters,
       deaths: game.minimapDeaths,

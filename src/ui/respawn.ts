@@ -78,6 +78,7 @@ const RESPAWN_CSS = `
    is the only way to put the player list on top. */
 #respawn-panel.is-behind { display: none; }
 .rs-title { font: bold 30px system-ui, sans-serif; letter-spacing: 4px; text-align: center; color: #ff6b6b; }
+.rs-title.rs-title--detail { font-size: 19px; letter-spacing: 1px; }
 .rs-sub { text-align: center; letter-spacing: 1px; opacity: 0.5; margin-top: 3px; }
 
 /* Three side-by-side slot columns. Each scrolls on its own, so the action bar
@@ -218,7 +219,13 @@ export function buildRespawnMenu(
   panel.id = "respawn-panel";
 
   const head = document.createElement("div");
-  head.innerHTML = `<div class="rs-title">YOU DIED</div><div class="rs-sub">Pick your loadout</div>`;
+  const titleEl = document.createElement("div");
+  titleEl.className = "rs-title";
+  titleEl.textContent = "YOU DIED";
+  const subEl = document.createElement("div");
+  subEl.className = "rs-sub";
+  subEl.textContent = "Pick your loadout";
+  head.append(titleEl, subEl);
   panel.append(head);
 
   // The action bar's two buttons are built up front so `paint` can close over
@@ -364,6 +371,12 @@ export function buildRespawnMenu(
       picked.secondary = hud!.loadout?.secondary ?? "";
       picked.armor = hud!.loadout?.armor ?? "";
       random = !!hud!.randomLoadout;
+      // Headline the death with who/what/how-far, or the plain "YOU DIED" if we
+      // have no attacker on record. The detail line runs longer, so it drops to a
+      // smaller weight (rs-title--detail) to fit the panel.
+      const title = hud!.deathTitle;
+      titleEl.textContent = title ?? "YOU DIED";
+      titleEl.classList.toggle("rs-title--detail", !!title);
       paint();
       for (const slot of ["primary", "secondary", "armor"] as const) grids[slot].scrollTop = 0;
       respawnBtn.blur();

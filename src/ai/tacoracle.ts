@@ -80,7 +80,7 @@ import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, type Hittable } from "../world/world.ts";
-import type { ArmorPen } from "../entities/guns.ts";
+import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
 export const TAC_ORACLE_SKIN: Skin = {
@@ -907,8 +907,9 @@ export class TacOracle extends Oracle {
     damage: number,
     armorPen: ArmorPen,
     attacker: Hittable | null = null,
+    gun: GunSpec | null = null,
   ): void {
-    super.registerHit(dir, point, damage, armorPen, attacker);
+    super.registerHit(dir, point, damage, armorPen, attacker, gun);
     if (this.mode !== "hold" || damage <= 0) return;
     if (!(attacker instanceof Character) || !areHostile(this.team, attacker.team)) return;
     this.clearHold();

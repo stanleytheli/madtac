@@ -9,6 +9,7 @@
  * picks it at load.
  */
 import type { Character } from "../entities/actor.ts";
+import type { GunSpec } from "../entities/guns.ts";
 import type { ObjectivePoint } from "../ai/robot.ts";
 import type { Body } from "../entities/body.ts";
 import type { LevelMeta, LevelState } from "../world/level.ts";
@@ -20,6 +21,26 @@ import { SandboxMode } from "./sandbox.ts";
 import { TeamDeathmatchMode } from "./tdm.ts";
 import { DominationMode } from "./domination.ts";
 
+/** Seconds each kill-feed bar lives before it ages out (also see KILLFEED_MAX). */
+export const KILLFEED_TTL = 6 * 60; // 6 s at 60 tps
+/** Hard cap on visible kill-feed bars — a 5th kill evicts the oldest. */
+export const KILLFEED_MAX = 4;
+
+/** One line of the player's kill feed (the stacked bars above the ammo). Emitted
+ *  only for the local player's kills; the Game ages and prunes them. */
+export interface KillFeedEntry {
+  killerName: string;
+  killerColor: string;
+  victimName: string;
+  victimColor: string;
+  /** The gun that landed the fatal hit, drawn as a white glyph (null = none). */
+  gun: GunSpec | null;
+  /** Kill distance in meters (1 m = 50 px), pre-rounded for display. */
+  meters: number;
+  /** Ticks alive; the Game increments this and drops the entry past KILLFEED_TTL. */
+  age: number;
+}
+
 /** What a gamemode reads and drives, provided by the Game session. */
 export interface GameCtx {
   readonly world: World;
@@ -28,6 +49,9 @@ export interface GameCtx {
   readonly characters: Character[];
   readonly bodies: Body[];
   readonly player: Character;
+  /** The local player's recent-kills feed. Gamemodes push credited player kills;
+   *  the Game ages/caps them and the HUD renders the bars. */
+  readonly killFeed: KillFeedEntry[];
   /** The loaded level (spawnZones, playerSpawn, meta). */
   readonly level: LevelState;
   /** Ticks since the match (re)started. */
@@ -101,6 +125,9 @@ export interface GamemodeHud {
   /** The player is dead and picking their next kit — show the respawn screen
    *  (see setPlayerLoadout / requestRespawn). */
   choosingLoadout?: boolean;
+  /** Headline for the respawn screen — "Killed by X using Y at Z meters" for the
+   *  player's most recent death, or undefined to fall back to "YOU DIED". */
+  deathTitle?: string;
   /** The player's current chosen kit, to populate that menu. */
   loadout?: PlayerLoadout;
   /** The player is on "random" — their kit is rolled fresh each life instead of
