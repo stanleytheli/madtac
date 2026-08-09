@@ -160,6 +160,12 @@ export interface GunSpec {
    *  to `fire.reloadTime / 60` seconds so its final click lands on reload-complete.
    *  Omitted = silent reload. */
   reloadSound?: string;
+  /** "Fire-cycle" sound filename in /audio, played on every shot alongside the
+   *  gunshot — the bolt/pump action that cycles between shots on slow weapons.
+   *  Stretched to `fire.delay / 60` seconds (the time until the next shot), with
+   *  its LEADING silence preserved so the mechanical part lands the right beat
+   *  after the bang. Omitted = no cycle sound. */
+  cycleSound?: string;
   rightGrip: GripLocal;
   leftGrip: GripLocal;
 
@@ -279,6 +285,7 @@ export const M16: GunSpec = {
   //leftGrip: { f: 55, l: -12},
 
   fireSound: "Hk416_01.wav",
+  reloadSound: "Hk416_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
@@ -337,6 +344,7 @@ export const M4A1S: GunSpec = {
   //leftGrip: { f: 55, l: -12},
 
   fireSound: "M4a1_01.wav",
+  reloadSound: "Hk416_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 70, l : -6}, // 0
@@ -455,6 +463,9 @@ export const Scout: GunSpec = {
   leftGrip: { f: 65, l: -6 },
 
   fireSound: "Mosin_01.wav",
+  reloadSound: "Sv98_reload_01.wav",
+  cycleSound: "Blr_cycle_01.wav", // bolt cycle, fitted to fire.delay (80t / 60 = 1.33s)
+
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
@@ -537,6 +548,8 @@ export const AWM: GunSpec = {
   leftGrip: { f: 70, l: -6 },
 
   fireSound: "Barrett_01.wav",
+  reloadSound: "Sv98_reload_01.wav",
+  cycleSound: "Sv98_cycle_01.wav", // bolt cycle, fitted to fire.delay (90t / 60 = 1.5s)
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
@@ -621,6 +634,7 @@ export const MP220: GunSpec = {
   leftGrip: { f: 70, l: -6 },
 
   fireSound: "Mp220_01.wav",
+  reloadSound: "Mp220_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 70, l : -6}, // 0
@@ -693,6 +707,8 @@ export const Mossberg500: GunSpec = {
   leftGrip: { f: 80, l: -11 },
 
   fireSound: "M870_01.wav",
+  reloadSound: "M870_reload_01.wav",
+  cycleSound: "M870_cycle_01.wav", // pump action, fitted to fire.delay (45t / 60 = 0.75s)
 
   // One cycle = load a single shell: support hand dips to the shell belt and back
   // up to the loading port, over the reloadTime below.
@@ -761,6 +777,7 @@ export const M249: GunSpec = {
   muzzle: { f: 125, l: 0 },
 
   fireSound: "Qbb97_01.wav",
+  reloadSound: "M249_reload_01.wav",
 
   parts: [
     {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309", over: false},
@@ -845,6 +862,7 @@ export const RPG: GunSpec = {
   muzzle: { f: -60, l: 42 },
 
   fireSound: "Potato_smg_01.wav",
+  reloadSound: "rpg_reload.wav",
 
   parts: [
     { p0: { f: -35, l: 37 }, p1: { f: 57, l: 17 }, width: 14, color: "#643116", over: false },
@@ -914,6 +932,7 @@ export const M79: GunSpec = {
   leftGrip: { f: 65, l: -8 },
 
   fireSound: "Potato_cannon_01.wav",
+  reloadSound: "Flare_gun_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -8}, // 0
@@ -985,6 +1004,7 @@ export const Golden_M249: GunSpec = {
   muzzle: { f: 125, l: 0 },
 
   fireSound: "Qbb97_01.wav",
+  reloadSound: "M249_reload_01.wav",
 
   parts: [
     {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#330404", over: false},
@@ -1065,6 +1085,7 @@ export const M9: GunSpec = {
   //leftGrip: { f: 30, l: 10 },
 
   fireSound: "M9_01.wav",
+  reloadSound: "M9_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 55, l : -9}, // 0
@@ -1120,6 +1141,7 @@ export const Skorpion: GunSpec = {
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
   fireSound: "Glock_01.wav",
+  reloadSound: "Mp5_reload_01.wav",
 
 
   reloadAnim: {
@@ -1177,6 +1199,7 @@ export const Uzi: GunSpec = {
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
   fireSound: "Mp5_01.wav",
+  reloadSound: "Mp5_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 75, l : -9}, // 0
@@ -1231,6 +1254,7 @@ export const Colt44: GunSpec = {
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: -5 },
   fireSound: "Sw500_01.wav",
+  reloadSound: "Mosin_reload_01.wav",
 
   // One cycle = load a single shell: support hand dips to the shell belt and back
   // up to the loading port, over the reloadTime below.
@@ -1287,6 +1311,7 @@ export const USPS: GunSpec = {
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
   fireSound: "Ots38_01.wav",
+  reloadSound: "Mp5_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 60, l : 0}, // 0
@@ -1346,6 +1371,7 @@ export const Deagle: GunSpec = {
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
   fireSound: "Svd_01.wav",
+  reloadSound: "Deagle_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 60, l : 0}, // 0
@@ -1400,6 +1426,7 @@ export const Golden_Deagle: GunSpec = {
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
   fireSound: "Svd_01.wav",
+  reloadSound: "Deagle_reload_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 60, l : 0}, // 0

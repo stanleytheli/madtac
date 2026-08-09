@@ -58,6 +58,9 @@ export class Gun implements Droppable {
   mag = 0; // rounds currently in the magazine
   reserveMags = 0; // spare full magazines
   reloadTicks = 0; // ticks left in the current reload (0 = not reloading)
+  reloadPulse = false; // set the tick a reload cycle (re)starts; the holder reads
+                       // it to play the reload sound — fires once per shell on a
+                       // perBullet gun, so the holder clears it after reading.
 
   drawTicks = 0; // ticks left in drawing
 
@@ -181,6 +184,7 @@ export class Gun implements Droppable {
   startReload(): boolean {
     if (!this.canStartReload) return false;
     this.reloadTicks = this.spec.fire!.reloadTime;
+    this.reloadPulse = true; // first cycle begins
     // NB: deliberately does NOT clear fireCooldown. It used to, which is what made
     // reload-cancel a free way to skip the fire delay; canStartReload now
     // guarantees it's already 0 anyway.
@@ -190,6 +194,7 @@ export class Gun implements Droppable {
   /** Abort an in-progress reload without consuming a spare (e.g. on weapon switch). */
   cancelReload(): void {
     this.reloadTicks = 0;
+    this.reloadPulse = false; // drop a just-started cycle's pending sound
   }
 
   /**
@@ -204,7 +209,10 @@ export class Gun implements Droppable {
     if (f.perBullet) {
       this.mag += 1;
       this.reserveMags -= 1;
-      if (this.canReload) this.reloadTicks = f.reloadTime; // auto-cycle to the next round
+      if (this.canReload) {
+        this.reloadTicks = f.reloadTime; // auto-cycle to the next round
+        this.reloadPulse = true; // ...and it's a fresh shell, so sound it again
+      }
     } else {
       this.mag = f.magSize;
       this.reserveMags -= 1;
@@ -336,6 +344,11 @@ export class Gun implements Droppable {
     // positioned at the muzzle on the shooter's floor. Melee "fires" no sound.
     if (!this.spec.melee) {
       playSound(this.spec.fireSound ?? DEFAULT_FIRE_SOUND, { pos: origin, z: owner.z, pitchVar: 0.06 });
+    }
+    // The bolt/pump "action" that cycles between shots, fitted to fire.delay. No
+    // pitch wobble — it's synced to the delay, and pitching it would drift its end.
+    if (this.spec.cycleSound) {
+      playSound(this.spec.cycleSound, { pos: origin, z: owner.z });
     }
     const f = this.spec.fire!;
     // Project from the head center (not the muzzle) so shots can't originate past

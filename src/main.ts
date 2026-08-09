@@ -59,6 +59,7 @@ preload(DEFAULT_FIRE_SOUND);
 for (const spec of Object.values(GUN_SPECS)) {
   if (spec.fireSound) preload(spec.fireSound);
   if (spec.reloadSound) preload(spec.reloadSound);
+  if (spec.cycleSound) preload(spec.cycleSound);
   if (spec.projectile?.explosionSound) preload(spec.projectile.explosionSound);
 }
 window.addEventListener("keydown", unlockAudio);

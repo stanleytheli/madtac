@@ -421,13 +421,11 @@ export class Character {
     return out;
   }
 
-  /** Start reloading the equipped gun (no-op if full / no spare / already reloading). */
+  /** Start reloading the equipped gun (no-op if full / no spare / already reloading).
+   *  The reload sound is driven off the gun's reloadPulse in tickWeapon(), so it
+   *  covers both the first cycle and a perBullet gun's per-shell auto-cycles. */
   reload(): void {
-    // Play the reload sound only when one actually starts. No pitch wobble: the
-    // clip is length-matched to the reload, and pitching it would drift its end.
-    if (this.gun.startReload() && this.gun.spec.reloadSound) {
-      playSound(this.gun.spec.reloadSound, { pos: this.pos, z: this.z });
-    }
+    this.gun.startReload();
   }
 
   /** Abort whatever timed action is in progress — a utility use or a reload (incl.
@@ -485,6 +483,15 @@ export class Character {
   /** Per-tick recovery for the equipped gun (cooldown, flash, kick, spray reset). */
   tickWeapon(): void {
     this.gun.tick();
+    // A reload cycle (re)started this tick — play the reload sound. On a perBullet
+    // gun (pump shotgun) the gun's auto-cycle pulses this once per shell, so the
+    // clip repeats for each round loaded; on a normal gun it fires just once.
+    if (this.gun.reloadPulse) {
+      this.gun.reloadPulse = false;
+      if (this.gun.spec.reloadSound) {
+        playSound(this.gun.spec.reloadSound, { pos: this.pos, z: this.z });
+      }
+    }
   }
 
   /** Per-tick belt/status upkeep: advance a utility use (landing its effect and
