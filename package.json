@@ -4,6 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "fit-reloads": "node scripts/fit_reload_sounds.mts",
+    "predev": "node scripts/fit_reload_sounds.mts",
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview"

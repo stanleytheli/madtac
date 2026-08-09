@@ -13,6 +13,9 @@ import * as Guns from "./entities/guns.ts";
 import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
 import { LEVELS } from "./world/levels.ts";
 import { initInput, isDown, mouse } from "./engine/input.ts";
+import { preload, setListener, unlockAudio } from "./engine/audio.ts";
+import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
+import { GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
@@ -46,6 +49,20 @@ window.addEventListener("resize", resize);
 resize();
 
 initInput(canvas);
+
+// The browser keeps audio suspended until a user gesture, so unlock on the first
+// key/click (idempotent thereafter) and warm the default gunshot so shot one isn't
+// silent while it decodes.
+preload(DEFAULT_FIRE_SOUND);
+// Warm each weapon's fire + explosion sound (filenames live only on the specs) so
+// the first shot / detonation isn't silent while it decodes.
+for (const spec of Object.values(GUN_SPECS)) {
+  if (spec.fireSound) preload(spec.fireSound);
+  if (spec.reloadSound) preload(spec.reloadSound);
+  if (spec.projectile?.explosionSound) preload(spec.projectile.explosionSound);
+}
+window.addEventListener("keydown", unlockAudio);
+window.addEventListener("mousedown", unlockAudio);
 
 // ?edit=true boots the level editor instead of the game: no enemies or combat,
 // the player noclips, and the editor drives the camera + all world mutation.
@@ -763,6 +780,7 @@ function render(): void {
   // discriminator everywhere below — during a playtest both game and editor exist.
   const zoom = game ? camera.size : editor!.zoom;
   const camPos = player.pos; // camera centers on the player
+  setListener(camPos, player.z); // positional audio hears from where the camera sits
 
   // The enclosure cap: inside a sealed room (a bunker under its ceiling), the
   // world at the ceiling's level and above is hidden — background included.

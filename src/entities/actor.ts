@@ -6,6 +6,7 @@ import { Gun } from "./gun.ts";
 import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.ts";
 import { gunIcon, utilityIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, mid, perp, scale, scaleAlong, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { playSound } from "../engine/audio.ts";
 import type { Hittable, World } from "../world/world.ts";
 import type { Vehicle } from "./vehicle.ts";
 
@@ -422,7 +423,11 @@ export class Character {
 
   /** Start reloading the equipped gun (no-op if full / no spare / already reloading). */
   reload(): void {
-    this.gun.startReload();
+    // Play the reload sound only when one actually starts. No pitch wobble: the
+    // clip is length-matched to the reload, and pitching it would drift its end.
+    if (this.gun.startReload() && this.gun.spec.reloadSound) {
+      playSound(this.gun.spec.reloadSound, { pos: this.pos, z: this.z });
+    }
   }
 
   /** Abort whatever timed action is in progress — a utility use or a reload (incl.

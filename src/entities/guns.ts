@@ -87,6 +87,9 @@ export interface ProjectileSpec {
    *  Omitted = the STANDARD_EXPLOSION preset. Give a launcher its own list here to
    *  make it detonate with a distinct look. */
   explosion?: readonly ParticleStyle[];
+  /** Detonation sound filename in /audio (e.g. "Explosion_01.wav"), played at the
+   *  blast. Omitted = the explosion is silent. */
+  explosionSound?: string;
 }
 
 /**
@@ -151,6 +154,12 @@ export interface GunSpec {
   primary: boolean;
   /** Icon asset basename in /assets (e.g. "m16" -> /assets/m16.png) for ground rendering. */
   icon?: string;
+  /** Firing-sound filename in /audio (e.g. "m16.wav"); omitted = the default gunshot. */
+  fireSound?: string;
+  /** Reload-sound filename in /audio, played when a reload begins. Stretch the clip
+   *  to `fire.reloadTime / 60` seconds so its final click lands on reload-complete.
+   *  Omitted = silent reload. */
+  reloadSound?: string;
   rightGrip: GripLocal;
   leftGrip: GripLocal;
 
@@ -269,6 +278,8 @@ export const M16: GunSpec = {
   leftGrip: { f: 65, l: -6 },
   //leftGrip: { f: 55, l: -12},
 
+  fireSound: "Hk416_01.wav",
+
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
                     { f : 20, l : -27}, // 40
@@ -324,6 +335,8 @@ export const M4A1S: GunSpec = {
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 70, l: -6 },
   //leftGrip: { f: 55, l: -12},
+
+  fireSound: "M4a1_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 70, l : -6}, // 0
@@ -384,6 +397,9 @@ export const AK47: GunSpec = {
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 65, l: -6 },
 
+  fireSound: "Ak47_01.wav",
+  reloadSound: "Ak47_reload_01.wav", // stretched to reloadTime (150t / 60 = 2.5s)
+
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
                     { f : 20, l : -27}, // 40
@@ -437,6 +453,8 @@ export const Scout: GunSpec = {
   icon: "scout",
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 65, l: -6 },
+
+  fireSound: "Mosin_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
@@ -517,6 +535,8 @@ export const AWM: GunSpec = {
   icon: "awm",
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 70, l: -6 },
+
+  fireSound: "Barrett_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -6}, // 0
@@ -600,6 +620,8 @@ export const MP220: GunSpec = {
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 70, l: -6 },
 
+  fireSound: "Mp220_01.wav",
+
   reloadAnim: {
     leftPositions: [{ f : 70, l : -6}, // 0
                     { f : 20, l : -27}, // 25
@@ -670,6 +692,8 @@ export const Mossberg500: GunSpec = {
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 80, l: -11 },
 
+  fireSound: "M870_01.wav",
+
   // One cycle = load a single shell: support hand dips to the shell belt and back
   // up to the loading port, over the reloadTime below.
   reloadAnim: {
@@ -735,6 +759,8 @@ export const M249: GunSpec = {
   rightGrip: { f: 45, l: 0 },
   leftGrip: { f: 75, l: -6 },
   muzzle: { f: 125, l: 0 },
+
+  fireSound: "Qbb97_01.wav",
 
   parts: [
     {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#043309", over: false},
@@ -818,6 +844,8 @@ export const RPG: GunSpec = {
   leftGrip: { f: 50, l: 5 },
   muzzle: { f: -60, l: 42 },
 
+  fireSound: "Potato_smg_01.wav",
+
   parts: [
     { p0: { f: -35, l: 37 }, p1: { f: 57, l: 17 }, width: 14, color: "#643116", over: false },
     { p0: { f: -38, l: 22 }, p1: { f: -32, l: 52 }, width: 5, color: "#181818", over: false },
@@ -866,6 +894,7 @@ export const RPG: GunSpec = {
     sprite: "rocket",
     spriteScale: 1.0, // 115px art -> ~58px long in world
     explosion: STANDARD_EXPLOSION,
+    explosionSound: "Explosion_01.wav",
   },
   visualRecoil: 14,
   recoilRecovery: 1,
@@ -883,6 +912,8 @@ export const M79: GunSpec = {
   icon: "m79",
   rightGrip: { f: 40, l: 0 },
   leftGrip: { f: 65, l: -8 },
+
+  fireSound: "Potato_cannon_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 65, l : -8}, // 0
@@ -932,6 +963,7 @@ export const M79: GunSpec = {
     sprite: "m79_grenade",
     spriteScale: 1.0, // 115px art -> ~58px long in world
     explosion: SMALL_EXPLOSION,
+    explosionSound: "Explosion_03.wav",
   },
   visualRecoil: 10,
   recoilRecovery: 1,
@@ -951,6 +983,8 @@ export const Golden_M249: GunSpec = {
   rightGrip: { f: 45, l: 0 },
   leftGrip: { f: 75, l: -6 },
   muzzle: { f: 125, l: 0 },
+
+  fireSound: "Qbb97_01.wav",
 
   parts: [
     {p0: {f: 60, l: -20}, p1: {f: 60, l: 20}, width: 22, color: "#330404", over: false},
@@ -1030,6 +1064,8 @@ export const M9: GunSpec = {
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
 
+  fireSound: "M9_01.wav",
+
   reloadAnim: {
     leftPositions: [{ f : 55, l : -9}, // 0
                     { f : 20, l : -27}, // 15
@@ -1083,6 +1119,8 @@ export const Skorpion: GunSpec = {
   leftGrip: { f: 75, l: -9 },
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
+  fireSound: "Glock_01.wav",
+
 
   reloadAnim: {
     leftPositions: [{ f : 75, l : -9}, // 0
@@ -1138,6 +1176,7 @@ export const Uzi: GunSpec = {
   leftGrip: { f: 75, l: -9 },
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
+  fireSound: "Mp5_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 75, l : -9}, // 0
@@ -1191,6 +1230,7 @@ export const Colt44: GunSpec = {
   icon: "colt",
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: -5 },
+  fireSound: "Sw500_01.wav",
 
   // One cycle = load a single shell: support hand dips to the shell belt and back
   // up to the loading port, over the reloadTime below.
@@ -1246,6 +1286,7 @@ export const USPS: GunSpec = {
   leftGrip: { f: 55, l: -9 },
   //leftGrip: { f: 35, l: 20 },
   //leftGrip: { f: 30, l: 10 },
+  fireSound: "Ots38_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 60, l : 0}, // 0
@@ -1304,6 +1345,7 @@ export const Deagle: GunSpec = {
   icon: "deagle",
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
+  fireSound: "Svd_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 60, l : 0}, // 0
@@ -1357,6 +1399,7 @@ export const Golden_Deagle: GunSpec = {
   icon: "golden_deagle",
   rightGrip: { f: 55, l: 0 },
   leftGrip: { f: 60, l: 0 },
+  fireSound: "Svd_01.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 60, l : 0}, // 0

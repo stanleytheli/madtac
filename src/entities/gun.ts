@@ -3,6 +3,10 @@ import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
+import { playSound } from "../engine/audio.ts";
+
+/** Firing sound played for a gun with no `fireSound` of its own. */
+export const DEFAULT_FIRE_SOUND = "gunshot.wav";
 
 const PUNCH_TICKS = 10; // duration of one punch's hand thrust
 const PUNCH_REACH = 35; // world px the punching hand lunges forward at full extension
@@ -171,14 +175,16 @@ export class Gun implements Droppable {
     return 1 - this.drawTicks / f.drawTime; 
   }
 
-  /** Begin a reload if allowed. No-op otherwise (full mag, no spare, or the fire
-   *  delay from the last shot hasn't run out yet). */
-  startReload(): void {
-    if (!this.canStartReload) return;
+  /** Begin a reload if allowed, returning whether one actually started. No-op
+   *  (returns false) otherwise (full mag, no spare, or the fire delay from the
+   *  last shot hasn't run out yet). */
+  startReload(): boolean {
+    if (!this.canStartReload) return false;
     this.reloadTicks = this.spec.fire!.reloadTime;
     // NB: deliberately does NOT clear fireCooldown. It used to, which is what made
     // reload-cancel a free way to skip the fire delay; canStartReload now
     // guarantees it's already 0 anyway.
+    return true;
   }
 
   /** Abort an in-progress reload without consuming a spare (e.g. on weapon switch). */
@@ -326,6 +332,11 @@ export class Gun implements Droppable {
     // chambered — no need to tap X first. A whole-mag-swap reload still commits.
     if (this.reloading && this.spec.fire?.perBullet && this.mag > 0) this.cancelReload();
     if (!this.canFire) return false;
+    // A shot is now committed — one report per trigger pull (shotguns included),
+    // positioned at the muzzle on the shooter's floor. Melee "fires" no sound.
+    if (!this.spec.melee) {
+      playSound(this.spec.fireSound ?? DEFAULT_FIRE_SOUND, { pos: origin, z: owner.z, pitchVar: 0.06 });
+    }
     const f = this.spec.fire!;
     // Project from the head center (not the muzzle) so shots can't originate past
     // objects/walls in front of the shooter.

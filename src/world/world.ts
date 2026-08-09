@@ -15,6 +15,7 @@ import type { GroundItem } from "../entities/item.ts";
 import type { Vehicle } from "../entities/vehicle.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 import { add, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { playSound } from "../engine/audio.ts";
 
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at
@@ -1002,6 +1003,11 @@ export function explode(
   stagger?: StaggerEffect,
   gun: GunSpec | null = null,
 ): void {
+  // The detonation report, positioned at the blast on its floor. Taken from the
+  // launcher's projectile spec so it's edited alongside the rest of the round.
+  const boom = gun?.projectile?.explosionSound;
+  if (boom) playSound(boom, { pos: at, z, pitchVar: 0.08 });
+
   // A ray from the blast to `p` is clear unless a wall or a solid vehicle hull
   // stands in it (grid.blocked / hasLineOfSight both skip permeable fences).
   const rayClear = (p: Vec2): boolean =>
