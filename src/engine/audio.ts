@@ -12,6 +12,11 @@
 import { Howl, Howler } from "howler";
 import type { Vec2 } from "./vec.ts";
 
+// A shooter can't let the context nap: Howler suspends it after ~30s idle, and the
+// first shot after that pays a resume delay that reads as a late/desynced sound.
+// Keep it awake so every trigger pull fires immediately.
+Howler.autoSuspend = false;
+
 /** 1 m = 50 world px, matching the killfeed's PX_PER_METER. */
 const PX_PER_METER = 50;
 /** Full volume within this distance of the listener (world px). */
@@ -27,6 +32,12 @@ const OFFLEVEL_GAIN = 0.3;
 /** Concurrent instances Howler keeps per sound before recycling the oldest —
  *  generous so overlapping full-auto shots don't cut each other short. */
 const POOL = 12;
+/** Global ceiling on concurrent voices across all sounds. A firefight — or a
+ *  post-lag-spike catch-up — can otherwise stack enough overlapping sounds to
+ *  overload the audio thread, at which point the browser grows its output buffer
+ *  and the added latency sticks. At the cap the quietest playing voice is stolen,
+ *  but only if the newcomer is louder, so close sounds always win. */
+const MAX_VOICES = 32;
 
 /** The listener (player) position + floor, updated once per frame. */
 const listener = { x: 0, y: 0, z: 0 };
@@ -37,6 +48,25 @@ export function setListener(pos: Vec2, z: number): void {
   listener.y = pos.y;
   listener.z = z;
 }
+
+/** False during a fixed-step catch-up: after a lag spike the loop replays up to
+ *  ~15 sim ticks in one frame, and without this each would (re)fire its sounds,
+ *  dumping a burst that overloads the audio thread. The loop keeps this false on
+ *  every catch-up tick and true only on the final, live one — so the sim advances
+ *  silently and only the current moment is heard. */
+let emitting = true;
+export function setAudioLive(on: boolean): void {
+  emitting = on;
+}
+
+/** A currently-playing voice + its post-attenuation gain, for the cap's priority
+ *  stealing. */
+interface Voice {
+  h: Howl;
+  id: number;
+  gain: number;
+}
+const active: Voice[] = [];
 
 // One Howl per file, created lazily. Howler fetches, decodes, and caches the
 // buffer, and pools instances for overlapping plays.
@@ -76,6 +106,8 @@ export interface PlayOpts {
 
 /** Play `file` once, positioned relative to the listener. */
 export function playSound(file: string, opts: PlayOpts = {}): void {
+  if (!emitting) return; // catch-up tick — advance the sim silently, don't stack sounds
+
   let gain = opts.volume ?? 1;
   let pan = 0;
   if (opts.pos) {
@@ -89,11 +121,34 @@ export function playSound(file: string, opts: PlayOpts = {}): void {
     pan = Math.max(-1, Math.min(1, dx / PAN_PX));
   }
 
+  // Global cap: at the ceiling, steal the quietest playing voice — but only if
+  // this one is louder, so a close shot is never crowded out by distant ones.
+  // Self-healing: this evicts an entry even if its 'end' was somehow missed
+  // (stop() on an already-ended id is a harmless no-op).
+  if (active.length >= MAX_VOICES) {
+    let qi = 0;
+    for (let i = 1; i < active.length; i++) if (active[i].gain < active[qi].gain) qi = i;
+    if (active[qi].gain >= gain) return; // nothing quieter than us is playing — drop this
+    active[qi].h.stop(active[qi].id);
+    active.splice(qi, 1);
+  }
+
   const h = get(file);
   const id = h.play();
   h.volume(gain, id);
   if (opts.pos) h.stereo(pan, id);
   if (opts.pitchVar) h.rate(1 + (Math.random() * 2 - 1) * opts.pitchVar, id);
+
+  const voice: Voice = { h, id, gain };
+  active.push(voice);
+  h.once(
+    "end",
+    () => {
+      const i = active.indexOf(voice);
+      if (i >= 0) active.splice(i, 1);
+    },
+    id,
+  );
 }
 
 // Dev-only (Vite HMR): free this module's Howls on hot-swap so their decoded
@@ -103,4 +158,5 @@ const hot = (import.meta as { hot?: { dispose(cb: () => void): void } }).hot;
 hot?.dispose(() => {
   for (const h of sounds.values()) h.unload();
   sounds.clear();
+  active.length = 0;
 });

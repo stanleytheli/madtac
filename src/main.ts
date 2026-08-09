@@ -13,7 +13,7 @@ import * as Guns from "./entities/guns.ts";
 import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
 import { LEVELS } from "./world/levels.ts";
 import { initInput, isDown, mouse } from "./engine/input.ts";
-import { preload, setListener, unlockAudio } from "./engine/audio.ts";
+import { preload, setAudioLive, setListener, unlockAudio } from "./engine/audio.ts";
 import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
 import { GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
@@ -1116,11 +1116,16 @@ function frame(now: number): void {
 
   profiler.begin("update");
   while (accumulator >= STEP) {
+    accumulator -= STEP;
+    // Only the final, live tick emits sound; catch-up ticks after a lag spike
+    // advance the sim silently so ~15 ticks of shots don't stack into one instant
+    // (which is what forced the audio buffer to grow and stick).
+    setAudioLive(accumulator < STEP);
     // A live match (booted-in or a playtest) steps the game; otherwise the editor.
     if (game) game.update();
     else editor!.update();
-    accumulator -= STEP;
   }
+  setAudioLive(true);
   profiler.end("update");
 
   profiler.begin("render");
