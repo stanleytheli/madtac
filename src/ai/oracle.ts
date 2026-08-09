@@ -41,6 +41,9 @@ const DEFAULT_MOVE_SPEED = 2.4; // world px per tick, constant (no accel model)
 const DEFAULT_STANDOFF = 130; // stop closing once the chase is this near
 const ARRIVE_EPS = 8; // "at the node" slop, so it doesn't orbit a waypoint
 const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a moving goal
+/** Extra forward jitter (0..this) on each replan timer, so bots whose timers
+ *  landed on the same tick drift apart instead of re-planning together forever. */
+const REPLAN_JITTER = 10;
 const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this much cheaper (px)
 const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
@@ -146,7 +149,7 @@ export class Oracle extends Robot {
     let direct = false; // beeline step (level-locked) vs waypoint leg
 
     if (ai.nav && ai.nav.nodes.length > 0) {
-      this.updatePlan(ai.nav, ai.world, chase);
+      this.updatePlan(ai.nav, ai.world, chase, ai.tick);
       if (this.atGoalNode && (target || this.z === chase.z)) {
         // Same node as the target: close-quarters chase on the target itself.
         direct = true;
@@ -216,10 +219,34 @@ export class Oracle extends Robot {
     return nav.nodes[curr].pos;
   }
 
+  // --- global replan budget -------------------------------------------------
+  // A full plan() costs ~2–3ms of CCH congestion restamp (the setRoute pair),
+  // so a handful landing on the same tick is a frame spike. The budget caps
+  // plan() calls per tick ACROSS all Oracles; a bot over budget keeps its
+  // committed route and retries next tick (navChase just holds a tick in the
+  // rare no-waypoint case). Sized from last tick's population so steady-state
+  // demand (population / REPLAN_TICKS) always fits with slack — the deferral
+  // queue drains instead of growing.
+  private static planTick = -1;
+  private static popSeen = 0;
+  private static plansLeft = 2;
+
+  /** Roll the per-tick budget window; called once per updatePlan. */
+  private static tickBudget(tick: number): void {
+    if (tick === Oracle.planTick) {
+      Oracle.popSeen += 1;
+      return;
+    }
+    Oracle.planTick = tick;
+    Oracle.plansLeft = Math.max(2, Math.ceil(Oracle.popSeen / REPLAN_TICKS) + 1);
+    Oracle.popSeen = 1;
+  }
+
   /** Keep the committed waypoint fresh: advance on arrival at intermediate
    *  hops, and re-plan on a short timer so a moving target keeps redirecting
    *  the chase (ARRIVE_EPS never gates a goal-node plan — see atGoalNode). */
-  private updatePlan(nav: NavGraph, world: World, chase: Character): void {
+  private updatePlan(nav: NavGraph, world: World, chase: Character, tick: number): void {
+    Oracle.tickBudget(tick);
     this.replanIn -= 1;
     if (this.waypoint >= nav.nodes.length) this.waypoint = -1; // stale id safety
     if (
@@ -229,9 +256,10 @@ export class Oracle extends Robot {
     ) {
       this.waypoint = -1; // reached an intermediate hop: pick the next one now
     }
-    if (this.waypoint < 0 || this.replanIn <= 0) {
+    if ((this.waypoint < 0 || this.replanIn <= 0) && Oracle.plansLeft > 0) {
+      Oracle.plansLeft -= 1;
       this.plan(nav, world, chase);
-      this.replanIn = REPLAN_TICKS;
+      this.replanIn = REPLAN_TICKS + Math.floor(Math.random() * REPLAN_JITTER);
     }
     this.skipReachableHops(nav, world);
   }
