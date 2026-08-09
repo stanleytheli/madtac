@@ -12,11 +12,6 @@
 import { Howl, Howler } from "howler";
 import type { Vec2 } from "./vec.ts";
 
-// A shooter can't let the context nap: Howler suspends it after ~30s idle, and the
-// first shot after that pays a resume delay that reads as a late/desynced sound.
-// Keep it awake so every trigger pull fires immediately.
-Howler.autoSuspend = false;
-
 /** 1 m = 50 world px, matching the killfeed's PX_PER_METER. */
 const PX_PER_METER = 50;
 /** Full volume within this distance of the listener (world px). */
