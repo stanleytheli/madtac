@@ -13,7 +13,14 @@ import * as Guns from "./entities/guns.ts";
 import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
 import { LEVELS } from "./world/levels.ts";
 import { initInput, isDown, mouse } from "./engine/input.ts";
-import { preload, setAudioLive, setListener, unlockAudio } from "./engine/audio.ts";
+import {
+  audioLatencyMs,
+  preload,
+  setAudioLive,
+  setListener,
+  unlockAudio,
+  updateAudio,
+} from "./engine/audio.ts";
 import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
 import { GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
@@ -315,6 +322,65 @@ const screenCenter = (): Vec2 => vec(window.innerWidth / 2, window.innerHeight /
 const STEP = 1000 / 60;
 let accumulator = 0;
 let last = performance.now();
+
+// --- audio-latency watchdog + lag-spike diagnostics ---
+// The bug being chased: an occasional lag spike leaves ALL later sounds with a
+// persistent ~0.1–0.3s delay. audioLatencyMs() measures the browser's output
+// pipeline itself, so these logs separate "our engine started sounds late"
+// from "the browser grew its output buffer and never gave it back".
+let latencyBaseline = Infinity; // lowest latency seen — the healthy floor
+let lastStuckLog = 0;
+let lastSpikeLog = 0;
+// The previous frame's measured update/render cost. A spike shows up as a big
+// gap between THIS RAF and the last one, so the work that caused it was
+// measured last frame; whatever the gap doesn't account for is GC, paint, or
+// the browser itself.
+let prevUpdateMs = 0;
+let prevRenderMs = 0;
+
+function watchAudio(frameGapMs: number, ticks: number, now: number): void {
+  const lat = audioLatencyMs();
+  if (lat === undefined) return;
+  if (lat < latencyBaseline) latencyBaseline = lat;
+  if (frameGapMs > 100 || ticks >= 4) {
+    // Throttled: with the inspector open, console.warn itself costs frame time,
+    // and a warning per spiky frame can feed the very spikes it reports.
+    if (now - lastSpikeLog > 2000) {
+      lastSpikeLog = now;
+      const unaccounted = frameGapMs - prevUpdateMs - prevRenderMs;
+      console.warn(
+        `[audio] lag spike: ${frameGapMs.toFixed(0)}ms frame ` +
+          `(last frame: update ${prevUpdateMs.toFixed(0)}ms, render ${prevRenderMs.toFixed(0)}ms, ` +
+          `unaccounted ${unaccounted.toFixed(0)}ms), ${ticks} ticks replayed`,
+      );
+    }
+  } else if (lat - latencyBaseline > 30 && now - lastStuckLog > 2000) {
+    // Sustained step above the healthy floor — the sticky-delay bug itself.
+    // (Switching output to Bluetooth mid-game also trips this; that's real
+    // added latency, not a false positive.)
+    lastStuckLog = now;
+    console.warn(
+      `[audio] output latency stuck at ${lat.toFixed(1)}ms (baseline ${latencyBaseline.toFixed(1)}ms)`,
+    );
+  }
+}
+
+// Console knobs for reproducing the bug and testing the suspected fix:
+//   lagSpike(300)    — block the main thread for 300ms (the suspected trigger)
+//   setMaxCatchup(3) — spread catch-up over frames, at most n sim ticks per
+//                      frame, instead of replaying up to ~15 in one burst
+let maxCatchup = Infinity;
+Object.assign(globalThis as object, {
+  lagSpike(ms = 300): void {
+    const until = performance.now() + ms;
+    while (performance.now() < until) {
+      // busy-wait — simulates a GC pause / heavy frame
+    }
+  },
+  setMaxCatchup(n: number): void {
+    maxCatchup = n;
+  },
+});
 
 const GRID = 512; // default background grid spacing (world px)
 // Draw the grid covering the (zoom-enlarged) visible world region. `width` is
@@ -1109,14 +1175,18 @@ function frame(now: number): void {
     pDown = true;
   } else pDown = false;
 
-  accumulator += now - last;
+  const frameGap = now - last;
+  accumulator += frameGap;
   last = now;
   // Guard against huge jumps (e.g. tab was backgrounded).
   if (accumulator > 250) accumulator = 250;
 
   profiler.begin("update");
-  while (accumulator >= STEP) {
+  const tUpdate = performance.now();
+  let ticks = 0;
+  while (accumulator >= STEP && ticks < maxCatchup) {
     accumulator -= STEP;
+    ticks++;
     // Only the final, live tick emits sound; catch-up ticks after a lag spike
     // advance the sim silently so ~15 ticks of shots don't stack into one instant
     // (which is what forced the audio buffer to grow and stick).
@@ -1127,10 +1197,18 @@ function frame(now: number): void {
   }
   setAudioLive(true);
   profiler.end("update");
+  const updateMs = performance.now() - tUpdate;
+  // Survev-style per-frame audio housekeeping: re-resume a suspended context,
+  // reclaim finished voices (stopTime polling).
+  updateAudio();
+  watchAudio(frameGap, ticks, now);
 
   profiler.begin("render");
+  const tRender = performance.now();
   render();
   profiler.end("render");
+  prevUpdateMs = updateMs;
+  prevRenderMs = performance.now() - tRender;
 
   profiler.endFrame();
   // Refresh the on-screen averages about once a second.
