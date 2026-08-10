@@ -18,6 +18,10 @@
  *   3. time-stretches — pitch-preserving (ffmpeg atempo) — to the target seconds,
  *   4. writes public/audio/<name>.
  *
+ * fireSound is converted as-is (no trim, no stretch — the bang plays exactly as
+ * authored). It's still WAV rather than the raw mp3 because mp3 decoding bakes
+ * ~25–50ms of priming silence onto the clip's start — a late gunshot.
+ *
  * Idempotent: a job is skipped when its output is already newer than its source,
  * so it's cheap to run on every dev start (see the `predev` npm script). Never
  * throws out — a missing ffmpeg or a bad clip warns and is skipped, so it can't
@@ -112,6 +116,33 @@ function fit(key: string, outName: string, targetSec: number, what: string): voi
   }
 }
 
+/** Plain conversion for fire sounds: raw source → public/audio/<name>, format
+ *  change only. A missing raw is fine when the served wav already exists (many
+ *  fire sounds predate audio-src/); only a spec pointing at nothing warns. */
+function convert(key: string, outName: string): void {
+  const base = parse(outName).name;
+  const raw = findRaw(base);
+  const out = join(OUT_DIR, outName);
+  if (!raw) {
+    if (!existsSync(out)) {
+      console.warn(`! ${key} (fire): no audio-src/${base}.* and no ${outName} — sound will be silent`);
+    }
+    return;
+  }
+  if (existsSync(out) && statSync(out).mtimeMs >= statSync(raw).mtimeMs) {
+    skipped++;
+    console.log(`= ${key} (fire): ${outName} up to date`);
+    return;
+  }
+  try {
+    sh("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", raw, out]);
+    built++;
+    console.log(`✓ ${key} (fire): ${parse(raw).base} → ${outName}`);
+  } catch (e) {
+    console.warn(`! ${key} (fire): failed to convert "${outName}" — ${(e as Error).message.split("\n")[0]}`);
+  }
+}
+
 // ffmpeg present? If not, this is a no-op rather than a hard failure.
 try {
   sh("ffmpeg", ["-version"]);
@@ -126,6 +157,7 @@ const specs = Object.entries(Guns).filter(([, v]) => v && typeof v === "object" 
 ][];
 
 for (const [key, spec] of specs) {
+  if (spec.fireSound) convert(key, spec.fireSound);
   for (const kind of KINDS) {
     const name = spec[kind.field];
     if (!name) continue;
