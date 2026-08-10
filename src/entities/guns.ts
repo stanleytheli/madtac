@@ -455,6 +455,65 @@ export const AK47: GunSpec = {
   movingFirstShotRecoilMax: 8.0,
 };
 
+export const SCAR17: GunSpec = {
+  name: "SCAR-17",
+  primary: true,
+  icon: "scar",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 70, l: -6 },
+
+  fireSound: "L86_01.wav",
+  reloadSound: "Ak47_reload_01.wav", // stretched to reloadTime (150t / 60 = 2.5s)
+
+  reloadAnim: {
+    leftPositions: [{ f : 70, l : -6}, // 0
+                    { f : 20, l : -27}, // 45
+                    { f : 20, l : -27}, // 65
+                    { f : 70, l : -6}, // 110 // 100
+                    { f : 70, l : -6}, // 130 // 100
+                    { f: 75, l: -12}, // 140 // 105
+                    { f: 75, l: -12}, // 150 // 115
+                    { f: 55, l: -12}, // 155 // 125
+                    { f: 55, l: -12}, // 160 // 130 
+                    { f: 75, l: -12}, // 165 // 140
+                    { f : 70, l : -6}, // 180 // 150
+                    ],
+    leftTimes: [0, 45, 70, 115, 125, 130, 140, 150, 155, 165, 180]
+  },
+
+  muzzle: { f: 120, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 11, color: "#cfb59e", over: false },
+  ],
+  damage: 34,
+  armorPen: DEFAULT_AP_MHIGH,
+  zoom: 2.5,
+  speed: 0.80,
+  fire: {
+    delay: 12,
+    bulletSpeed: 70,
+    bulletLife: 60,
+    auto: false,
+    spread: 0.01,
+    magSize: 20,
+    reserveMags: 3,
+    reloadTime: 180,
+    drawTime: 75,
+    tracerWidth: 5.0,
+    tracerLength: 170,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 12,
+  recoilRecovery: 1,
+  recoilCoef: 0.25,
+  recoilGain: 3.0,
+  recoilDelay: 30,
+  movePenalty: 3.5,
+  movingFirstShotRecoilMin: 17.0,
+  movingFirstShotRecoilMax: 28.0,
+};
+
+
 export const Scout: GunSpec = {
   name: "Steyr Scout",
   primary: true,
