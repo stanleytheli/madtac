@@ -74,7 +74,18 @@ const NAMES = [
   "Ranger", "Echo", "Frost", "Talon", "Onyx", "Blaze", "Rook",
   "Jinx", "Ace", "Storm", "Piper", "Kilo", "Nova", "Tech", "Fable", "Halo", "Vita",
   "Knight", "Phantom", "Red", "Twig", "Ozymandias", "J", "October", "Delta", "Gamma", "Nova",
-  "Bull", "Shellie",
+  "Bull", "Shellie", "Wolf", "Rogue", "Twitch", "Butterfinger", "Wildcard", "Wrench", 
+  "Newbie", "Art", "Queen", "Viper", "Havoc", "Cipher", "Flint", "Crow", "Zero", "Vex",
+  "Drift", "Reaper", "Hex", "Atlas", "Mute", "Mantis", "Switch", "Icarus", "Knox", "Sparrow",
+  "Hush", "Grimm", "Cinder", "Moth", "Rhino", "Static", "Maverick", "Coyote", "Cricket", "Jett",
+  "Patch", "Mongoose", "Doc", "Stray", "Rocksteady", "Lockpick", "Brick", "Nails", "Buzz", "Chopper",
+  "Smoke", "Shade", "Dusk", "Neon", "Chrome", "Carbon", "Motherboard", "Hotpath", "Relay", "Pixel",
+  "Ping", "Crash", "Ratchet", "Scrap", "Badger", "Jackal", "Cobra", "Lynx", "Hawk", "Panther", "Fox",
+  "Raven", "Priest", "Pilgrim", "Baron", "Jester", "Deacon", "Judge", "Sherriff", "Marshal", "Gunner",
+  "Skipper", "Wednesday", "Winter", "Seven", "Nine", "Lucky", "Deuce", "Lefty", "Junior", "Tiny", 
+  "Biggs", "Mouse", "Cupcake", "Dozer", "Cowboy", "Bushranger", "Outlaw", "Savage", "Bane", "Nemesis",
+  "Grudge", "Sirius", "Orion", "Helion", "Ares", "Anubis", "Midas", "Parable", "Whiskey", "Tango", "Zulu",
+  "Sierra", "Foxtrot", "Victor", "Yankee", "Romeo" , "Hotel", "Bravo", "Charlie", "Lima", "Oscar", "Xray"
 ];
 
 /** The full strafe fan a max-skill soldier explores (matches tacoracle's own
