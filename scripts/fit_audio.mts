@@ -22,6 +22,14 @@
  * authored). It's still WAV rather than the raw mp3 because mp3 decoding bakes
  * ~25–50ms of priming silence onto the clip's start — a late gunshot.
  *
+ * Sharing rules: two guns naming the same output with IDENTICAL processing is
+ * fine (one file serves both). The same output demanded with DIFFERENT
+ * processing (e.g. shared reloadSound, different reloadTimes) is an authoring
+ * error this script detects and refuses — the mtime skip would otherwise let
+ * the first gun's fit silently win. To share one RAW clip across different
+ * timings, use a variant name: "Ak47_reload_01@scar17.wav" looks up the raw by
+ * the part before the "@" and writes its own separate output.
+ *
  * Idempotent: a job is skipped when its output is already newer than its source,
  * so it's cheap to run on every dev start (see the `predev` npm script). Never
  * throws out — a missing ffmpeg or a bad clip warns and is skipped, so it can't
@@ -75,12 +83,19 @@ function findRaw(base: string): string | null {
   return hit ? join(SRC_DIR, hit) : null;
 }
 
+/** The raw-lookup basename for an output name — the part before any "@", so
+ *  variant outputs ("Base@gun.wav") share one raw clip. */
+function rawBase(outName: string): string {
+  return parse(outName).name.split("@")[0];
+}
+
 let built = 0;
 let skipped = 0;
 
 /** Trim trailing silence + stretch `outName`'s raw source to `targetSec`. */
 function fit(key: string, outName: string, targetSec: number, what: string): void {
-  const base = parse(outName).name;
+  if (conflicted.has(outName)) return;
+  const base = rawBase(outName);
   const raw = findRaw(base);
   if (!raw) {
     console.warn(`! ${key} (${what}): no raw source audio-src/${base}.* for "${outName}" — skipping`);
@@ -120,7 +135,8 @@ function fit(key: string, outName: string, targetSec: number, what: string): voi
  *  change only. A missing raw is fine when the served wav already exists (many
  *  fire sounds predate audio-src/); only a spec pointing at nothing warns. */
 function convert(key: string, outName: string): void {
-  const base = parse(outName).name;
+  if (conflicted.has(outName)) return;
+  const base = rawBase(outName);
   const raw = findRaw(base);
   const out = join(OUT_DIR, outName);
   if (!raw) {
@@ -155,6 +171,33 @@ const specs = Object.entries(Guns).filter(([, v]) => v && typeof v === "object" 
   string,
   GunSpec,
 ][];
+
+// Detect same-output-different-processing collisions BEFORE building anything:
+// with the mtime skip, whichever gun ran first would win and every other gun
+// would silently get a file fitted to the wrong duration.
+const conflicted = new Set<string>();
+{
+  const sigs = new Map<string, { sig: string; by: string }>();
+  for (const [key, spec] of specs) {
+    const demands: [string | undefined, string][] = [
+      [spec.fireSound, "verbatim"],
+      [spec.reloadSound, `fit:${spec.fire?.reloadTime}`],
+      [spec.cycleSound, `fit:${spec.fire?.delay}`],
+    ];
+    for (const [name, sig] of demands) {
+      if (!name) continue;
+      const prev = sigs.get(name);
+      if (!prev) sigs.set(name, { sig, by: key });
+      else if (prev.sig !== sig && !conflicted.has(name)) {
+        conflicted.add(name);
+        console.warn(
+          `! CONFLICT: ${name} demanded as ${prev.sig} by ${prev.by} but ${sig} by ${key} — ` +
+            `refusing to build it. Give one gun a variant name ("${rawBase(name)}@<gun>.wav").`,
+        );
+      }
+    }
+  }
+}
 
 for (const [key, spec] of specs) {
   if (spec.fireSound) convert(key, spec.fireSound);

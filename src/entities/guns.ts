@@ -463,22 +463,25 @@ export const SCAR17: GunSpec = {
   leftGrip: { f: 70, l: -6 },
 
   fireSound: "L86_01.wav",
-  reloadSound: "Ak47_reload_01.wav", // stretched to reloadTime (150t / 60 = 2.5s)
+  // "@scar17" = same raw clip as the AK47's, but fitted to THIS gun's
+  // reloadTime (180t / 60 = 3.0s); fit_audio resolves the raw by the part
+  // before the "@" and writes a separate output.
+  reloadSound: "Ak47_reload_01@scar17.wav",
 
   reloadAnim: {
     leftPositions: [{ f : 70, l : -6}, // 0
                     { f : 20, l : -27}, // 40
                     { f : 20, l : -27}, // 60
                     { f : 70, l : -6}, // 100 // 100
-                    { f : 70, l : -6}, // 110 // 100
-                    { f: 75, l: -12}, // 115 // 105
-                    { f: 75, l: -12}, // 125 // 115
-                    { f: 55, l: -12}, // 135 // 125
-                    { f: 55, l: -12}, // 140 // 130 
-                    { f: 75, l: -12}, // 150 // 140
+                    { f : 70, l : -6}, // 120 // 100
+                    { f: 75, l: -12}, // 130 // 105
+                    { f: 75, l: -12}, // 140 // 115
+                    { f: 55, l: -12}, // 150 // 125
+                    { f: 55, l: -12}, // 155 // 130 
+                    { f: 75, l: -12}, // 165 // 140
                     { f : 70, l : -6}, // 180 // 150
                     ],
-    leftTimes: [0, 40, 60, 100, 110, 115, 125, 135, 140, 150, 180]
+    leftTimes: [0, 40, 60, 100, 120, 130, 140, 150, 155, 165, 180]
   },
 
   muzzle: { f: 120, l: 0 },
@@ -522,7 +525,8 @@ export const Scout: GunSpec = {
   leftGrip: { f: 65, l: -6 },
 
   fireSound: "Mosin_01.wav",
-  reloadSound: "Sv98_reload_01.wav",
+  // Shares the AWM's raw reload clip but fitted to this gun's reloadTime (175t).
+  reloadSound: "Sv98_reload_01@scout.wav",
   cycleSound: "Blr_cycle_01.wav", // bolt cycle, fitted to fire.delay (80t / 60 = 1.33s)
 
 
