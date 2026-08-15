@@ -85,7 +85,18 @@ const NAMES = [
   "Skipper", "Wednesday", "Winter", "Seven", "Nine", "Lucky", "Deuce", "Lefty", "Junior", "Tiny", 
   "Biggs", "Mouse", "Cupcake", "Dozer", "Cowboy", "Bushranger", "Outlaw", "Savage", "Bane", "Nemesis",
   "Grudge", "Sirius", "Orion", "Helion", "Ares", "Anubis", "Midas", "Parable", "Whiskey", "Tango", "Zulu",
-  "Sierra", "Foxtrot", "Victor", "Yankee", "Romeo" , "Hotel", "Bravo", "Charlie", "Lima", "Oscar", "Xray"
+  "Sierra", "Foxtrot", "Victor", "Yankee", "Romeo" , "Hotel", "Bravo", "Charlie", "Lima", "Oscar", "Xray",
+  "Blackout", "Eagle", "Vulture", "Quickscope", "Overclock", "Church", "Camper", "Dark", "Bucky",
+  "Birdshot", "Ruckus", "Oldie", "Queen", "Snake", "Breacher", "Ash", "Cloud", "Sleepy", 
+  "Kidd", "Trooper", "Recruit", "Buzzkill", "Digger", "Graves", "Zombie", "Knob", "Shepherd",
+  "Ironsight", "Softie", "Cipher", "Cryptic", "Scramble", "Brainy", "Deadeye", "Daisy", "Wick",
+  "Candles", "Skateboard", "Dixie", "Soda", "Window", "Icon", "Idol", "Tomboy", "Miles", "Dreamer",
+  "Electro", "Renegade", "Ego", "Harry", "Mountain", "Fireman", "Chef", "Weatherman", "Rabbit",
+  "Glass", "Hypnotize", "Syndrome", "Nano", "Tribes", "Luther", "Killshot", "Decade", "Pencil",
+  "River", "Tide", "Vandal", "Spectre", "Bandit", "Frenzy", "Bulldog", "Insomniac", "Odin",
+  "Peeker", "Ballhog", "Tank", "Seltzer", "Charmer", "Farmboy", "Chopper", "China", "Gymrat",
+  "Hollywood", "Monroe", "Doctrine", "Maze", "DJ", "Cocktail", "Thinker", "Philos", "Pileup", "Leo",
+  "Bigmouth", "Sinker", "Corny", "Daylight", "Shiny", "Ring", "Necklace", "Icy", "Freeze", "Booster",
 ];
 
 /** The full strafe fan a max-skill soldier explores (matches tacoracle's own
