@@ -1187,10 +1187,14 @@ function frame(now: number): void {
   while (accumulator >= STEP && ticks < maxCatchup) {
     accumulator -= STEP;
     ticks++;
-    // Only the final, live tick emits sound; catch-up ticks after a lag spike
-    // advance the sim silently so ~15 ticks of shots don't stack into one instant
-    // (which is what forced the audio buffer to grow and stick).
-    setAudioLive(accumulator < STEP);
+    // Sound is live for the last couple of ticks of a frame and silent for
+    // deep catch-up. A 2-tick frame is ordinary vsync jitter, not a lag spike
+    // — muting its first tick was randomly eating the player's own shot
+    // sounds — and a sound from a tick ≤2 ticks stale plays ≤33ms late,
+    // below the ear's ~40ms fusion threshold (and same-file overlaps merge in
+    // the coalescer anyway). Only a real spike's replay (~15 ticks) must stay
+    // silent, so nothing stacks 15 ticks of gunfire into one instant.
+    setAudioLive(accumulator < STEP * 2.5);
     // A live match (booted-in or a playtest) steps the game; otherwise the editor.
     if (game) game.update();
     else editor!.update();
