@@ -455,6 +455,65 @@ export const AK47: GunSpec = {
   movingFirstShotRecoilMax: 8.0,
 };
 
+export const MP5: GunSpec = {
+  name: "MP5",
+  primary: true,
+  icon: "mp5",
+  rightGrip: { f: 40, l: 0 },
+  leftGrip: { f: 70, l: -6 },
+  //leftGrip: { f: 55, l: -12},
+
+  fireSound: "Mp5_01.wav",
+  reloadSound: "Mp5_reload_01.wav",
+
+  reloadAnim: {
+    leftPositions: [{ f : 70, l : -6}, // 0
+                    { f : 20, l : -27}, // 20 // 30
+                    { f : 20, l : -27}, // 35 // 45
+                    { f : 65, l : -6}, // 55 // 75
+                    { f: 70, l: -12}, // 65 // 80
+                    { f: 70, l: -12}, // 75 // 90
+                    { f: 55, l: -12}, // 85 // 100
+                    { f: 55, l: -12}, // 90 // 105
+                    { f: 70, l: -12}, // 100 // 115
+                    { f : 70, l : -6}, // 120 // 120
+                    ],
+    leftTimes: [0, 20, 35, 55, 65, 75, 85, 90, 100, 120]
+  },
+
+
+  muzzle: { f: 105, l: 0 },
+  parts: [
+    { p0: { f: 35, l: 0 }, p1: { f: 105, l: 0 }, width: 9, color: "#242525", over: false },
+  ],
+  damage: 18,
+  armorPen: DEFAULT_AP_LOW,
+  zoom: 2.1,
+  speed: 0.90,
+  fire: {
+    delay: 6,
+    bulletSpeed: 50,
+    bulletLife: 50,
+    auto: true,
+    spread: 0.05,
+    magSize: 30,
+    reserveMags: 5,
+    reloadTime: 120,
+    drawTime: 30,
+    tracerWidth: 3.0,
+    tracerLength: 130,
+    tracerColor: "#ffe26b"
+  },
+  visualRecoil: 6,
+  recoilRecovery: 2,
+  recoilCoef: 0.125,
+  recoilGain: 4.0,
+  recoilDelay: 25,
+  movePenalty: 1.0,
+  movingFirstShotRecoilMin: 0.0,
+  movingFirstShotRecoilMax: 0.0,
+};
+
 export const SCAR17: GunSpec = {
   name: "SCAR-17",
   primary: true,
