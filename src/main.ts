@@ -1164,6 +1164,26 @@ function drawProfilerOverlay(ctx: CanvasRenderingContext2D, w: number): void {
   ctx.restore();
 }
 
+// A bad edit must never take the editor down. frame() is the RAF callback, so
+// an uncaught throw in the bare-editor update/render kills the loop for good —
+// instead, catch it: the loop and the DOM panel stay alive (so the offending
+// field can be fixed), the canvas save()/clip() stack a mid-render throw
+// strands is unwound, and the error is logged, throttled. Play mode is not
+// guarded — a broken match should fail loudly, not limp.
+let lastEditorErrAt = 0;
+function editorGuard(fn: () => void): void {
+  try {
+    fn();
+  } catch (err) {
+    for (let i = 0; i < 64; i++) ctx.restore(); // no-op once the stack is empty
+    const t = performance.now();
+    if (t - lastEditorErrAt > 2000) {
+      lastEditorErrAt = t;
+      console.error("[editor] error (editor kept alive — fix or undo the last edit):", err);
+    }
+  }
+}
+
 function frame(now: number): void {
   // P toggles the profiler overlay (and resets the accumulators).
   if (isDown("p")) {
@@ -1197,7 +1217,7 @@ function frame(now: number): void {
     setAudioLive(accumulator < STEP * 2.5);
     // A live match (booted-in or a playtest) steps the game; otherwise the editor.
     if (game) game.update();
-    else editor!.update();
+    else editorGuard(() => editor!.update());
   }
   setAudioLive(true);
   profiler.end("update");
@@ -1209,7 +1229,8 @@ function frame(now: number): void {
 
   profiler.begin("render");
   const tRender = performance.now();
-  render();
+  if (game) render();
+  else editorGuard(render);
   profiler.end("render");
   prevUpdateMs = updateMs;
   prevRenderMs = performance.now() - tRender;

@@ -1234,9 +1234,29 @@ export class Editor {
   /** Build the input widget for one FieldDef — the inspector is fully schema-driven. */
   private fieldRow(f: FieldDef, e: any): HTMLElement {
     const css = Editor.INPUT_CSS + "flex:1;min-width:0;";
-    const commit = (v: unknown): void => {
+    // Validation by execution: apply the value, then immediately run the same
+    // depth/visibility refresh rendering depends on. If that throws (e.g. a
+    // parseable-but-structurally-wrong JSON value), roll the field back so a
+    // bad input can never wedge the world, and flag the widget red.
+    const commit = (v: unknown, el?: HTMLElement): boolean => {
+      const prev = f.get(e);
       f.set(e, v);
-      this.refreshWorld();
+      try {
+        this.refreshWorld();
+        if (el) el.style.borderColor = "#3a3e46";
+        return true;
+      } catch (err) {
+        f.set(e, prev);
+        try {
+          this.refreshWorld();
+        } catch {
+          // prev was live a moment ago; if even it refuses now, leave it to the
+          // frame guard rather than dying inside an input handler.
+        }
+        if (el) el.style.borderColor = "#d05050";
+        console.warn(`[editor] rejected ${f.key} value`, v, err);
+        return false;
+      }
     };
 
     switch (f.type) {
@@ -1247,7 +1267,7 @@ export class Editor {
         i.value = String((f.get(e) as number) ?? 0);
         i.oninput = () => {
           const v = parseFloat(i.value);
-          if (Number.isFinite(v)) commit(v);
+          if (Number.isFinite(v)) commit(v, i);
         };
         return this.row(f.key, i);
       }
@@ -1255,21 +1275,23 @@ export class Editor {
         const i = this.mk("input", "");
         i.type = "checkbox";
         i.checked = !!f.get(e);
-        i.onchange = () => commit(i.checked);
+        i.onchange = () => {
+          if (!commit(i.checked)) i.checked = !!f.get(e);
+        };
         return this.row(f.key, i);
       }
       case "color": {
         const i = this.mk("input", css + "padding:0;height:22px;");
         i.type = "color";
         i.value = String(f.get(e) ?? "#ffffff");
-        i.oninput = () => commit(i.value);
+        i.oninput = () => commit(i.value, i);
         return this.row(f.key, i);
       }
       case "text": {
         const i = this.mk("input", css);
         i.type = "text";
         i.value = String(f.get(e) ?? "");
-        i.oninput = () => commit(i.value);
+        i.oninput = () => commit(i.value, i);
         return this.row(f.key, i);
       }
       case "select": {
@@ -1281,7 +1303,9 @@ export class Editor {
           s.append(opt);
         }
         s.value = String(f.get(e));
-        s.onchange = () => commit(s.value);
+        s.onchange = () => {
+          if (!commit(s.value, s)) s.value = String(f.get(e));
+        };
         return this.row(f.key, s);
       }
       case "regions": {
@@ -1333,12 +1357,14 @@ export class Editor {
         i.value = v === undefined ? "" : JSON.stringify(v);
         i.onchange = () => {
           const txt = i.value.trim();
+          let parsed: unknown;
           try {
-            commit(txt === "" ? undefined : JSON.parse(txt));
-            i.style.borderColor = "#3a3e46";
+            parsed = txt === "" ? undefined : JSON.parse(txt);
           } catch {
             i.style.borderColor = "#d05050";
+            return;
           }
+          commit(parsed, i); // red border on structural rejection, too
         };
         return this.row(f.key, i);
       }

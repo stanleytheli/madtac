@@ -30,8 +30,9 @@ import { playSound } from "../engine/audio.ts";
 /** The set of viewer z values a surface is visible from. */
 export type ZSet = readonly number[] | "all" | { atLeast: number } | { atMost: number };
 
-export function zsetHas(s: ZSet, z: number): boolean {
-  if (s === "all") return true;
+export function zsetHas(s: ZSet | undefined, z: number): boolean {
+  // No set = no restriction (an omitted visibleFrom means visible from all levels).
+  if (s === undefined || s === "all") return true;
   if (Array.isArray(s)) return (s as readonly number[]).includes(z);
   // A range: one of atLeast/atMost is present (Array.isArray can't narrow
   // readonly arrays out of the union, hence the cast).
@@ -119,8 +120,9 @@ export interface Floor {
   color: string;
   /** The z level the surface physically sits at. */
   level: number;
-  /** Which viewer z values can see it (e.g. a balcony: [0, 1]; the ground: z >= 0). */
-  visibleFrom: ZSet;
+  /** Which viewer z values can see it (e.g. a balcony: [0, 1]; the ground: z >= 0).
+   *  Omitted = visible from all levels. */
+  visibleFrom?: ZSet;
   /** Also hide it while the viewer is beneath it and inside its footprint (roofs). */
   hideWhenUnder?: boolean;
   /** Also hide it while the viewer is inside any of these regions *at the
@@ -184,7 +186,8 @@ export interface Stairs {
   /** z at the min-coordinate end / max-coordinate end along `axis`. */
   zAtMin: number;
   zAtMax: number;
-  visibleFrom: ZSet;
+  /** Omitted = visible from all levels. */
+  visibleFrom?: ZSet;
   steps: number;
   /** Step color at the low-z end. */
   color: string;
@@ -284,7 +287,8 @@ export function sortRenderDepth(w: World): void {
 
 export interface FloorOptions {
   level: number;
-  visibleFrom: ZSet;
+  /** Omitted = visible from all levels. */
+  visibleFrom?: ZSet;
   hideWhenUnder?: boolean;
   hideWhenIn?: Region[];
   enclosing?: boolean;
