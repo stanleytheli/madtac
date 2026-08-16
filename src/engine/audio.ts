@@ -21,8 +21,9 @@
  *  - The context is nudged back to "running" every frame, not just on input.
  *
  * Files live in public/audio/ and are referenced by bare filename
- * (e.g. "gunshot.wav" -> /audio/gunshot.wav). Call sites are unchanged:
- *   playSound(file, { pos, z, volume, pitchVar })
+ * (e.g. "gunshot.wav" -> /audio/gunshot.wav) or as { file, volume } to bake a
+ * loudness multiplier into the spec. Call sites are unchanged:
+ *   playSound(sound, { pos, z, volume, pitchVar })
  * The frame loop must call updateAudio() once per frame.
  */
 import type { Vec2 } from "./vec.ts";
@@ -249,8 +250,8 @@ function load(file: string): void {
 }
 
 /** Warm sounds ahead of first use so there's no fetch/decode gap on first play. */
-export function preload(...files: string[]): void {
-  for (const f of files) load(f);
+export function preload(...sounds: SoundRef[]): void {
+  for (const s of sounds) load(soundFile(s));
 }
 
 // ---------------------------------------------------------------------------
@@ -308,6 +309,15 @@ export function updateAudio(): void {
   }
 }
 
+/** How specs name a sound: a bare filename, or { file, volume } to bake in a
+ *  per-sound loudness multiplier (default 1, multiplies any opts.volume). */
+export type SoundRef = string | { file: string; volume?: number };
+
+/** The filename behind a SoundRef. */
+export function soundFile(sound: SoundRef): string {
+  return typeof sound === "string" ? sound : sound.file;
+}
+
 export interface PlayOpts {
   /** World position of the event; omit for a non-positional (centered) sound. */
   pos?: Vec2;
@@ -319,13 +329,14 @@ export interface PlayOpts {
   pitchVar?: number;
 }
 
-/** Play `file` once, positioned relative to the listener. */
-export function playSound(file: string, opts: PlayOpts = {}): void {
+/** Play `sound` once, positioned relative to the listener. */
+export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
   if (!HAS_AUDIO) return; // headless script
   if (resetting) return; // context teardown window during resetAudioContext()
   if (!emitting) return; // catch-up tick — advance the sim silently, don't stack sounds
 
-  let gain = opts.volume ?? 1;
+  const file = soundFile(sound);
+  let gain = (opts.volume ?? 1) * (typeof sound === "string" ? 1 : sound.volume ?? 1);
   let pan = 0;
   if (opts.pos) {
     const dx = opts.pos.x - listener.x;

@@ -11,6 +11,7 @@
  * tracks recoil/cooldown/etc. is the `Gun` class (see gun.ts).
  */
 import { STANDARD_EXPLOSION, SMALL_EXPLOSION, type ParticleStyle } from "../engine/particle.ts";
+import type { SoundRef } from "../engine/audio.ts";
 
 export interface GripLocal {
   f: number;
@@ -87,9 +88,9 @@ export interface ProjectileSpec {
    *  Omitted = the STANDARD_EXPLOSION preset. Give a launcher its own list here to
    *  make it detonate with a distinct look. */
   explosion?: readonly ParticleStyle[];
-  /** Detonation sound filename in /audio (e.g. "Explosion_01.wav"), played at the
-   *  blast. Omitted = the explosion is silent. */
-  explosionSound?: string;
+  /** Detonation sound in /audio (e.g. "Explosion_01.wav", or { file, volume }),
+   *  played at the blast. Omitted = the explosion is silent. */
+  explosionSound?: SoundRef;
 }
 
 /**
@@ -154,18 +155,19 @@ export interface GunSpec {
   primary: boolean;
   /** Icon asset basename in /assets (e.g. "m16" -> /assets/m16.png) for ground rendering. */
   icon?: string;
-  /** Firing-sound filename in /audio (e.g. "m16.wav"); omitted = the default gunshot. */
-  fireSound?: string;
-  /** Reload-sound filename in /audio, played when a reload begins. Stretch the clip
-   *  to `fire.reloadTime / 60` seconds so its final click lands on reload-complete.
-   *  Omitted = silent reload. */
-  reloadSound?: string;
-  /** "Fire-cycle" sound filename in /audio, played on every shot alongside the
-   *  gunshot — the bolt/pump action that cycles between shots on slow weapons.
-   *  Stretched to `fire.delay / 60` seconds (the time until the next shot), with
-   *  its LEADING silence preserved so the mechanical part lands the right beat
-   *  after the bang. Omitted = no cycle sound. */
-  cycleSound?: string;
+  /** Firing sound in /audio: a filename (e.g. "m16.wav") or { file, volume } to
+   *  bake in a loudness multiplier. Omitted = the default gunshot. */
+  fireSound?: SoundRef;
+  /** Reload sound in /audio (filename or { file, volume }), played when a reload
+   *  begins. Stretch the clip to `fire.reloadTime / 60` seconds so its final
+   *  click lands on reload-complete. Omitted = silent reload. */
+  reloadSound?: SoundRef;
+  /** "Fire-cycle" sound in /audio (filename or { file, volume }), played on every
+   *  shot alongside the gunshot — the bolt/pump action that cycles between shots
+   *  on slow weapons. Stretched to `fire.delay / 60` seconds (the time until the
+   *  next shot), with its LEADING silence preserved so the mechanical part lands
+   *  the right beat after the bang. Omitted = no cycle sound. */
+  cycleSound?: SoundRef;
   rightGrip: GripLocal;
   leftGrip: GripLocal;
 

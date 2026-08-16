@@ -42,6 +42,12 @@ import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import * as Guns from "../src/entities/guns.ts";
 import type { GunSpec } from "../src/entities/guns.ts";
+import { soundFile, type SoundRef } from "../src/engine/audio.ts";
+
+/** The served filename behind a spec's sound field (undefined stays undefined). */
+function fileOf(s: SoundRef | undefined): string | undefined {
+  return s === undefined ? undefined : soundFile(s);
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SRC_DIR = join(ROOT, "audio-src");
@@ -180,9 +186,9 @@ const conflicted = new Set<string>();
   const sigs = new Map<string, { sig: string; by: string }>();
   for (const [key, spec] of specs) {
     const demands: [string | undefined, string][] = [
-      [spec.fireSound, "verbatim"],
-      [spec.reloadSound, `fit:${spec.fire?.reloadTime}`],
-      [spec.cycleSound, `fit:${spec.fire?.delay}`],
+      [fileOf(spec.fireSound), "verbatim"],
+      [fileOf(spec.reloadSound), `fit:${spec.fire?.reloadTime}`],
+      [fileOf(spec.cycleSound), `fit:${spec.fire?.delay}`],
     ];
     for (const [name, sig] of demands) {
       if (!name) continue;
@@ -200,9 +206,9 @@ const conflicted = new Set<string>();
 }
 
 for (const [key, spec] of specs) {
-  if (spec.fireSound) convert(key, spec.fireSound);
+  if (spec.fireSound) convert(key, soundFile(spec.fireSound));
   for (const kind of KINDS) {
-    const name = spec[kind.field];
+    const name = fileOf(spec[kind.field]);
     if (!name) continue;
     const ticks = kind.ticks(spec);
     if (!ticks) {
