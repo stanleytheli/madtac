@@ -134,6 +134,27 @@ console.log("muzzle off-axis but lane clear — tight cone gates the careful gun
   check("careful RPG fires when settled dead-on", fires(on, ctx(w, [on, t]), t));
 }
 
+// -------------------------------------------------- must be standing still ----
+// The clearance check vets `forward`, but the round leaves along
+// rotate(forward, shoot(speedRatio)) — a launcher's moving-first-shot recoil
+// throws that ~20 degrees at half speed, which no corridor check can cover. So a
+// careful gun holds fire until the shooter has actually stopped.
+console.log("shooter still moving — the careful gun waits for it to stop:");
+{
+  const w = world();
+  const t = enemy(600, 0);
+  const rolling = armedBot(RPG, vec(0, 0), t.pos);
+  rolling.vel = vec(2, 0); // mid-stride, lane and cone both perfect
+  check("careful RPG HOLDS fire while the shooter is moving", !fires(rolling, ctx(w, [rolling, t]), t));
+  rolling.vel = vec(0, 0);
+  check("careful RPG fires once it has stopped", fires(rolling, ctx(w, [rolling, t]), t));
+  // A non-careful gun is unaffected — this gate is the careful flag's, not a
+  // blanket "no shooting on the move" rule.
+  const moving = armedBot(AWM, vec(0, 0), t.pos);
+  moving.vel = vec(2, 0);
+  check("non-careful AWM still fires on the move", fires(moving, ctx(w, [moving, t]), t));
+}
+
 // -------------------------------------------------- spec flag ------------------
 console.log("spec wiring:");
 {

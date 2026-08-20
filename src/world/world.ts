@@ -3,7 +3,9 @@ import { hasLineOfSight, pointInBox, pointInObstacle, type Box, type ObstacleGri
 import {
   BLOOD,
   CRATE_SHRAPNEL,
-  METAL_SHRAPNEL,
+  METAL_SPARKS,
+  SHRAPNEL_STYLES,
+  SHRAPNEL_TRACER_WIDTH,
   STANDARD_EXPLOSION,
   WALL_SHRAPNEL,
   spawnParticles,
@@ -100,6 +102,12 @@ export interface Obstacle {
   cross: boolean; // draw the diagonal plank "X" (crates) or not (walls)
   /** The shrapnel burst thrown when a bullet hits it. */
   particle: ParticleStyle;
+  /** What a bullet knocks off this object, by SHRAPNEL_STYLES key ("sparks",
+   *  "wood", ...) — so a wall can read as sheet metal without changing anything
+   *  else about it. A dropdown on every obstacle in the editor, purely cosmetic
+   *  like `fill`. Omitted = `particle`, the debris its kind comes with. (The
+   *  metal barrel needs no pick — sparks are already its own `particle`.) */
+  shrapnel?: string;
 }
 
 /**
@@ -249,7 +257,7 @@ export function makeCircle(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
  *  showers steel sparks when shot. Drawn by its own renderer (see drawObstacle). */
 export function makeBarrelMetal(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
   const d = 2 * r;
-  return { pos, w: d, h: d, z, round: true, style: "barrel_metal", fill: "#8a929b", stroke: "#3f474d", strokeWidth: 5, cross: false, particle: METAL_SHRAPNEL };
+  return { pos, w: d, h: d, z, round: true, style: "barrel_metal", fill: "#8a929b", stroke: "#3f474d", strokeWidth: 5, cross: false, particle: METAL_SPARKS };
 }
 
 /** A wooden barrel: same circular collider, but splinters like a crate. Drawn by
@@ -264,8 +272,13 @@ export function makeBarrelWood(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
  *  fill if the stroke is empty — so chips read as coming off *that* object even
  *  when a level overrides the paint. Obstacles with a dedicated renderer (`style`,
  *  e.g. barrels) keep the hand-authored `particle` color, since their on-screen
- *  look comes from that special pipeline, not the fill/stroke fields. */
+ *  look comes from that special pipeline, not the fill/stroke fields. An explicit
+ *  `shrapnel` pick short-circuits both — see SHRAPNEL_STYLES. */
 export function obstacleShrapnel(o: Obstacle): ParticleStyle {
+  // A named material wins over both, in its own colors (an unknown key — a level
+  // from a build that had one more material — just falls through to the default).
+  const named = o.shrapnel ? SHRAPNEL_STYLES[o.shrapnel] : undefined;
+  if (named) return named;
   if (o.style) return o.particle;
   return { ...o.particle, color: o.stroke || o.fill };
 }
@@ -853,6 +866,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     const n = Math.max(1, Math.ceil(len(b.vel) / SAMPLE_DX));
     const step = scale(b.vel, 1 / n);
     const backDir = norm(scale(b.vel, -1)); // debris flies back toward the shooter
+    // How big a bite this round takes out of whatever it hits: debris comes off
+    // bigger AND faster the heavier the round, scaled by the tracer — the one
+    // number that already says how heavy a bullet looks.
+    const grit = b.tracerWidth / SHRAPNEL_TRACER_WIDTH;
 
     let consumed = false;
     for (let i = 1; i <= n && !consumed; i++) {
@@ -875,7 +892,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       }
       if (struck) {
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
-        spawnParticles(w.particles, at, backDir, obstacleShrapnel(struck), b.z);
+        spawnParticles(w.particles, at, backDir, obstacleShrapnel(struck), b.z, grit);
         consumed = true;
         break;
       }
@@ -893,7 +910,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         }
         if (hb) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, hb!));
-          spawnParticles(w.particles, at, backDir, WALL_SHRAPNEL, b.z);
+          spawnParticles(w.particles, at, backDir, WALL_SHRAPNEL, b.z, grit);
           consumed = true;
           break;
         }

@@ -19,6 +19,7 @@ import { ARMOR_SPECS, GUN_SPECS, SKINS } from "../entities/specs.ts";
 import { TEAMS } from "../entities/team.ts";
 import { Vehicle } from "../entities/vehicle.ts";
 import { VEHICLE_SPECS } from "../entities/vehicles.ts";
+import { SHRAPNEL_STYLES } from "../engine/particle.ts";
 import { deg2rad, rad2deg, vec, type Vec2 } from "../engine/vec.ts";
 import {
   BARREL_R,
@@ -271,6 +272,22 @@ const playerSlotField = (key: "primary" | "secondary", fallback: string): FieldD
   },
 });
 
+/** Which debris a bullet knocks off an obstacle, by SHRAPNEL_STYLES key
+ *  ("" = the debris its kind comes with — a crate splinters, a wall chips).
+ *  New materials show up here for free: the dropdown is the registry. */
+const shrapnelField: FieldDef = {
+  key: "shrapnel",
+  type: "select",
+  options: () => [
+    { value: "", label: "(default)" },
+    ...Object.keys(SHRAPNEL_STYLES).map((value) => ({ value, label: value })),
+  ],
+  get: (e) => e.shrapnel ?? "",
+  set: (e, v) => {
+    e.shrapnel = v in SHRAPNEL_STYLES ? v : undefined;
+  },
+};
+
 /** Render depth within the entity's category + level (0 = default/unset —
  *  omitted from the JSON, and ties keep authoring order). */
 const depthField: FieldDef = {
@@ -288,6 +305,7 @@ const obstacleLook: FieldDef[] = [
   depthField,
   prop("invisible", "checkbox"),
   prop("visibleFrom", "json"),
+  shrapnelField,
   prop("fill", "color"),
   prop("stroke", "color"),
   prop("strokeWidth", "number"),

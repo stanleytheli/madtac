@@ -21,6 +21,10 @@ export interface Particle {
    *  it stamps a static copy of itself — same pos, orientation, and shape — that
    *  shrinks to nothing. See updateParticles. */
   trail?: string;
+  /** Fade the trail as well as shrinking it: its stamps lose alpha over their
+   *  life the way ordinary debris does, instead of holding full opacity until
+   *  they taper away. A softer streak — see updateParticles. */
+  trailFade?: boolean;
   /** Per-tick change to `size`, in the same units (px of half-extent / radius):
    *  negative shrinks (an ember burning out, trail stamps tapering away), positive
    *  expands (a growing puff), 0/undefined holds. Integrated each tick in
@@ -51,6 +55,9 @@ export interface ParticleStyle {
   /** Optional trail color "#rrggbb": each particle stamps shrinking afterimages
    *  of itself in this color as it flies (see Particle.trail). */
   trail?: string;
+  /** Optional: let that trail fade out as well as thin out (see Particle.trailFade).
+   *  Omitted = the streak holds full opacity, the way an explosion's embers do. */
+  trailFade?: boolean;
   /** Optional per-tick size change in px (see Particle.sizeChange): negative to
    *  shrink as it burns out, positive to expand. Omitted = constant size. */
   sizeChange?: number;
@@ -80,16 +87,46 @@ export const WALL_SHRAPNEL: ParticleStyle = {
   count: 6,
 };
 
-/** Bright steel sparks kicked off a metal barrel when shot — fast, small, and
- *  short-lived, so they read as a spark shower rather than debris. */
-export const METAL_SHRAPNEL: ParticleStyle = {
-  color: "#ffd27a",
+/** Bright steel sparks struck off a metal object by a bullet — the explosion's burning
+ *  shrapnel (EXPLOSION_SHRAPNEL) scaled down to an impact: same yellow squares
+ *  dragging the same trail, but thrown out of a cone rather than a full circle
+ *  and burning out inside a quarter of a second. Any obstacle can ask for these
+ *  instead of its own debris — see SHRAPNEL_STYLES. */
+export const METAL_SPARKS: ParticleStyle = {
+  color: "#b39e33",
   shape: "square",
-  size: 3,
-  speed: 5.5,
-  spread: 0.9,
+  size: 4,
+  speed: 8,
+  spread: 1.0,
   life: 10,
-  count: 8,
+  count: 4,
+  trail: "#ffe14a",
+  trailFade: true, // the streak dims as it thins, instead of winking out at full brightness
+  sizeChange: -0.4, // 4px -> 0 over the ~10-tick life (burns out)
+};
+
+/**
+ * The tracer width the debris styles above are authored against: a round this fat
+ * throws shrapnel at exactly the size and speed its style names, and anything
+ * thinner or fatter scales in proportion — a rifle chips a wall, a .50 takes a
+ * bite out of it. See spawnParticles' `heft` and the impact call in updateBullets.
+ */
+export const SHRAPNEL_TRACER_WIDTH = 4;
+
+/**
+ * The impact debris an obstacle can be given BY NAME, instead of the one its kind
+ * implies (a crate splinters, a wall chips). Keys are what a level stores and what
+ * the editor's shrapnel dropdown lists, so adding a material is one entry here —
+ * see Obstacle.shrapnel and obstacleShrapnel.
+ *
+ * A named pick is used verbatim, in its own colors: choosing `wood` on a concrete
+ * wall is asking for brown splinters, not the wall's gray restated. (The default —
+ * no pick — still tints the kind's own debris to the object's paint.)
+ */
+export const SHRAPNEL_STYLES: Record<string, ParticleStyle> = {
+  sparks: METAL_SPARKS,
+  wood: CRATE_SHRAPNEL,
+  concrete: WALL_SHRAPNEL,
 };
 
 /** Stylized red "blood" hitmarker when a character is struck. */
@@ -206,6 +243,12 @@ const DRAG = 0.86; // per-tick velocity retention (particles slow as they fly)
 /**
  * Emit a burst of particles at `pos` flying roughly along `dir` (already a unit
  * vector), spread into a cone. Pushes them into the supplied array.
+ *
+ * `heft` is how heavy the hit was: it multiplies both the size the debris comes
+ * off at (and its shrink rate with it, so the timing is unchanged) and the speed
+ * it comes off at, which is what carries the bigger pieces further. Lifetime is
+ * NOT scaled — a heavier round throws further in the same handful of ticks.
+ * 1 = the style as authored, 0 = emit nothing at all.
  */
 export function spawnParticles(
   out: Particle[],
@@ -213,11 +256,15 @@ export function spawnParticles(
   dir: Vec2,
   style: ParticleStyle,
   z = 0,
+  heft = 1,
 ): void {
+  // Nothing to throw: a round with no visible tracer at all (a punch) leaves no
+  // debris, rather than a burst of zero-size particles nobody can see.
+  if (heft <= 0) return;
   const base = angleOf(dir);
   for (let i = 0; i < style.count; i++) {
     const ang = base + (Math.random() * 2 - 1) * style.spread;
-    const speed = style.speed * (0.5 + Math.random() * 0.5);
+    const speed = style.speed * (0.5 + Math.random() * 0.5) * heft;
     const life = style.life * (0.7 + Math.random() * 0.3);
     out.push({
       pos,
@@ -227,11 +274,14 @@ export function spawnParticles(
       spin: (Math.random() * 2 - 1) * 0.4,
       life,
       maxLife: life,
-      size: style.size,
+      // Both scale, so a bigger piece still burns out over the same lifetime
+      // rather than outliving the burst it belongs to.
+      size: style.size * heft,
       color: style.color,
       shape: style.shape,
       trail: style.trail,
-      sizeChange: style.sizeChange,
+      trailFade: style.trailFade,
+      sizeChange: style.sizeChange === undefined ? undefined : style.sizeChange * heft,
       noFade: style.noFade,
     });
   }
@@ -257,7 +307,8 @@ export function updateParticles(particles: Particle[]): Particle[] {
       // Stamp at the current pos + orientation + size (whatever the parent is drawing
       // now), in the trail colour, set to shrink to nothing over STAMP_LIFE. noFade
       // => it holds full opacity and simply shrinks away, a tapering streak of
-      // afterimages. Pushed BEFORE the parent so the parent draws on top of its own
+      // afterimages; a `trailFade` parent gives that up, so its streak dims as it
+      // thins, like ordinary debris. Pushed BEFORE the parent so the parent draws on top of its own
       // trail — otherwise the fresh same-spot stamp would hide the parent every frame.
       alive.push({
         pos: vec(p.pos.x, p.pos.y),
@@ -271,7 +322,7 @@ export function updateParticles(particles: Particle[]): Particle[] {
         sizeChange: -p.size / STAMP_LIFE,
         color: p.trail,
         shape: p.shape,
-        noFade: true,
+        noFade: !p.trailFade,
       });
     }
     alive.push(p);

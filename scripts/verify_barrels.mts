@@ -20,7 +20,7 @@ import {
   segmentIntersectsObstacle,
 } from "../src/engine/collision.ts";
 import { makeBarrelMetal, makeBarrelWood, makeWall, type Obstacle } from "../src/world/world.ts";
-import { CRATE_SHRAPNEL, METAL_SHRAPNEL } from "../src/engine/particle.ts";
+import { CRATE_SHRAPNEL, METAL_SPARKS } from "../src/engine/particle.ts";
 import { BODY_RADIUS } from "../src/entities/character.ts";
 import { ENTITY_DEFS, loadLevel, serializeLevel } from "../src/world/level.ts";
 import { dist, vec, type Vec2 } from "../src/engine/vec.ts";
@@ -86,7 +86,7 @@ check("solidCircle clear past the barrel corner", !grid.solidCircle(near5050, BO
 check("the same probe is blocked by the square wall", wallGrid.solidCircle(near5050, BODY_RADIUS, 0));
 
 console.log("the two variants carry the right shrapnel + look:");
-check("metal barrel is round, bare (no cross), steel sparks", !!barrel.round && !barrel.cross && barrel.particle === METAL_SHRAPNEL);
+check("metal barrel is round, bare (no cross), steel sparks", !!barrel.round && !barrel.cross && barrel.particle === METAL_SPARKS);
 const wood = makeBarrelWood(vec(0, 0), 32, 0);
 check("wood barrel is round, planked (cross), wood splinters", !!wood.round && !!wood.cross && wood.particle === CRATE_SHRAPNEL);
 
