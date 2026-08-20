@@ -111,6 +111,18 @@ const MIN_AIM_TOLERANCE = deg2rad(15);
  *  aim point instead of loosing a round while the turn-toward swing still carries
  *  it off-axis. Same aim error underneath — this only delays the trigger. */
 const CAREFUL_AIM_TOLERANCE = deg2rad(4);
+/**
+ * A `careful` gun holds fire until the shooter has actually stopped.
+ *
+ * The clearance check vets `forward`, but the round leaves along
+ * `rotate(forward, shoot(speedRatio))` — and a launcher's moving-first-shot
+ * recoil throws that by ~10° at a tenth speed and ~20° at half, far outside any
+ * corridor a raycast could widen to. Standing still is the only state in which
+ * the vetted line and the fired line agree. Not zero: velocity decays
+ * geometrically (see FRICTION), so "stopped" is a small band — this one is the
+ * speed at which the RPG's own maxSpread() just fits inside CAREFUL_AIM_TOLERANCE.
+ */
+const CAREFUL_MAX_SPEED_RATIO = 0.01;
 /** Default reaction time, ticks (~250ms — a decent human). See
  *  RobotOptions.reactionTime; 0 restores the launch-day inhuman slickness. */
 const DEFAULT_REACTION_TIME = 15;
@@ -1665,6 +1677,10 @@ export class TacOracle extends Oracle {
     if (aimErr > Math.PI) aimErr = 2 * Math.PI - aimErr;
     const floor = careful ? CAREFUL_AIM_TOLERANCE : MIN_AIM_TOLERANCE;
     if (aimErr > Math.max(this.aimWidth(d), floor)) return false;
+    // Settled means stopped, too: see CAREFUL_MAX_SPEED_RATIO. standToShoot has
+    // already planted the gunner by now, so this only costs the few ticks the
+    // velocity takes to bleed off.
+    if (careful && this.speedRatio > CAREFUL_MAX_SPEED_RATIO) return false;
     // Careful weapons additionally veto on an actual raycast down the true heading
     // (walls + teammates); everything else keeps the cheap center-line lane check.
     return careful ? this.muzzleLineClear(ai, target) : this.laneClear(ai, target);
