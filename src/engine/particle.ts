@@ -129,7 +129,15 @@ export const SHRAPNEL_STYLES: Record<string, ParticleStyle> = {
   concrete: WALL_SHRAPNEL,
 };
 
-/** Stylized red "blood" hitmarker when a character is struck. */
+/** The lightest a blood puff is ever thrown, however small the round. Blood is
+ *  the game's ONLY hit confirmation, so unlike wall debris it must never scale
+ *  away to nothing: a punch (no tracer at all) still draws a puff, at the weight
+ *  the lightest firearm would. See the character-hit call in updateBullets. */
+export const BLOOD_MIN_HEFT = 0.75;
+
+/** Stylized red "blood" hitmarker when a character is struck. Sized and thrown
+ *  by the weight of the round that landed it (see SHRAPNEL_TRACER_WIDTH), floored
+ *  at BLOOD_MIN_HEFT. */
 export const BLOOD: ParticleStyle = {
   color: "#d11a1a",
   shape: "circle",

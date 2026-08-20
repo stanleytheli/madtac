@@ -9,6 +9,8 @@
  *   --format=esm --outfile=<tmp>/vsh.mjs && node <tmp>/vsh.mjs
  */
 import {
+  BLOOD,
+  BLOOD_MIN_HEFT,
   CRATE_SHRAPNEL,
   EXPLOSION_SHRAPNEL,
   METAL_SPARKS,
@@ -246,6 +248,47 @@ console.log("\nheavier rounds throw bigger, faster debris:");
   check("a plain wall's chips scale the same way",
     near(shootInto(makeWall(vec(0, 0), 64, 64, 0), 8)[0].size, WALL_SHRAPNEL.size * 2),
     `${shootInto(makeWall(vec(0, 0), 64, 64, 0), 8)[0].size} vs ${WALL_SHRAPNEL.size}`);
+}
+
+// ------------------------------------------------------------- blood ----------
+// A body bleeds by the weight of the round too — with a floor, because the puff
+// is the game's only hit confirmation.
+console.log("\nblood scales with the round, but never to nothing:");
+{
+  // A minimal Hittable: updateBullets only needs somewhere to land.
+  const dummy = (at: Vec2) => ({ pos: at, z: 0, registerHit: () => {}, hits: 0 });
+  const shootAt = (tracerWidth: number): Particle[] => {
+    const w: World = {
+      obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
+      bullets: [], projectiles: [], particles: [],
+    } as unknown as World;
+    const target = dummy(vec(0, 0));
+    const pen = { l1: 1, l2: 1, l3: 1, l4: 1 };
+    spawnBullet(w, vec(-200, 0), vec(1, 0), 60, 30, 0, null, 10, tracerWidth, 20, "#fff", pen, 0);
+    for (let i = 0; i < 6 && w.particles.length === 0; i++) updateBullets(w, [target]);
+    return w.particles;
+  };
+  const ref = shootAt(SHRAPNEL_TRACER_WIDTH);
+  check("a width-4 round draws the authored puff", ref.length === BLOOD.count &&
+    near(ref[0].size, BLOOD.size), `${ref[0]?.size} vs ${BLOOD.size}`);
+  const heavy = shootAt(8);
+  check("the AWM draws twice the puff", near(heavy[0].size, ref[0].size * 2),
+    `${heavy[0].size} vs ${ref[0].size}`);
+  check("...thrown twice as hard, too",
+    Math.max(...heavy.map((p) => Math.hypot(p.vel.x, p.vel.y))) >
+      Math.max(...ref.map((p) => Math.hypot(p.vel.x, p.vel.y))) * 1.5);
+
+  // The floor. A punch has no tracer at all, and would otherwise land silently.
+  const punch = shootAt(0);
+  check("a punch still draws blood — you can see you connected", punch.length === BLOOD.count,
+    `n=${punch.length}`);
+  check("...at the floor's weight", near(punch[0].size, BLOOD.size * BLOOD_MIN_HEFT),
+    `${punch[0].size} vs ${BLOOD.size * BLOOD_MIN_HEFT}`);
+  check("the floor is the lightest real gun's weight, so no firearm is clamped by it",
+    near(BLOOD_MIN_HEFT, 3 / SHRAPNEL_TRACER_WIDTH) && near(shootAt(3)[0].size, BLOOD.size * 0.75),
+    `${BLOOD_MIN_HEFT}`);
+  check("wall debris is NOT floored — a punch still chips nothing",
+    shootInto(makeWall(vec(0, 0), 64, 64, 0), 0).length === 0);
 }
 
 // --------------------------------------------------------- editor setting -----

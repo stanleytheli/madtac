@@ -2,6 +2,7 @@ import { BODY_RADIUS } from "../entities/character.ts";
 import { hasLineOfSight, pointInBox, pointInObstacle, type Box, type ObstacleGrid } from "../engine/collision.ts";
 import {
   BLOOD,
+  BLOOD_MIN_HEFT,
   CRATE_SHRAPNEL,
   METAL_SPARKS,
   SHRAPNEL_STYLES,
@@ -923,7 +924,9 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           t.registerHit(norm(b.vel), sample, b.damage, b.armorPen, b.owner, b.gun);
           if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
-          spawnParticles(w.particles, at, backDir, BLOOD, b.z);
+          // Blood scales with the round like everything else, but floored: it is
+          // the only sign you connected, so a tracerless punch still shows one.
+          spawnParticles(w.particles, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit));
           consumed = true;
           break;
         }
