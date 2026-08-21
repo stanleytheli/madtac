@@ -1,5 +1,5 @@
 import { BODY_RADIUS } from "../entities/character.ts";
-import { hasLineOfSight, pointInBox, pointInObstacle, type Box, type ObstacleGrid } from "../engine/collision.ts";
+import { hasLineOfSight, materialRunScan, penetrationCostScan, pointInBox, pointInObstacle, type Box, type ObstacleGrid } from "../engine/collision.ts";
 import {
   BLOOD,
   BLOOD_MIN_HEFT,
@@ -103,6 +103,15 @@ export interface Obstacle {
   cross: boolean; // draw the diagonal plank "X" (crates) or not (walls)
   /** The shrapnel burst thrown when a bullet hits it. */
   particle: ParticleStyle;
+  /** How thick this reads to a bullet trying to punch through, as a multiple of
+   *  how thick it actually is: 1 (the default, and what every shipped level states
+   *  outright) = its own geometry, 2 = reinforced, 0.5 = plasterboard, a big number
+   *  = never wallbangeable however heavy the round. 0 is a free pass — crossed at
+   *  no cost at all, by any round, even one with no penetration to spend. Only
+   *  penetration reads this: movement, sight and hitreg all still use the real box,
+   *  so even a 0 wall is cover you can hide behind and still blocks line of sight.
+   *  See penetrationOf. */
+  thicknessMul?: number;
   /** What a bullet knocks off this object, by SHRAPNEL_STYLES key ("sparks",
    *  "wood", ...) — so a wall can read as sheet metal without changing anything
    *  else about it. A dropdown on every obstacle in the editor, purely cosmetic
@@ -458,6 +467,17 @@ export interface Bullet {
   tracerLength: number; // cosmetic streak length behind the bullet (from the firing gun)
   tracerColor: string; // cosmetic streak color "#rrggbb" (from the firing gun)
   armorPen: ArmorPen; // per-tier penetration (from the firing gun), applied on hit
+  /** Wall-punching budget in px of geometry (from the firing gun). 0 = the round
+   *  dies at the first thing it touches, which is every gun's behaviour until it
+   *  is given a value. */
+  penetration: number;
+  /** How much of that budget the round has already spent. Drives the damage it
+   *  has left (wallbangDamageMul) and how much wall it can still cross. */
+  penUsed: number;
+  /** px of the flight path still buried in material this round has already paid
+   *  to cross, when a wall is thicker than one tick of travel. Counts down as it
+   *  flies; while it lasts, obstacle hits are the wall it is already inside. */
+  penSkip: number;
   stagger?: StaggerEffect; // movement stagger applied to the body it strikes (from the gun)
   gun: GunSpec | null; // the firing gun's spec, carried for kill-feed attribution
 }
@@ -506,6 +526,31 @@ export interface World {
    *  from the static geometry. Absent in the editor / before it's built — then
    *  losClear falls back to scanning the obstacle array. */
   grid?: ObstacleGrid;
+}
+
+/**
+ * Can a round with `budget` px of penetration get from `a` to `b` on level `z` —
+ * i.e. is the lane clear, or clear ENOUGH for this particular weapon to punch
+ * through what's in the way? A budget of 0 is the plain sight question and
+ * answers exactly what losClear does.
+ *
+ * This is the shooting counterpart to losClear, and the AI's sight checks run on
+ * it so a bot's idea of what it can reach matches what its bullets actually do
+ * (see updateBullets). Closed-form, because these run in the thousands per tick.
+ */
+export function shotClear(w: World, a: Vec2, b: Vec2, z: number, budget: number): boolean {
+  if (budget <= 0) return losClear(w, a, b, z); // same question, cheaper answer
+  return shotCost(w, a, b, z, budget) !== null;
+}
+
+/** shotClear's underlying number: px of budget the lane costs, or null if it
+ *  costs more than `budget`. 0 means nothing solid in the way at all — so one
+ *  call answers both "can I see it" (cost === 0) and "can I shoot it" (not null),
+ *  which is what the strafe scoring needs and why this is exposed at all. */
+export function shotCost(w: World, a: Vec2, b: Vec2, z: number, budget: number): number | null {
+  return w.grid
+    ? w.grid.penetrationCost(a, b, z, budget)
+    : penetrationCostScan(w.obstacles, a, b, z, budget);
 }
 
 /** Clear line of sight from `a` to `b` on level `z`, using the world's spatial
@@ -844,6 +889,132 @@ function backOut(pos: Vec2, back: Vec2, inside: (p: Vec2) => boolean): Vec2 {
 
 const SAMPLE_DX = 5; // world px between sub-tick collision samples along a bullet/projectile path
 
+// --- wallbang ----------------------------------------------------------------
+// A round with a penetration budget (GunSpec.penetration, px of geometry) can
+// punch through what it hits and keep flying, arriving weaker on the far side.
+// Everything here is inert for a gun with no budget: penetrationOf is never
+// called, and wallbangDamageMul returns 1.
+
+/** How far FORWARD of an impact to look for daylight. Caps a grazing shot down
+ *  the length of a wall, which is impenetrable anyway. */
+const PEN_MAX_SCAN = 400;
+/** How far BACK of an impact to look for the face it went in by. hitreg samples
+ *  every SAMPLE_DX px, so the first sample inside a wall is at most that deep;
+ *  this is generous slack on it, and kept small because every px of it is more
+ *  geometry the measuring segment has to be walked against. */
+const PEN_BACK = 4 * SAMPLE_DX;
+/** Damage floor for a round that spent its ENTIRE budget getting there: a
+ *  wallbang that only just made it still lands for this much of its listed damage.
+ *  The bottom of the falloff — see wallbangDamageMul. */
+export const WALLBANG_MIN_DAMAGE = 0.2;
+/** Damage ceiling for ANY round that came through a wall, however little the wall
+ *  cost it. Punching through is never free: even a token partition takes the round
+ *  down to this, and spending the budget rides it the rest of the way to
+ *  WALLBANG_MIN_DAMAGE. (A round that crossed nothing — including one waved
+ *  through a `thicknessMul: 0` free pass, which costs it nothing — is not a
+ *  wallbang at all and keeps its full damage.) */
+export const WALLBANG_MAX_DAMAGE = 0.75;
+/** The least a wallbang has to be worth before a bot will treat it as a shot at
+ *  all. Below this fraction of the round's listed damage the lane reads as no
+ *  lane: the bot won't engage through the wall, won't count the target as seen,
+ *  and won't rate the spot as contact. Stops bots trading whole magazines for
+ *  chip damage through geometry they can barely punch. See wallbangSightBudget. */
+export const WALLBANG_AI_MIN_DAMAGE = 0.35;
+/** Entry and exit debris come off at this fraction of the round's usual heft —
+ *  a wallbang scatters less than a round that spent everything stopping. */
+const WALLBANG_HEFT = 0.5;
+
+/** The solid (non-permeable) obstacle at `p` on level `z`, or null. Uses the
+ *  spatial index when there is one, and scans otherwise (editor / bare worlds). */
+function solidAt(w: World, p: Vec2, z: number): Obstacle | null {
+  if (w.grid) return w.grid.hit(p, z);
+  for (const o of w.obstacles) {
+    if (o.z !== z || o.permeable) continue;
+    if (pointInObstacle(p, o)) return o;
+  }
+  return null;
+}
+
+/**
+ * Measure the way out. Starting from `sample` — a point hitreg just found INSIDE
+ * something solid — find where the material it is standing in begins and ends
+ * along `dir`, and what crossing it costs.
+ *
+ * Returns null when the round can't afford it: the bill passed `budget` before
+ * daylight. A null is an ordinary wall hit — the round stops at the face, as it
+ * always did.
+ *
+ * The geometry is the SAME call the AI's sight checks make (see materialRun and
+ * penetrationCost): one closed-form pricing of the lane, so what a bot believes
+ * it can shoot through and what its bullets actually do can't drift apart. Both
+ * faces come out exact rather than quantized to a marching step, and material
+ * that touches is one crossing — a crate stacked against a wall is measured,
+ * charged, and dressed as a single hole through both.
+ */
+function penetrationOf(
+  w: World,
+  sample: Vec2,
+  dir: Vec2,
+  z: number,
+  budget: number,
+): { entry: Vec2; exit: Vec2; exitOf: Obstacle; cost: number } | null {
+  // Measure along a segment centred on the sample, reaching back far enough to
+  // find the face it went in by and forward far enough to find daylight. Reaching
+  // backward can't double-charge: material that touches is crossed in ONE call,
+  // and anything already paid for is separated from here by open air.
+  const a = add(sample, scale(dir, -PEN_BACK));
+  const b = add(sample, scale(dir, PEN_MAX_SCAN));
+  const atT = PEN_BACK / (PEN_BACK + PEN_MAX_SCAN);
+  const run = w.grid
+    ? w.grid.materialRun(a, b, z, atT, budget)
+    : materialRunScan(w.obstacles, a, b, z, atT, budget);
+  if (!run) return null;
+  const at = (t: number): Vec2 => vec(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+  return { entry: at(run.entryT), exit: at(run.exitT), exitOf: run.exitOf, cost: run.cost };
+}
+
+/**
+ * How much of a weapon's penetration budget is worth SPENDING, for a bot deciding
+ * whether a wall is worth shooting through. Inverts the damage curve at
+ * WALLBANG_AI_MIN_DAMAGE: spend more than this and the round arrives for too
+ * little to bother with, so the AI's sight checks run on this reduced budget and
+ * a lane that costs more simply isn't a lane.
+ *
+ * `mul(spent) = min + (max - min)(1 - spent/budget) >= cutoff`
+ *   =>  `spent <= budget * (1 - (cutoff - min) / (max - min))`
+ *
+ * A cutoff at or below the floor leaves the whole budget usable; one above the
+ * ceiling makes every wallbang worthless and leaves nothing to spend, which
+ * collapses AI sight back to plain geometry — both ends behave, so the cutoff is
+ * safe to tune anywhere.
+ */
+export function wallbangSightBudget(penetration: number): number {
+  if (penetration <= 0) return 0;
+  const span = WALLBANG_MAX_DAMAGE - WALLBANG_MIN_DAMAGE;
+  if (span <= 0) return WALLBANG_AI_MIN_DAMAGE <= WALLBANG_MIN_DAMAGE ? penetration : 0;
+  const frac = 1 - (WALLBANG_AI_MIN_DAMAGE - WALLBANG_MIN_DAMAGE) / span;
+  return penetration * Math.max(0, Math.min(1, frac));
+}
+
+/**
+ * What's left of a round's damage after the walls it has crossed:
+ * `min + (max - min) * (1 - spent/budget)` — so a round that squeaked through on
+ * its last px lands for WALLBANG_MIN_DAMAGE, one that barely noticed the wall
+ * lands for WALLBANG_MAX_DAMAGE, and nothing in between beats either end.
+ *
+ * Untouched (1) for a round that has penetrated nothing, so a gun with no budget
+ * — and any clean shot from one that has — deals exactly its listed damage. The
+ * ceiling is a wallbang tax, not a range falloff: it applies the moment a round
+ * has actually paid to cross something.
+ */
+export function wallbangDamageMul(b: Bullet): number {
+  const budget = b.penetration || 0;
+  const spent = b.penUsed || 0;
+  if (budget <= 0 || spent <= 0) return 1;
+  const frac = 1 - Math.min(1, spent / budget); // budget LEFT, 1 = spent nothing
+  return WALLBANG_MIN_DAMAGE + (WALLBANG_MAX_DAMAGE - WALLBANG_MIN_DAMAGE) * frac;
+}
+
 /**
  * Advance all bullets one tick and drop any that expire or hit something. To stop
  * fast bullets tunneling through thin walls / past characters, collision is sampled
@@ -866,7 +1037,13 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     // in space rather than in count — fast bullets get more checks, slow ones less.
     const n = Math.max(1, Math.ceil(len(b.vel) / SAMPLE_DX));
     const step = scale(b.vel, 1 / n);
-    const backDir = norm(scale(b.vel, -1)); // debris flies back toward the shooter
+    const fwd = norm(b.vel);
+    const backDir = scale(fwd, -1); // debris flies back toward the shooter
+    const pathLen = len(b.vel);
+    // px of this tick's path inside a wall the round has already paid to cross
+    // (a wall thicker than one tick of travel). Grows when it punches through
+    // something and outlasts the tick; anything nearer than this is that wall.
+    let skipUntil = b.penSkip || 0;
     // How big a bite this round takes out of whatever it hits: debris comes off
     // bigger AND faster the heavier the round, scaled by the tracer — the one
     // number that already says how heavy a bullet looks.
@@ -875,23 +1052,36 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     let consumed = false;
     for (let i = 1; i <= n && !consumed; i++) {
       const sample = add(start, scale(step, i));
+      if ((i * pathLen) / n <= skipUntil) continue; // still inside a wall it has paid for
 
       // Obstacles (walls/crates) on this bullet's level block first. Fences
       // (permeable) never stop bullets. The spatial index finds the struck wall
       // in one cell lookup; without it (editor/no index), scan the array.
-      let struck: Obstacle | null = null;
-      if (w.grid) {
-        struck = w.grid.hit(sample, b.z);
-      } else {
-        for (const o of w.obstacles) {
-          if (o.z !== b.z || o.permeable) continue;
-          if (pointInObstacle(sample, o)) {
-            struck = o;
-            break;
-          }
-        }
-      }
+      const struck = solidAt(w, sample, b.z);
       if (struck) {
+        // Can it punch through?
+        const left = (b.penetration || 0) - (b.penUsed || 0);
+        // A round with budget left asks whether it can punch through; so does ANY
+        // round when the thing it hit is free to cross, since a free pass that
+        // still stopped buckshot would not be much of a free pass. A 0 budget then
+        // buys exactly the free material and nothing else (cost > budget at the
+        // first priced step), which is what makes both readings of 0 consistent.
+        const free = (struck.thicknessMul ?? 1) === 0;
+        const pen = left > 0 || free ? penetrationOf(w, sample, fwd, b.z, left) : null;
+        if (pen) {
+          b.penUsed = (b.penUsed || 0) + pen.cost;
+          // Debris off both faces, at half a normal impact's heft: some of the
+          // round's energy went through the wall rather than into it.
+          spawnParticles(w.particles, pen.entry, backDir, obstacleShrapnel(struck), b.z, grit * WALLBANG_HEFT);
+          spawnParticles(w.particles, pen.exit, fwd, obstacleShrapnel(pen.exitOf), b.z, grit * WALLBANG_HEFT);
+          // Fly on from the far face: everything nearer than that is the wall it
+          // just crossed, and it has already been charged for it.
+          skipUntil = Math.max(
+            skipUntil,
+            (pen.exit.x - start.x) * fwd.x + (pen.exit.y - start.y) * fwd.y,
+          );
+          continue;
+        }
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
         spawnParticles(w.particles, at, backDir, obstacleShrapnel(struck), b.z, grit);
         consumed = true;
@@ -921,7 +1111,8 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
       for (const t of targets) {
         if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
-          t.registerHit(norm(b.vel), sample, b.damage, b.armorPen, b.owner, b.gun);
+          // A round that came through a wall arrives with less left in it.
+          t.registerHit(fwd, sample, b.damage * wallbangDamageMul(b), b.armorPen, b.owner, b.gun);
           if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           // Blood scales with the round like everything else, but floored: it is
@@ -934,6 +1125,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     }
 
     if (consumed) continue;
+
+    // Whatever of the crossing didn't fit in this tick's travel carries over, so
+    // next tick starts inside the wall knowing it is already paid for.
+    b.penSkip = Math.max(0, skipUntil - pathLen);
 
     // No hit along the path: commit the full move.
     b.prev = start;
@@ -967,6 +1162,7 @@ export function spawnBullet(
   z: number,
   stagger?: StaggerEffect,
   gun: GunSpec | null = null,
+  penetration = 0,
 ): void {
   w.bullets.push({
     pos: origin,
@@ -982,6 +1178,9 @@ export function spawnBullet(
     tracerLength,
     tracerColor,
     armorPen,
+    penetration,
+    penUsed: 0,
+    penSkip: 0,
     stagger,
     gun,
   });

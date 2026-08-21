@@ -1,7 +1,7 @@
 import { Character } from "./entities/actor.ts";
 import type { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
-import { worldAabb, type AABB, type Box } from "./engine/collision.ts";
+import { worldAabb, type AABB, type Box, borderFit } from "./engine/collision.ts";
 import type { VehiclePartSpec } from "./entities/vehicle.ts";
 import { Editor } from "./ui/editor.ts";
 import { Game } from "./game.ts";
@@ -497,9 +497,12 @@ function drawBarrelMetal(r: number): void {
   ctx.strokeStyle = "#3f474d";
   ctx.lineWidth = r * 0.125;
 
+  // Body out to the collider's radius, rim stroked just inside it (see borderInset).
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, Math.PI * 2);
   ctx.fill();
+  ctx.beginPath();
+  ctx.arc(0, 0, r - borderFit(r * 0.125, 2 * r).inset, 0, Math.PI * 2);
   ctx.stroke();
 
   ctx.strokeStyle = "#8b8c8e";
@@ -524,9 +527,12 @@ function drawBarrelWood(r: number): void {
   ctx.strokeStyle = "#4a300f";
   ctx.lineWidth = r * 0.125;
 
+  // Body out to the collider's radius, rim stroked just inside it (see borderInset).
   ctx.beginPath();
   ctx.arc(0, 0, r, 0, Math.PI * 2);
   ctx.fill();
+  ctx.beginPath();
+  ctx.arc(0, 0, r - borderFit(r * 0.125, 2 * r).inset, 0, Math.PI * 2);
   ctx.stroke();
 
   const innerR = r * 0.7;
@@ -569,9 +575,14 @@ function drawObstacle(o: Obstacle): void {
     else if (o.style === "barrel_wood") drawBarrelWood(r);
     else {
       // The generic circle: a filled disc with an edge stroke, and nothing else.
+      // The fill runs to the collider's own radius; the stroke rides just inside it.
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, Math.PI * 2);
       ctx.fill();
+      const edge = borderFit(o.strokeWidth, 2 * r);
+      ctx.lineWidth = edge.width;
+      ctx.beginPath();
+      ctx.arc(0, 0, r - edge.inset, 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.restore();
@@ -579,15 +590,20 @@ function drawObstacle(o: Obstacle): void {
   }
   const x = -o.w / 2;
   const y = -o.h / 2;
+  const { width, inset } = borderFit(o.strokeWidth, Math.min(o.w, o.h));
+  ctx.lineWidth = width;
   ctx.fillRect(x, y, o.w, o.h);
-  ctx.strokeRect(x, y, o.w, o.h);
+  ctx.strokeRect(x + inset, y + inset, o.w - 2 * inset, o.h - 2 * inset);
   if (o.cross) {
-    // plank "X" detail
+    // Plank "X", corner to corner of the INSET rect: a diagonal's stroke sticks
+    // out perpendicular to itself, and those components are (w/2)·sin and (w/2)·cos
+    // — never more than the inset — so pulling the ends in by it keeps the planks
+    // inside the box at whatever aspect ratio the crate has.
     ctx.beginPath();
-    ctx.moveTo(x, y);
-    ctx.lineTo(x + o.w, y + o.h);
-    ctx.moveTo(x + o.w, y);
-    ctx.lineTo(x, y + o.h);
+    ctx.moveTo(x + inset, y + inset);
+    ctx.lineTo(x + o.w - inset, y + o.h - inset);
+    ctx.moveTo(x + o.w - inset, y + inset);
+    ctx.lineTo(x + inset, y + o.h - inset);
     ctx.stroke();
   }
   ctx.restore();
@@ -677,9 +693,15 @@ function drawVehiclePart(box: Box, spec: VehiclePartSpec): void {
   ctx.fillStyle = spec.fill;
   ctx.fillRect(-box.w / 2, -box.h / 2, box.w, box.h);
   if (spec.stroke && spec.strokeWidth) {
+    const edge = borderFit(spec.strokeWidth, Math.min(box.w, box.h));
     ctx.strokeStyle = spec.stroke;
-    ctx.lineWidth = spec.strokeWidth;
-    ctx.strokeRect(-box.w / 2, -box.h / 2, box.w, box.h);
+    ctx.lineWidth = edge.width;
+    ctx.strokeRect(
+      -box.w / 2 + edge.inset,
+      -box.h / 2 + edge.inset,
+      box.w - 2 * edge.inset,
+      box.h - 2 * edge.inset,
+    );
   }
   ctx.restore();
 }
@@ -924,17 +946,43 @@ function render(): void {
         // An obstacle's optional visibleFrom/invisible are purely cosmetic
         // (second-story walls hidden from the ground, invisible barriers) — it
         // still collides either way.
-        for (const o of world.obstacles) {
-          if (o.z !== z || o.invisible || !rectInView(o)) continue;
-          if (!o.visibleFrom || zsetHas(o.visibleFrom, player.z)) drawObstacle(o);
-        }
+
         for (const b of bodies) if (b.z === z && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
+
+        for (const it of world.items)
+          if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
+
+        // Rounds sit between the two kinds of obstacle: OVER what they fly
+        // through, UNDER what stops them. A fence (permeable) never stops a bullet
+        // or a rocket, so a tracer crossing one belongs in front of it; a wall does
+        // stop them, so it hides what it swallowed — and a wallbanging round
+        // disappears into the near face and reappears past the far one, which is
+        // exactly what it did.
+        //
+        // Authored `depth` still orders each group internally (both passes walk
+        // the same depth-sorted array); what this gives up is depth ordering
+        // BETWEEN a fence and a wall, which now always resolves fence-first.
+        const drawObstaclesWhere = (permeable: boolean): void => {
+          for (const o of world.obstacles) {
+            if (o.z !== z || o.invisible || !rectInView(o)) continue;
+            if (!!o.permeable !== permeable) continue;
+            if (!o.visibleFrom || zsetHas(o.visibleFrom, player.z)) drawObstacle(o);
+          }
+        };
+
+        drawObstaclesWhere(true);
+        drawBullets(z);
+        drawProjectiles(z);
+        drawObstaclesWhere(false);
+
+
         // Vehicle chassis (parts drawn UNDER occupants); the turret/roof parts
         // (`over`) draw after the characters below, so occupants sit inside the hull.
         for (const v of world.vehicles) {
           if (v.z !== z || !aabbInView(v.aabb())) continue;
           for (const pw of v.worldParts()) if (!pw.spec.over) drawVehiclePart(pw.box, pw.spec);
         }
+
         // Enter-prompt ring on the seat the player would board with E.
         if (game?.enterable && game.enterable.vehicle.z === z) {
           const sp = game.enterable.vehicle.seatWorld(game.enterable.seat);
@@ -944,10 +992,9 @@ function render(): void {
           ctx.arc(sp.x, sp.y, BODY_RADIUS + 6, 0, Math.PI * 2);
           ctx.stroke();
         }
+
         // Highlight the item the player would grab with E (drawn by the item so
         // the ring sits between its backdrop disc and its sprite).
-        for (const it of world.items)
-          if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
         if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
         for (const c of characters) if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx);
         // Turret/roof parts on top of the occupants.
@@ -955,8 +1002,6 @@ function render(): void {
           if (v.z !== z || !aabbInView(v.aabb())) continue;
           for (const pw of v.worldParts()) if (pw.spec.over) drawVehiclePart(pw.box, pw.spec);
         }
-        drawBullets(z);
-        drawProjectiles(z);
         drawParticles(ctx, world.particles, z);
       });
 

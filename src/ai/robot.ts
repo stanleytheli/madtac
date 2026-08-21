@@ -6,7 +6,7 @@ import type { NavGraph } from "../world/nav.ts";
 import { profiler } from "../engine/profiler.ts";
 import { areHostile, type TeamId } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { losClear, type World } from "../world/world.ts";
+import { losClear, shotClear, wallbangSightBudget, type World } from "../world/world.ts";
 
 /** A gamemode objective an AI can be steered toward (a domination capture point):
  *  its location + who controls it ("gray" = neutral) so AIs prefer un-held ones. */
@@ -366,15 +366,35 @@ export class Robot extends Character {
     return this.visibility(world, target) > 0;
   }
 
-  /** How exposed the target is from here: the number of its sample points
-   *  (0..5, see targetPoints) with an unobstructed ray on this character's
-   *  level. 0 = fully hidden, 5 = fully in the open. */
+  /**
+   * How exposed the target is from here: the number of its sample points
+   * (0..5, see targetPoints) this character can put a round through, on its own
+   * level. 0 = fully hidden, 5 = fully in the open.
+   *
+   * "Can put a round through", not "can see": a weapon with a penetration budget
+   * counts a point it could shoot through a thin wall (see shotClear), because a
+   * bot that refuses to engage what its own bullets would go through is reading
+   * the map differently from the way the sim resolves it. A weapon with no budget
+   * — every gun until one is given a rating, and the shotguns and fists forever —
+   * asks the plain sight question, unchanged.
+   */
   protected visibility(world: World, target: Character): number {
+    const budget = this.wallbangBudget;
     let seen = 0;
     for (const pt of targetPoints(target)) {
-      if (losClear(world, this.pos, pt, this.z)) seen += 1;
+      if (budget > 0
+        ? shotClear(world, this.pos, pt, this.z, budget)
+        : losClear(world, this.pos, pt, this.z)) seen += 1;
     }
     return seen;
+  }
+
+  /** px of wall the weapon in hand can punch through and still be WORTH shooting
+   *  through — the gun's rating, cut down to what leaves the round enough damage
+   *  to matter (see wallbangSightBudget). 0 for anything that can't penetrate,
+   *  which is the pre-wallbang behaviour exactly. */
+  protected get wallbangBudget(): number {
+    return wallbangSightBudget(this.gun.spec.penetration ?? 0);
   }
 }
 

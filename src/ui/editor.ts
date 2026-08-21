@@ -14,7 +14,7 @@
  */
 import type { Character } from "../entities/actor.ts";
 import { BODY_RADIUS } from "../entities/character.ts";
-import { pointInBox } from "../engine/collision.ts";
+import { borderFit, pointInBox } from "../engine/collision.ts";
 import { GAMEMODES } from "../gamemodes/gamemode.ts";
 import { DEFAULT_TDM } from "../gamemodes/tdm.ts";
 import { DEFAULT_DOM } from "../gamemodes/domination.ts";
@@ -544,8 +544,10 @@ export class Editor {
       ctx.fillStyle = o.fill;
       ctx.fillRect(-o.w / 2, -o.h / 2, o.w, o.h);
       ctx.strokeStyle = o.stroke;
-      ctx.lineWidth = o.strokeWidth;
-      ctx.strokeRect(-o.w / 2, -o.h / 2, o.w, o.h);
+      const ghost = borderFit(o.strokeWidth, Math.min(o.w, o.h));
+      ctx.lineWidth = ghost.width;
+      ctx.strokeRect(-o.w / 2 + ghost.inset, -o.h / 2 + ghost.inset,
+                     o.w - 2 * ghost.inset, o.h - 2 * ghost.inset);
       ctx.restore();
     }
 

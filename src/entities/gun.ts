@@ -405,6 +405,7 @@ export class Gun implements Droppable {
         owner.z, // the bullet lives on the shooter's level
         this.spec.stagger,
         this.spec,
+        this.spec.penetration ?? 0,
       );
     } else {
       for (let i = 0; i < this.spec.shotgunPellets; i++) {
@@ -425,6 +426,7 @@ export class Gun implements Droppable {
           owner.z, // the bullet lives on the shooter's level
           this.spec.stagger,
           this.spec,
+          this.spec.penetration ?? 0,
         );
       }
     }

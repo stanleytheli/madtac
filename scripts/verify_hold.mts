@@ -26,7 +26,7 @@ import { DEFAULT_MODE, GAMEMODES } from "../src/gamemodes/gamemode.ts";
 import { Game } from "../src/game.ts";
 import { NavGraph } from "../src/world/nav.ts";
 import { ObstacleGrid } from "../src/engine/collision.ts";
-import { losClear, type World } from "../src/world/world.ts";
+import { losClear, shotClear, type World } from "../src/world/world.ts";
 import { TacOracle } from "../src/ai/tacoracle.ts";
 import { DominationOracle } from "../src/ai/domoracle.ts";
 import { Robot, type AiContext, type ObjectivePoint } from "../src/ai/robot.ts";
@@ -97,11 +97,20 @@ function checkPlan(
   const cover = any.holdCover!;
   const peek = any.holdPeek!;
 
-  // ENTRY is visible from where the plan was made.
-  if (!losClear(world, botPos, entry, z)) {
-    check("entry point visible from the anchor", false, `bot=${fmt(botPos)} entry=${fmt(entry)}`);
+  // ENTRY is somewhere the bot can put a ROUND from where the plan was made —
+  // which since wallbang is not the same as somewhere it can see: a weapon with a
+  // penetration budget will happily hold an angle through a thin partition,
+  // because that is a lane its bullets really do cross (see shootingLaneClear).
+  const budget: number = any.wallbangBudget ?? 0;
+  const reaches = (from: Vec2, to: Vec2): boolean =>
+    budget > 0 ? shotClear(world, from, to, z, budget) : losClear(world, from, to, z);
+  if (!reaches(botPos, entry)) {
+    check("entry point is a lane the anchor can shoot down", false,
+      `bot=${fmt(botPos)} entry=${fmt(entry)} budget=${budget}`);
   }
-  // COVER is out of sight of the entry point.
+  // COVER is out of SIGHT of the entry point — geometric on purpose. Cover is
+  // cover: a spot is hidden if nobody can see it, whatever a rifle might punch
+  // through (the deliberate asymmetry, see Obstacle.thicknessMul callers).
   if (losClear(world, cover, entry, z)) {
     check("covered point cannot see the entry point", false,
       `cover=${fmt(cover)} entry=${fmt(entry)}`);
@@ -113,13 +122,13 @@ function checkPlan(
   const path = any.holdPath;
   const pred = path.length >= 2 ? path[path.length - 2] : path.length === 1 ? botPos : null;
   if (pred) {
-    if (losClear(world, pred, entry, z)) tally.predSeen += 1;
+    if (reaches(pred, entry)) tally.predSeen += 1;
     else tally.predBlind += 1;
   }
-  // PEEK must be able to WATCH the entry point.
-  if (!losClear(world, peek, entry, z)) {
-    check("peek spot can see the entry point", false,
-      `peek=${fmt(peek)} entry=${fmt(entry)}`);
+  // PEEK must be able to COVER the entry point — same reading as the anchor.
+  if (!reaches(peek, entry)) {
+    check("peek spot covers the entry point", false,
+      `peek=${fmt(peek)} entry=${fmt(entry)} budget=${budget}`);
   }
   tally.peeks += 1;
   // The walk must END at the peek, never at the cover — otherwise the bot walks
@@ -153,7 +162,7 @@ function geometrySuite(level: string): void {
   console.log(`      plans=${tally.planned} no-plan=${tally.noPlan}`);
   check("HOLD finds cover on a real level more often than not", tally.planned > tally.noPlan,
     `planned=${tally.planned} vs none=${tally.noPlan}`);
-  check("the peek-toward node always sees the entry point",
+  check("the peek-toward node always covers the entry point",
     tally.predBlind === 0, `sees=${tally.predSeen} blind=${tally.predBlind}`);
   check("every committed hold can watch its entry point", tally.peeks === tally.planned,
     `peeks=${tally.peeks} plans=${tally.planned}`);
