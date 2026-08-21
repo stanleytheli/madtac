@@ -1,6 +1,6 @@
 import type { Armor } from "./armor.ts";
 import type { TeamId } from "./team.ts";
-import { drawCharacter, type Skin } from "./character.ts";
+import { drawCharacter, type CharLayer, type Skin } from "./character.ts";
 import { UtilityStack, type UtilitySpec } from "./consumable.ts";
 import { Gun } from "./gun.ts";
 import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.ts";
@@ -575,9 +575,15 @@ export class Character {
   /**
    * Draw the character: the gun supplies hand positions and renders itself; the
    * Character draws the body around the head and the hands on top of the gun.
+   *
+   * `layer` splits it where the bullets do — see CharLayer. The renderer draws
+   * every character's limbs, then the tracers, then every character's head, so a
+   * round passes in front of arms and gun and disappears behind the body it hits.
+   * The slung weapon and the held utility ride with the limbs; both are worn
+   * kit, not hitbox.
    */
-  draw(ctx: CanvasRenderingContext2D): void {
-    this.drawSlung(ctx); // behind the body, so the torso covers its middle
+  draw(ctx: CanvasRenderingContext2D, layer: CharLayer = "all"): void {
+    if (layer !== "head") this.drawSlung(ctx); // behind the body, so the torso covers its middle
     const gun = this.gun;
     // While the belt is held there's no gun; the hands play the utility's own
     // use animation (or hold the fists pose) instead of the gun's hand track.
@@ -592,8 +598,10 @@ export class Character {
       this.skin,
       () => gun.draw(ctx, this.pos, this.forward, this.skin.outline),
       this.armor,
+      undefined,
+      layer,
     );
-    if (this.equipped === "utility") this.drawHeldUtility(ctx, hands);
+    if (layer !== "head" && this.equipped === "utility") this.drawHeldUtility(ctx, hands);
   }
 
   /** Hand positions while holding the belt: the fists' rest grips, overridden by

@@ -237,6 +237,17 @@ function circle(ctx: CanvasRenderingContext2D, c: Vec2, r: number, color: string
  * below the hands) — the Gun owns its own rendering; the Character only places
  * the hands. z-order: arms -> shoulders -> shoulder pads -> gun -> hands -> head.
  */
+/**
+ * Which half of a character to draw. The body splits where a bullet's business
+ * with it splits: rounds pass over the arms, the hands and the gun (cosmetic
+ * reach, no hitbox), and stop at the head, which IS the hitbox — hitreg is a
+ * circle of BODY_RADIUS about the same centre. Drawing the two halves either
+ * side of the tracer pass puts the round in front of what it flies past and
+ * behind what it hits. "all" draws both, for anything not layered against
+ * bullets (corpses, previews).
+ */
+export type CharLayer = "all" | "limbs" | "head";
+
 export function drawCharacter(
   ctx: CanvasRenderingContext2D,
   headCenter: Vec2,
@@ -247,6 +258,7 @@ export function drawCharacter(
   drawGun: () => void,
   armor: Armor | null = null,
   p: CharParams = DEFAULT_PARAMS,
+  layer: CharLayer = "all",
 ): void {
   const rightLimb = solveLimb(headCenter, forward, +1, rightHand, p);
   const leftLimb = solveLimb(headCenter, forward, -1, leftHand, p);
@@ -269,22 +281,28 @@ export function drawCharacter(
     fillEllipse(e, color);
   };
 
-  drawPart(leftLimb.lowerArm, skin.leftForearm)
-  drawPart(leftLimb.upperArm, skin.leftUpperarm)
-  drawPart(leftLimb.shoulder, skin.leftShoulder)
+  // Limbs: arms, shoulder caps, the armour's shoulder pads, the gun and the
+  // hands — everything a round flies OVER rather than into.
+  if (layer !== "head") {
+    drawPart(leftLimb.lowerArm, skin.leftForearm)
+    drawPart(leftLimb.upperArm, skin.leftUpperarm)
+    drawPart(leftLimb.shoulder, skin.leftShoulder)
 
-  drawPart(rightLimb.lowerArm, skin.rightForearm)
-  drawPart(rightLimb.upperArm, skin.rightUpperarm)
-  drawPart(rightLimb.shoulder, skin.rightShoulder)
+    drawPart(rightLimb.lowerArm, skin.rightForearm)
+    drawPart(rightLimb.upperArm, skin.rightUpperarm)
+    drawPart(rightLimb.shoulder, skin.rightShoulder)
 
-  // Cosmetic shoulder pads: above the shoulder caps, below the head — so they
-  // cap the shoulders but never occlude the face.
-  if (armor) armor.drawShoulderPadsOverBody(ctx, forward, leftLimb.shoulder, rightLimb.shoulder, o, skin.outline);
+    // Cosmetic shoulder pads: above the shoulder caps, below the head — so they
+    // cap the shoulders but never occlude the face.
+    if (armor) armor.drawShoulderPadsOverBody(ctx, forward, leftLimb.shoulder, rightLimb.shoulder, o, skin.outline);
 
-  drawGun();
+    drawGun();
 
-  drawCircle(leftHand, p.rHand, skin.leftHand);
-  drawCircle(rightHand, p.rHand, skin.rightHand);
+    drawCircle(leftHand, p.rHand, skin.leftHand);
+    drawCircle(rightHand, p.rHand, skin.rightHand);
+  }
+
+  if (layer === "limbs") return;
 
   // Head region: draw the head, then any worn armor as an inner border ring on top
   // (keeps the silhouette size), then the helmet cap on top of that.

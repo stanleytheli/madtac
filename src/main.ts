@@ -990,6 +990,12 @@ function render(): void {
         };
 
         drawObstaclesWhere(true);
+        // Arms, hands and gun go UNDER the rounds: cosmetic reach with no hitbox
+        // behind it, so a tracer crossing them belongs in front. The heads —
+        // which are the hitbox — come after, further down this pass.
+        for (const c of characters) {
+          if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "limbs");
+        }
         drawBullets(z);
         drawProjectiles(z);
         drawObstaclesWhere(false);
@@ -1015,7 +1021,10 @@ function render(): void {
         // Highlight the item the player would grab with E (drawn by the item so
         // the ring sits between its backdrop disc and its sprite).
         if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
-        for (const c of characters) if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx);
+        // ...and the heads on top of the rounds, since that is what stops them.
+        for (const c of characters) {
+          if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "head");
+        }
         // Turret/roof parts on top of the occupants.
         for (const v of world.vehicles) {
           if (v.z !== z || !aabbInView(v.aabb())) continue;
