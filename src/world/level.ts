@@ -272,6 +272,19 @@ const playerSlotField = (key: "primary" | "secondary", fallback: string): FieldD
   },
 });
 
+/** How thick this obstacle reads to a bullet trying to punch through it, as a
+ *  multiple of its real geometry (see Obstacle.thicknessMul). Unset reads as 1 and
+ *  writes as 1, so every saved object states its own — which leaves 0 free to mean
+ *  what it says, a free pass, rather than doubling as "no value here". */
+const thicknessMulField: FieldDef = {
+  key: "thicknessMul",
+  type: "number",
+  get: (e) => e.thicknessMul ?? 1,
+  set: (e, v) => {
+    e.thicknessMul = v;
+  },
+};
+
 /** Which debris a bullet knocks off an obstacle, by SHRAPNEL_STYLES key
  *  ("" = the debris its kind comes with — a crate splinters, a wall chips).
  *  New materials show up here for free: the dropdown is the registry. */
@@ -306,6 +319,7 @@ const obstacleLook: FieldDef[] = [
   prop("invisible", "checkbox"),
   prop("visibleFrom", "json"),
   shrapnelField,
+  thicknessMulField,
   prop("fill", "color"),
   prop("stroke", "color"),
   prop("strokeWidth", "number"),

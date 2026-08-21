@@ -194,6 +194,18 @@ export interface GunSpec {
   damage: number;
   /** Per-tier armor penetration. Stored now; consumed once armor exists. */
   armorPen: ArmorPen;
+  /**
+   * How much wall this round can punch through, in world px of geometry, at a
+   * wall's face value (an obstacle's `thicknessMul` bends what a px costs). Spent
+   * as a budget across everything one bullet crosses, and what's left of it decides
+   * how much damage survives the trip — see penetrationOf / wallbangDamageMul.
+   *
+   * Calibrated against the standard 40px wall: pistol-caliber rounds clear a thin
+   * 20px partition and stop at a real wall, rifles get through one, and the big
+   * bolt guns get through one and a bit more. Omitted or 0 = no wallbang at all;
+   * the round dies at the first thing it touches, exactly as it always has.
+   */
+  penetration?: number;
   /** Camera zoom while equipped. Higher = more vision; longer-range weapons see further. */
   zoom: number;
   /** Movement speed multiplier while equipped (CSGO-style: heavier guns are slower). */
@@ -311,6 +323,7 @@ export const M16: GunSpec = {
   ],
   damage: 20,
   armorPen: DEFAULT_AP_MED,
+  penetration: 20,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -373,6 +386,7 @@ export const M4A1S: GunSpec = {
   ],
   damage: 23,
   armorPen: DEFAULT_AP_MED,
+  penetration: 20,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -431,6 +445,7 @@ export const AK47: GunSpec = {
   ],
   damage: 26,
   armorPen: DEFAULT_AP_MHIGH,
+  penetration: 30,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -490,6 +505,7 @@ export const MP5: GunSpec = {
   ],
   damage: 18,
   armorPen: DEFAULT_AP_LOW,
+  penetration: 15,
   zoom: 2.1,
   speed: 0.90,
   fire: {
@@ -551,6 +567,7 @@ export const SCAR17: GunSpec = {
   ],
   damage: 34,
   armorPen: DEFAULT_AP_MHIGH,
+  penetration: 30,
   zoom: 2.5,
   speed: 0.80,
   fire: {
@@ -638,6 +655,7 @@ export const Scout: GunSpec = {
   ],
   damage: 65,
   armorPen: DEFAULT_AP_MHIGH,
+  penetration: 40,
   zoom: 2.7,
   speed: 0.75,
   stagger: { mul: 0.5, ticks: 30 },
@@ -722,6 +740,7 @@ export const AWM: GunSpec = {
   ],
   damage: 100,
   armorPen: DEFAULT_AP_HIGH,
+  penetration: 50,
   zoom: 2.7,
   speed: 0.65,
   stagger: { mul: 0.5, ticks: 45 },
@@ -787,6 +806,7 @@ export const MP220: GunSpec = {
   ],
   damage: 10,
   armorPen: DEFAULT_AP_XLOW,
+  penetration: 0, // buckshot: a wall eats it
   shotgunPellets: 9,
   shotgunSpread: 2.5,
   zoom: 1.9,
@@ -863,6 +883,7 @@ export const Mossberg500: GunSpec = {
   ],
   damage: 10,
   armorPen: DEFAULT_AP_XLOW,
+  penetration: 0, // buckshot: a wall eats it
   shotgunPellets: 9,
   shotgunSpread: 2.25,
   zoom: 1.9,
@@ -942,6 +963,7 @@ export const M249: GunSpec = {
 
   damage: 18,
   armorPen: DEFAULT_AP_MED,
+  penetration: 20,
   zoom: 2.3,
   speed: 0.75,
   fire: {
@@ -1010,6 +1032,7 @@ export const RPG: GunSpec = {
 
   damage: 110,
   armorPen: DEFAULT_AP_XHIGH,
+  penetration: 0, // unused: launchers spawn a projectile, not a bullet
   zoom: 2.3,
   speed: 0.65,
   careful: true, // AI won't loose a rocket into a corner or a squadmate
@@ -1080,6 +1103,7 @@ export const M79: GunSpec = {
 
   damage: 75,
   armorPen: DEFAULT_AP_HIGH,
+  penetration: 0, // unused: launchers spawn a projectile, not a bullet
   zoom: 2.1,
   speed: 0.80,
   careful: true, // AI won't loose a rocket into a corner or a squadmate
@@ -1172,6 +1196,7 @@ export const Golden_M249: GunSpec = {
 
   damage: 15,
   armorPen: DEFAULT_AP_MED,
+  penetration: 20,
   zoom: 2.3,
   speed: 0.75,
   fire: {
@@ -1230,6 +1255,7 @@ export const M9: GunSpec = {
   ],
   damage: 17,
   armorPen: DEFAULT_AP_LOW,
+  penetration: 15,
   zoom: 1.9,
   speed: 0.925,
   fire: {
@@ -1288,6 +1314,7 @@ export const Skorpion: GunSpec = {
   ],
   damage: 20,
   armorPen: DEFAULT_AP_LOW,
+  penetration: 15,
   zoom: 1.9,
   speed: 0.925,
   fire: {
@@ -1345,6 +1372,7 @@ export const Uzi: GunSpec = {
   ],
   damage: 17,
   armorPen: DEFAULT_AP_LOW,
+  penetration: 15,
   zoom: 1.9,
   speed: 0.925,
   fire: {
@@ -1399,6 +1427,7 @@ export const Colt44: GunSpec = {
   ],
   damage: 30,
   armorPen: DEFAULT_AP_HIGH,
+  penetration: 30,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -1461,6 +1490,7 @@ export const USPS: GunSpec = {
 
   damage: 22,
   armorPen: DEFAULT_AP_MLOW,
+  penetration: 20,
   zoom: 2.1,
   speed: 0.925,
   fire: {
@@ -1517,6 +1547,7 @@ export const Deagle: GunSpec = {
   ],
   damage: 40,
   armorPen: DEFAULT_AP_HIGH,
+  penetration: 35,
   zoom: 2.1,
   speed: 0.85,
   fire: {
@@ -1572,6 +1603,7 @@ export const Golden_Deagle: GunSpec = {
   ],
   damage: 50,
   armorPen: DEFAULT_AP_HIGH,
+  penetration: 35,
   zoom: 2.2,
   speed: 0.8,
   fire: {
@@ -1612,6 +1644,7 @@ export const UNARMED: GunSpec = {
   leftGrip: { f: 70, l: -20 },
   damage: 20,
   armorPen: DEFAULT_AP_MHIGH,
+  penetration: 0, // a fist punches nobody through a wall
   zoom: 1.9,
   speed: 1.0,
   fire: {

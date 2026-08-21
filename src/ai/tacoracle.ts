@@ -79,7 +79,7 @@ import { profiler } from "../engine/profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { losClear, type Hittable } from "../world/world.ts";
+import { losClear, shotClear, shotCost, wallbangSightBudget, type Hittable } from "../world/world.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
@@ -343,6 +343,16 @@ const PICKUP_RANGE = BODY_RADIUS + 35;
 function fightingRangeOf(c: Character): number {
   const weapon = c.slots.primary ?? c.slots.secondary;
   return weapon ? weapon.feasibleRange : c.gun.feasibleRange;
+}
+
+/** px of wall `c` could punch through in a fight — the same "what it would fight
+ *  with, not what's in its hands this instant" reading as fightingRangeOf, for
+ *  the same reason: a hostile jogging up with its rifle holstered is still a
+ *  rifle threat once it arrives. Its OWN sight checks use the gun in hand
+ *  (Robot.wallbangBudget); this is for reasoning about somebody else. */
+function fightingPenetrationOf(c: Character): number {
+  const weapon = c.slots.primary ?? c.slots.secondary;
+  return wallbangSightBudget((weapon ?? c.gun).spec.penetration ?? 0);
 }
 
 /** Is teammate `mate` downrange of a shot from `from` at `to` — in front of the
@@ -1470,12 +1480,18 @@ export class TacOracle extends Oracle {
     fromZ: number,
     tgt: Character,
     range: number,
+    budget: number,
     fromNode?: number,
     tgtGoal?: number,
   ): number {
     // Only a mover on the target's own level can see it (bullets are z-bound).
+    // "Sight" here means a lane the MOVER's weapon could actually put a round
+    // down, so a rifle reaches contact through a thin partition a shotgun has to
+    // walk around — the same reason `range` is the mover's and not ours.
     const seesFrom = (p: Vec2, z: number): boolean =>
-      z === tgt.z && targetPoints(tgt).some((pt) => losClear(ai.world, p, pt, z));
+      z === tgt.z &&
+      targetPoints(tgt).some((pt) =>
+        budget > 0 ? shotClear(ai.world, p, pt, z, budget) : losClear(ai.world, p, pt, z));
     /** Straight closing distance from a point that already has the line. */
     const gapAt = (p: Vec2): number => Math.max(0, dist(p, tgt.pos) - range);
 
@@ -1555,12 +1571,13 @@ export class TacOracle extends Oracle {
     let threat: Character | null = null;
     const myRange = this.fightingRange; // not what's in hand — see fightingRange
     for (const h of near) {
-      const my = this.routeUntilSight(ai, this.pos, this.z, h, myRange, myNode, undefined);
+      const my = this.routeUntilSight(ai, this.pos, this.z, h, myRange, this.wallbangBudget, myNode, undefined);
       if (my < myMin) myMin = my;
       // The enemy shoots us with ITS weapon, so its reach gates its contact.
       // Their FIGHTING range too — a hostile sprinting at us with its weapon
       // holstered is not actually a punching-only threat.
-      const en = this.routeUntilSight(ai, h.pos, h.z, this, fightingRangeOf(h), undefined, mySightGoal);
+      const en = this.routeUntilSight(
+        ai, h.pos, h.z, this, fightingRangeOf(h), fightingPenetrationOf(h), undefined, mySightGoal);
       if (en < enemyMin) {
         enemyMin = en;
         threat = h;
@@ -1587,7 +1604,10 @@ export class TacOracle extends Oracle {
    *  refresh. That's the same tradeoff `mateHolding` makes for cover, and far
    *  cheaper than re-planning whenever someone walks past. */
   private shootingLaneClear(ai: AiContext, from: Vec2, to: Vec2): boolean {
-    if (!losClear(ai.world, from, to, this.z)) return false;
+    const budget = this.wallbangBudget;
+    if (!(budget > 0 ? shotClear(ai.world, from, to, this.z, budget) : losClear(ai.world, from, to, this.z))) {
+      return false;
+    }
     return !ai.characters.some(
       (c) =>
         c !== this &&
@@ -1644,14 +1664,19 @@ export class TacOracle extends Oracle {
     const end = add(this.pos, scale(this.forward, d));
     // Wall: the centre line, plus (for a bodied projectile) two rails offset by
     // its radius, must be clear of obstacles between muzzle and target.
-    if (!losClear(ai.world, this.pos, end, this.z)) return false;
+    // A round that can punch through what's in the lane still gets there — the
+    // budget is the same one updateBullets will spend when the trigger goes.
+    const budget = this.wallbangBudget;
+    const laneOk = (p: Vec2, q: Vec2): boolean =>
+      budget > 0 ? shotClear(ai.world, p, q, this.z, budget) : losClear(ai.world, p, q, this.z);
+    if (!laneOk(this.pos, end)) return false;
     const margin = this.gun.spec.projectile?.bodyRadius ?? 0;
     if (margin > 0) {
       const side = scale(perp(this.forward), margin);
       const a = add(this.pos, side);
       const b = sub(this.pos, side);
-      if (!losClear(ai.world, a, add(a, scale(this.forward, d)), this.z)) return false;
-      if (!losClear(ai.world, b, add(b, scale(this.forward, d)), this.z)) return false;
+      if (!laneOk(a, add(a, scale(this.forward, d)))) return false;
+      if (!laneOk(b, add(b, scale(this.forward, d)))) return false;
     }
     // Teammate anywhere along the true heading (within the friendly margin).
     return !this.teammates(ai, target).some((m) => friendInLine(this.pos, end, m.pos, FRIENDLY_MARGIN));
@@ -1811,6 +1836,7 @@ export class TacOracle extends Oracle {
         h.z,
         this,
         fightingRangeOf(h), // their drawn weapon, not whatever is in their hands
+        fightingPenetrationOf(h), // ...and what that weapon can shoot through
         undefined,
         mySightGoal,
       );
@@ -2099,9 +2125,15 @@ export class TacOracle extends Oracle {
     // everywhere — pure cover, never a firing spot.
     if (opponent.z === fromZ) {
       const mates = this.teammates(ai, opponent, fromZ);
+      // One query answers both halves. `cost === 0` is nothing solid in the way —
+      // plain sight, which is what EXPOSURE means (cover is cover: a spot behind
+      // a wall the enemy could shoot through still counts as cover here). A cost
+      // this weapon can afford means a lane it could FIRE down, wall or no wall.
+      const budget = this.wallbangBudget;
       for (const pt of targetPoints(opponent)) {
-        if (!losClear(ai.world, from, pt, fromZ)) continue; // geometry: 0
-        exposed += 1; // a friend in the ray is a bad lane, but never cover
+        const cost = shotCost(ai.world, from, pt, fromZ, budget);
+        if (cost === null) continue; // can't reach it at all: 0
+        if (cost === 0) exposed += 1; // seen from here, so this is not cover
         if (mates.some((m) => friendInLine(from, pt, m.pos, FRIENDLY_MARGIN))) {
           score -= 1;
         } else {

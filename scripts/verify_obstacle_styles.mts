@@ -22,6 +22,8 @@ import {
   makeWall,
   type Obstacle,
 } from "../src/world/world.ts";
+import { borderFit } from "../src/engine/collision.ts";
+import { VEHICLE_SPECS } from "../src/entities/vehicles.ts";
 import { vec } from "../src/engine/vec.ts";
 
 let pass = 0,
@@ -105,6 +107,65 @@ console.log("\nround-trip through the level format preserves every kind:");
     styles.join(",") === ["(plain)", "barrel_metal", "barrel_wood"].join(","),
     styles.join(","),
   );
+}
+
+// --------------------------------------------------- borders show the hitbox ---
+// A canvas stroke straddles its path, so a border drawn on an obstacle's own edge
+// paints half its width OUTSIDE the collider. borderInset pulls it in; what this
+// pins is the property that buys: the painted silhouette never exceeds the box a
+// bullet or a body actually hits, and never misses it by more than a px either.
+console.log("\nborders paint inside the collider, not around it:");
+{
+  // Painted half-extent along an axis: the inset path plus the half-stroke that
+  // still hangs off it outward.
+  const painted = (half: number, sw: number, thin: number): number => {
+    const { width, inset } = borderFit(sw, thin);
+    return half - inset + width / 2;
+  };
+
+  let worstOut = -Infinity;
+  let worstGap = 0;
+  let cases = 0;
+  for (const thin of [4, 5, 14, 20, 26, 40, 60, 64, 80, 100, 140]) {
+    for (const sw of [0, 1, 2, 3, 4, 5, 6, 7, 9, 12, 20, 40]) {
+      const over = painted(thin / 2, sw, thin) - thin / 2; // +ve = paint outside the hitbox
+      worstOut = Math.max(worstOut, over);
+      worstGap = Math.max(worstGap, -over);
+      cases++;
+    }
+  }
+  check(`never paints outside the collider (${cases} shape x stroke combinations)`,
+    worstOut <= 0, `worst overshoot ${worstOut.toFixed(2)}px`);
+  check("...and never falls more than a px short of it", worstGap <= 1,
+    `worst gap ${worstGap.toFixed(2)}px`);
+  check("an even stroke lands exactly on the edge", painted(20, 6, 40) === 20);
+  check("an odd one rounds inward, by half a px", painted(20, 5, 40) === 19.5);
+  check("a stroke thicker than the shape is cut down to fill it, not overrun it",
+    borderFit(40, 14).width === 14 && borderFit(40, 14).inset === 7 &&
+    painted(7, 40, 14) === 7, `w=${borderFit(40, 14).width} inset=${borderFit(40, 14).inset}`);
+  check("a zero stroke insets nothing", borderFit(0, 40).inset === 0);
+  check("the shipped strokes are never clamped (all thinner than what they outline)",
+    borderFit(6, 40).width === 6 && borderFit(9, 100).width === 9 && borderFit(5, 14).width === 5);
+  // Vehicle hull parts are colliders too — they stop rounds and bodies — so the
+  // shipped ones get the same treatment, checked against their real dimensions.
+  let parts = 0;
+  let hullWorst = -Infinity;
+  for (const v of Object.values(VEHICLE_SPECS) as any[]) {
+    for (const part of v.parts ?? []) {
+      if (!part.stroke || !part.strokeWidth) continue;
+      const thin = Math.min(part.w, part.h);
+      hullWorst = Math.max(hullWorst, painted(thin / 2, part.strokeWidth, thin) - thin / 2);
+      parts++;
+    }
+  }
+  check(`every shipped vehicle part paints inside its hull box (${parts} parts)`,
+    parts > 0 && hullWorst <= 0, `worst overshoot ${hullWorst.toFixed(2)}px`);
+
+  for (const [kind, sw, thin] of [["wall", 6, 40], ["fence", 5, 20], ["crate", 9, 100]] as [string, number, number][]) {
+    const over = painted(thin / 2, sw, thin) - thin / 2;
+    check(`${kind} (stroke ${sw}, ${thin}px thick) now ${over === 0 ? "flush with the hitbox" : `${(-over).toFixed(1)}px inside it`}`,
+      over <= 0 && over > -1, `was +${(sw / 2).toFixed(1)}px proud`);
+  }
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed\n`);
