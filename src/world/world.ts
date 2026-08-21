@@ -1008,8 +1008,17 @@ export function wallbangSightBudget(penetration: number): number {
  * has actually paid to cross something.
  */
 export function wallbangDamageMul(b: Bullet): number {
-  const budget = b.penetration || 0;
-  const spent = b.penUsed || 0;
+  return wallbangDamageFor(b.penUsed || 0, b.penetration || 0);
+}
+
+/**
+ * The same curve as a number rather than a bullet: what a round rated `budget`
+ * has left after spending `spent` px getting through something. 1 for a round
+ * that crossed nothing, so a clean lane is always worth strictly more than a
+ * wallbang — which is what lets the AI weigh the two against each other (see
+ * Robot.laneWeight).
+ */
+export function wallbangDamageFor(spent: number, budget: number): number {
   if (budget <= 0 || spent <= 0) return 1;
   const frac = 1 - Math.min(1, spent / budget); // budget LEFT, 1 = spent nothing
   return WALLBANG_MIN_DAMAGE + (WALLBANG_MAX_DAMAGE - WALLBANG_MIN_DAMAGE) * frac;

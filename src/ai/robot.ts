@@ -5,8 +5,8 @@ import { M16, UNARMED, type GunSpec } from "../entities/guns.ts";
 import type { NavGraph } from "../world/nav.ts";
 import { profiler } from "../engine/profiler.ts";
 import { areHostile, type TeamId } from "../entities/team.ts";
-import { add, angleOf, deg2rad, dist, fromAngle, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { losClear, shotClear, wallbangSightBudget, type World } from "../world/world.ts";
+import { add, angleOf, deg2rad, dist, fromAngle, len, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { losClear, shotCost, wallbangDamageFor, wallbangSightBudget, type World } from "../world/world.ts";
 
 /** A gamemode objective an AI can be steered toward (a domination capture point):
  *  its location + who controls it ("gray" = neutral) so AIs prefer un-held ones. */
@@ -367,26 +367,44 @@ export class Robot extends Character {
   }
 
   /**
-   * How exposed the target is from here: the number of its sample points
-   * (0..5, see targetPoints) this character can put a round through, on its own
-   * level. 0 = fully hidden, 5 = fully in the open.
+   * How exposed the target is from here: its sample points (see targetPoints)
+   * this character can put a round through, on its own level, each counted for
+   * what that shot is WORTH. 0 = fully hidden, 5 = fully in the open on clean
+   * lanes.
    *
    * "Can put a round through", not "can see": a weapon with a penetration budget
-   * counts a point it could shoot through a thin wall (see shotClear), because a
-   * bot that refuses to engage what its own bullets would go through is reading
-   * the map differently from the way the sim resolves it. A weapon with no budget
-   * — every gun until one is given a rating, and the shotguns and fists forever —
-   * asks the plain sight question, unchanged.
+   * counts a point it could shoot through a thin wall, because a bot that refuses
+   * to engage what its own bullets would go through is reading the map
+   * differently from the way the sim resolves it. But a wallbang is not as good
+   * as a clean shot, and this is the number the whole partial-cover system is
+   * built on — so a point behind something shootable counts as a FRACTION of a
+   * point (laneWeight), and material a round can be fired through reads as
+   * partial cover rather than as no cover at all.
+   *
+   * A weapon with no budget — the shotguns, the fists, and every gun until one is
+   * given a rating — asks the plain sight question and counts whole points,
+   * exactly as before.
    */
   protected visibility(world: World, target: Character): number {
     const budget = this.wallbangBudget;
     let seen = 0;
-    for (const pt of targetPoints(target)) {
-      if (budget > 0
-        ? shotClear(world, this.pos, pt, this.z, budget)
-        : losClear(world, this.pos, pt, this.z)) seen += 1;
+    for (const pt of targetPoints(target, this.pos)) {
+      if (budget <= 0) {
+        if (losClear(world, this.pos, pt, this.z)) seen += 1;
+        continue;
+      }
+      const cost = shotCost(world, this.pos, pt, this.z, budget);
+      if (cost !== null) seen += this.laneWeight(cost);
     }
     return seen;
+  }
+
+  /** What a lane costing `cost` px of material is worth next to a clean one: 1
+   *  for open air, and for anything else the fraction of its damage the round
+   *  would still arrive with. Always < 1 through material, so given the choice a
+   *  bot prefers the shot it doesn't have to punch through anything to take. */
+  protected laneWeight(cost: number): number {
+    return cost <= 0 ? 1 : wallbangDamageFor(cost, this.gun.spec.penetration ?? 0);
   }
 
   /** px of wall the weapon in hand can punch through and still be WORTH shooting
@@ -398,17 +416,39 @@ export class Robot extends Character {
   }
 }
 
-/** The sample points sight and exposure checks ray against: the target's
- *  center plus the four corners of its bounding box. Seeing any one of them
- *  means seeing the target; how many are seen measures partial cover. */
-export function targetPoints(target: Character): Vec2[] {
-  const r = BODY_RADIUS;
-  const p = target.pos;
-  return [
-    p,
-    vec(p.x - r, p.y - r),
-    vec(p.x + r, p.y - r),
-    vec(p.x - r, p.y + r),
-    vec(p.x + r, p.y + r),
-  ];
+/** How many points across the body sight checks sample. Five, so the count reads
+ *  as fifths of a body and the thresholds built on it (LOW_VISIBILITY and
+ *  friends) keep meaning what they meant. */
+const TARGET_SAMPLES = 5;
+/**
+ * The sample points sight and exposure checks ray against: five points spread
+ * across the target's own body, in a line PERPENDICULAR to whoever is looking.
+ *
+ * That is what makes a count of them a real measure of exposure from a given
+ * angle. Points on the body's silhouette as the viewer sees it get occluded one
+ * by one as the target slides behind a corner, so 3 of 5 means roughly "three
+ * fifths of them is showing" — from any direction, without the sampling itself
+ * having a preferred axis. (The old set — centre plus the four corners of the
+ * bounding box — sat up to r*sqrt(2) out, off the body entirely, and measured a
+ * square that doesn't exist.)
+ *
+ * Seeing any one point means seeing the target; how many are seen measures
+ * partial cover.
+ */
+export function targetPoints(target: Character, from: Vec2): Vec2[] {
+  const d = sub(target.pos, from);
+  const l = len(d);
+  // Straight across the line of sight; any perpendicular will do if the viewer
+  // is standing on top of it.
+  const n = l > 1e-6 ? perp(scale(d, 1 / l)) : vec(0, 1);
+  const out: Vec2[] = [];
+  for (let i = 0; i < TARGET_SAMPLES; i++) {
+    // -1 .. +1 across the full silhouette: the outermost samples sit ON the
+    // edge. A ray landing exactly on the tangent is a measure-zero event and no
+    // basis for pulling the samples in — doing that would just throw away a
+    // tenth of the body's width at both ends of every exposure reading.
+    const f = (i / (TARGET_SAMPLES - 1)) * 2 - 1;
+    out.push(add(target.pos, scale(n, f * BODY_RADIUS)));
+  }
+  return out;
 }

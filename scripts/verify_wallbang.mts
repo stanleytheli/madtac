@@ -16,6 +16,7 @@ import {
   WALLBANG_AI_MIN_DAMAGE,
   WALLBANG_MAX_DAMAGE,
   WALLBANG_MIN_DAMAGE,
+  losClear,
   shotCost,
   wallbangSightBudget,
   makeCrate,
@@ -32,11 +33,13 @@ import {
 import { ObstacleGrid } from "../src/engine/collision.ts";
 import { AWM, M9, MP5, Mossberg500, SCAR17, UNARMED } from "../src/entities/guns.ts";
 import { TacOracle } from "../src/ai/tacoracle.ts";
+import { targetPoints } from "../src/ai/robot.ts";
+import { BODY_RADIUS } from "../src/entities/character.ts";
 import { Gun } from "../src/entities/gun.ts";
 import { Character } from "../src/entities/actor.ts";
 import { DEFAULT_SKIN } from "../src/entities/character.ts";
 import { ENTITY_DEFS, loadLevel, serializeLevel } from "../src/world/level.ts";
-import { vec, type Vec2 } from "../src/engine/vec.ts";
+import { norm, sub, vec, type Vec2 } from "../src/engine/vec.ts";
 
 let passed = 0;
 let failed = 0;
@@ -370,7 +373,7 @@ console.log("\nbots see what their gun can reach:");
   // A wall thinner than the AWM's rating but thicker than the M9's.
   const thin = Math.floor((M9.penetration! + AWM.penetration!) / 2);
   check(`a ${thin}px wall: the AWM (${AWM.penetration}px) engages through it`,
-    seesThrough(AWM, thin) > 0, `points seen ${seesThrough(AWM, thin)}`);
+    seesThrough(AWM, thin) > 0, `points seen ${seesThrough(AWM, thin).toFixed(2)}`);
   check(`...the M9 (${M9.penetration}px) does not`, seesThrough(M9, thin) === 0);
   check("...nor does buckshot, which has no budget at all",
     seesThrough(Mossberg500, thin) === 0);
@@ -379,7 +382,7 @@ console.log("\nbots see what their gun can reach:");
   check("everybody sees an empty lane, budget or not",
     seesThrough(AWM, 0) === 5 && seesThrough(Mossberg500, 0) === 5);
   check("even a hairline wall stops a weapon with no budget — a wall is a wall",
-    seesThrough(Mossberg500, 0.5) === 0 && seesThrough(AWM, 0.5) === 5);
+    seesThrough(Mossberg500, 0.5) === 0);
   check("a free-pass wall is transparent to a bot that can penetrate at all",
     seesThrough(AWM, 400, 0) === 5, `${seesThrough(AWM, 400, 0)}`);
   check("a reinforced wall stops a bot that would otherwise get through",
@@ -415,6 +418,135 @@ console.log("\nbots ignore wallbangs not worth taking:");
     near(spend(50) / 50, spend(100) / 100), `${spend(50)} of 50, ${spend(100)} of 100`);
   check("no rating, nothing to spend", spend(0) === 0);
   console.log(`    (a gun rated ${AWM.penetration}px will shoot through ${spend(AWM.penetration!).toFixed(1)}px of wall)`);
+}
+
+// ------------------------------------------------ the sight samples themselves --
+// Exposure is only a real measure if the points being rayed at sit ON the body
+// and across the viewer's line of sight — otherwise the count measures a square
+// that doesn't exist, and reads differently depending on which way you approach.
+console.log("\nsight samples lie across the body, facing the viewer:");
+{
+  const body = (at: Vec2): Character => {
+    const c = new Character(vec(at.x, at.y), DEFAULT_SKIN, { hand: new Gun(UNARMED) });
+    c.team = "red" as any;
+    c.z = 0;
+    return c;
+  };
+  const target = body(vec(0, 0));
+  for (const from of [vec(-500, 0), vec(0, -500), vec(350, 350), vec(-120, 260)]) {
+    const pts = targetPoints(target, from);
+    const offs = pts.map((pt) => Math.hypot(pt.x, pt.y));
+    check(`from ${from.x},${from.y}: every sample is on the body`,
+      offs.every((o) => o <= BODY_RADIUS + 1e-9), `max ${Math.max(...offs).toFixed(1)} of ${BODY_RADIUS}`);
+    // Perpendicular means every sample is the same distance from the viewer's
+    // eye-line as its mirror, and the spread is square-on to the approach.
+    const d = norm(sub(target.pos, from));
+    const along = pts.map((pt) => (pt.x - target.pos.x) * d.x + (pt.y - target.pos.y) * d.y);
+    check(`...and square across the line of sight`,
+      along.every((a) => Math.abs(a) < 1e-9), `worst drift ${Math.max(...along.map(Math.abs)).toExponential(1)}`);
+  }
+  const pts = targetPoints(target, vec(-500, 0));
+  check("five of them, evenly spaced, centred on the body",
+    pts.length === 5 && near(pts[2].x, 0) && near(pts[2].y, 0) &&
+    near(pts[0].y, -pts[4].y) && near(pts[1].y, -pts[3].y),
+    pts.map((q) => q.y.toFixed(1)).join(", "));
+  check("they span the full silhouette, edge to edge",
+    near(Math.abs(pts[0].y), BODY_RADIUS) && near(Math.abs(pts[4].y), BODY_RADIUS),
+    `${Math.abs(pts[0].y).toFixed(1)} of ${BODY_RADIUS}`);
+
+  // The point of the whole thing: a body edging out from behind a corner should
+  // uncover its samples one at a time, from whatever angle it is watched.
+  const corner = [{ ...makeWall(vec(0, -400), 40, 760, 0) }]; // occludes y < -20
+  const w = world(corner);
+  const eye = vec(-600, 0);
+  const seenAt = (y: number): number => {
+    const t = body(vec(0, y));
+    return targetPoints(t, eye).filter((pt) => losClear(w, eye, pt, 0)).length;
+  };
+  const ladder = [-60, -40, -20, 0, 20, 40].map(seenAt);
+  check("a body sliding out of cover uncovers its samples one by one",
+    ladder[0] === 0 && ladder[ladder.length - 1] === 5 &&
+    ladder.every((v, i) => i === 0 || v >= ladder[i - 1]),
+    `y -60..+40 -> ${ladder.join(" ")}`);
+  check("...through every intermediate count, not 0 straight to 5",
+    new Set(ladder).size >= 4, `${[...new Set(ladder)].join(",")}`);
+}
+
+// ------------------------------------------------ shootable cover is PARTIAL ---
+// Wallbangeable material isn't cover and isn't open ground — it is partial cover,
+// and it rides the partial-sight system the bots already had for a body half
+// behind a crate. Each sample point counts for what a shot through it is worth,
+// so a clean lane always beats a wallbang and a bot prefers not to take one.
+console.log("\nmaterial you can shoot through is partial cover:");
+{
+  const botWith = (spec: any, at: Vec2): TacOracle => {
+    const bot = new TacOracle(vec(at.x, at.y), { team: "blue", z: 0, realGun: true, stagger: 5 });
+    (bot as any).slots.primary = new Gun(spec);
+    bot.equip("primary");
+    bot.z = 0;
+    return bot;
+  };
+  const foe = (at: Vec2): Character => {
+    const c = new Character(vec(at.x, at.y), DEFAULT_SKIN, { hand: new Gun(UNARMED) });
+    c.team = "red" as any;
+    c.z = 0;
+    return c;
+  };
+  const sight = (spec: any, thickness: number): number => {
+    const w = world(thickness > 0 ? [wallAt(0, thickness)] : []);
+    return (botWith(spec, vec(-300, 0)) as any).visibility(w, foe(vec(300, 0)));
+  };
+
+  const open = sight(AWM, 0);
+  const thinWall = sight(AWM, 8);
+  const thickWall = sight(AWM, Math.floor(wallbangSightBudget(AWM.penetration!)) - 1);
+  check("a target in the open is fully visible", open === 5, `${open}`);
+  check("behind something shootable it is only PARTLY visible",
+    thinWall > 0 && thinWall < open, `${thinWall.toFixed(2)} of ${open}`);
+  check("the thicker the wall, the less of it the bot sees",
+    thickWall < thinWall, `${thickWall.toFixed(2)} through thick vs ${thinWall.toFixed(2)} through thin`);
+  check("behind something it cannot shoot at all, nothing", sight(AWM, 400) === 0);
+  check("...and a shot through the wall is never worth as much as a clean one",
+    thinWall / 5 < 1 && thinWall / 5 >= WALLBANG_AI_MIN_DAMAGE,
+    `each point worth ${(thinWall / 5).toFixed(2)}`);
+  // The weight IS the damage the round would arrive with — the same curve the sim
+  // charges, so "how much cover is this" and "how much will it hurt" agree. Not
+  // exact to the last digit: the samples are spread across the body, so the
+  // outer rays meet the wall at a slight angle and cross a hair more material
+  // than its face thickness (which is itself the right answer).
+  const perpendicular = WALLBANG_MIN_DAMAGE +
+    (WALLBANG_MAX_DAMAGE - WALLBANG_MIN_DAMAGE) * (1 - 8 / AWM.penetration!);
+  check("a point's worth is the damage that shot would land",
+    near(thinWall / 5, perpendicular, 0.01) && thinWall / 5 <= perpendicular,
+    `${(thinWall / 5).toFixed(4)} vs ${perpendicular.toFixed(4)} straight-on`);
+  check("a weapon with no budget still counts whole points, as it always did",
+    sight(Mossberg500, 0) === 5 && sight(Mossberg500, 8) === 0);
+
+  // The preference, asserted directly rather than inferred from how often bots
+  // end up wallbanging: given the SAME target from two spots, one with a clean
+  // lane and one that has to punch through, the clean spot scores higher.
+  const opponent = foe(vec(300, 0));
+  (opponent as any).slots.primary = new Gun(AWM); // exposure is THEIR gun's question
+  // A wall covering only the lane from y = -200, leaving y = +200 in the open.
+  const w = world([{ ...makeWall(vec(0, -200), 20, 260, 0) }]);
+  const bot = botWith(AWM, vec(-300, 0));
+  const ai = { world: w, characters: [bot, opponent], nav: undefined, tick: 0 } as any;
+  const thru = (bot as any).scoreAt(ai, vec(-300, -200), 0, opponent, 0);
+  const open2 = (bot as any).scoreAt(ai, vec(-300, 200), 0, opponent, 0);
+  check("the spot with a clean lane outscores the one that must wallbang",
+    open2.score > thru.score, `clean ${open2.score.toFixed(2)} vs through-wall ${thru.score.toFixed(2)}`);
+  check("...but the wallbang spot is still a lane, not a blank",
+    thru.score > 0 && thru.clear > 0, `clear ${thru.clear.toFixed(2)}`);
+  check("standing behind something THEY can shoot counts as partial exposure",
+    thru.exposed > 0 && thru.exposed < open2.exposed,
+    `${thru.exposed.toFixed(2)} exposed vs ${open2.exposed.toFixed(2)} in the open`);
+  // ...and the same wall is full cover against someone who can't shoot through it.
+  const fists = foe(vec(300, 0));
+  const vsFists = (bot as any).scoreAt(
+    { world: w, characters: [bot, fists], nav: undefined, tick: 0 } as any,
+    vec(-300, -200), 0, fists, 0);
+  check("the same wall is FULL cover against a weapon that can't punch through",
+    vsFists.exposed === 0, `${vsFists.exposed}`);
 }
 
 // ---------------------------------------- what the bot believes vs. what happens

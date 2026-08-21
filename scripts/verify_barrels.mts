@@ -86,9 +86,11 @@ check("solidCircle clear past the barrel corner", !grid.solidCircle(near5050, BO
 check("the same probe is blocked by the square wall", wallGrid.solidCircle(near5050, BODY_RADIUS, 0));
 
 console.log("the two variants carry the right shrapnel + look:");
-check("metal barrel is round, bare (no cross), steel sparks", !!barrel.round && !barrel.cross && barrel.particle === METAL_SPARKS);
+check("metal barrel is round, styled as metal, steel sparks",
+  !!barrel.round && barrel.style === "barrel_metal" && barrel.particle === METAL_SPARKS);
 const wood = makeBarrelWood(vec(0, 0), 32, 0);
-check("wood barrel is round, planked (cross), wood splinters", !!wood.round && !!wood.cross && wood.particle === CRATE_SHRAPNEL);
+check("wood barrel is round, styled as wood, wood splinters",
+  !!wood.round && wood.style === "barrel_wood" && wood.particle === CRATE_SHRAPNEL);
 
 console.log("the editor registry routes each variant to its own kind:");
 const OBSTACLE_KINDS = ["wall", "crate", "fence", "barrel_metal", "barrel_wood"];
@@ -106,8 +108,8 @@ const lvl = `{ "version": 1, "entities": [
 const state = loadLevel(lvl);
 const obs = state.world.obstacles;
 check("both barrels loaded", obs.length === 2);
-const m = obs.find((o) => o.round && !o.cross);
-const wdb = obs.find((o) => o.round && o.cross);
+const m = obs.find((o) => o.round && o.style === "barrel_metal");
+const wdb = obs.find((o) => o.round && o.style === "barrel_wood");
 check("metal barrel loaded round with r=32", !!m && obstacleRadius(m) === 32);
 check("wood barrel loaded round with r=40", !!wdb && obstacleRadius(wdb) === 40);
 const re = serializeLevel(state);

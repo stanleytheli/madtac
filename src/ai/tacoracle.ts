@@ -79,7 +79,7 @@ import { profiler } from "../engine/profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { losClear, shotClear, shotCost, wallbangSightBudget, type Hittable } from "../world/world.ts";
+import { losClear, shotClear, shotCost, wallbangDamageFor, wallbangSightBudget, type Hittable } from "../world/world.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
@@ -351,8 +351,14 @@ function fightingRangeOf(c: Character): number {
  *  rifle threat once it arrives. Its OWN sight checks use the gun in hand
  *  (Robot.wallbangBudget); this is for reasoning about somebody else. */
 function fightingPenetrationOf(c: Character): number {
+  return wallbangSightBudget(fightingRatingOf(c));
+}
+
+/** `c`'s raw penetration rating (what the damage curve is measured against),
+ *  before the "worth shooting through" cut fightingPenetrationOf applies. */
+function fightingRatingOf(c: Character): number {
   const weapon = c.slots.primary ?? c.slots.secondary;
-  return wallbangSightBudget((weapon ?? c.gun).spec.penetration ?? 0);
+  return (weapon ?? c.gun).spec.penetration ?? 0;
 }
 
 /** Is teammate `mate` downrange of a shot from `from` at `to` — in front of the
@@ -1490,7 +1496,7 @@ export class TacOracle extends Oracle {
     // walk around — the same reason `range` is the mover's and not ours.
     const seesFrom = (p: Vec2, z: number): boolean =>
       z === tgt.z &&
-      targetPoints(tgt).some((pt) =>
+      targetPoints(tgt, p).some((pt) =>
         budget > 0 ? shotClear(ai.world, p, pt, z, budget) : losClear(ai.world, p, pt, z));
     /** Straight closing distance from a point that already has the line. */
     const gapAt = (p: Vec2): number => Math.max(0, dist(p, tgt.pos) - range);
@@ -2125,20 +2131,26 @@ export class TacOracle extends Oracle {
     // everywhere — pure cover, never a firing spot.
     if (opponent.z === fromZ) {
       const mates = this.teammates(ai, opponent, fromZ);
-      // One query answers both halves. `cost === 0` is nothing solid in the way —
-      // plain sight, which is what EXPOSURE means (cover is cover: a spot behind
-      // a wall the enemy could shoot through still counts as cover here). A cost
-      // this weapon can afford means a lane it could FIRE down, wall or no wall.
-      const budget = this.wallbangBudget;
-      for (const pt of targetPoints(opponent)) {
-        const cost = shotCost(ai.world, from, pt, fromZ, budget);
-        if (cost === null) continue; // can't reach it at all: 0
-        if (cost === 0) exposed += 1; // seen from here, so this is not cover
+      // What a lane COSTS is a property of the geometry, not of the gun — only
+      // whether it can be afforded, and what a shot down it is worth, differ by
+      // weapon. So one query serves both halves: mine (can I shoot from here) and
+      // theirs (how exposed am I standing here), each priced on its own weapon.
+      const myBudget = this.wallbangBudget;
+      const theirBudget = fightingPenetrationOf(opponent);
+      const theirRating = fightingRatingOf(opponent);
+      for (const pt of targetPoints(opponent, from)) {
+        const cost = shotCost(ai.world, from, pt, fromZ, Math.max(myBudget, theirBudget));
+        if (cost === null) continue; // neither of us can reach through this: 0
+        // Cover is a matter of degree now: something they can shoot through is
+        // PARTIAL cover, counted for as much of a shot as it would cost them.
+        if (cost <= theirBudget) exposed += cost <= 0 ? 1 : wallbangDamageFor(cost, theirRating);
+        if (cost > myBudget) continue; // they can reach me, I can't reach them
+        const worth = this.laneWeight(cost); // a clean lane beats a wallbang
         if (mates.some((m) => friendInLine(from, pt, m.pos, FRIENDLY_MARGIN))) {
-          score -= 1;
+          score -= worth;
         } else {
-          clear += 1;
-          score += 1;
+          clear += worth;
+          score += worth;
         }
       }
     }
