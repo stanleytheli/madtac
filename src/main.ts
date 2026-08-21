@@ -634,8 +634,14 @@ function drawObstacle(o: Obstacle): void {
  * (see domPointStyle for the color/arc scheme). Drawn in the world transform, on
  * the ground under the units.
  */
-function drawDomPoint(view: DomPointView): void {
-  const { pos, radius, name } = view;
+/**
+ * A domination point's ring: the owner-coloured circle plus the capture/
+ * strengthen progress arc from 12 o'clock. Ground marking, so it draws FIRST in
+ * a level's pass, under everything standing on it (see drawDomLabel for the
+ * other half).
+ */
+function drawDomRing(view: DomPointView): void {
+  const { pos, radius } = view;
   const style = domPointStyle(view);
   const start = -Math.PI / 2; // 12 o'clock
   ctx.save();
@@ -654,6 +660,18 @@ function drawDomPoint(view: DomPointView): void {
     ctx.arc(pos.x, pos.y, radius, start, start + Math.PI * 2 * style.arc.frac);
     ctx.stroke();
   }
+  ctx.restore();
+}
+
+/**
+ * A domination point's letter. Drawn LAST in a level's pass, over everything —
+ * it is a label, not scenery, and an objective you can't find because somebody
+ * is standing on it is worse than one drawn slightly wrong.
+ */
+function drawDomLabel(view: DomPointView): void {
+  const { pos, radius, name } = view;
+  const style = domPointStyle(view);
+  ctx.save();
   ctx.globalAlpha = 0.9;
   ctx.fillStyle = style.letter;
   ctx.font = `bold ${Math.max(12, Math.round(radius * 0.7))}px system-ui, sans-serif`;
@@ -966,8 +984,15 @@ function render(): void {
         // (second-story walls hidden from the ground, invisible barriers) — it
         // still collides either way.
 
+        // Objective rings are painted ON the ground, so they go under everything
+        // that stands on it — corpses included.
+        if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomRing(v);
+
         for (const b of bodies) if (b.z === z && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
 
+        // Ground items, each highlighting itself when it's the one the player would
+        // grab with E (drawn by the item, so the ring sits between its backdrop
+        // disc and its sprite).
         for (const it of world.items)
           if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
 
@@ -989,7 +1014,10 @@ function render(): void {
           }
         };
 
+
         drawObstaclesWhere(true);
+
+
         // Arms, hands and gun go UNDER the rounds: cosmetic reach with no hitbox
         // behind it, so a tracer crossing them belongs in front. The heads —
         // which are the hitbox — come after, further down this pass.
@@ -999,6 +1027,11 @@ function render(): void {
         drawBullets(z);
         drawProjectiles(z);
         drawObstaclesWhere(false);
+        // ...and the heads on top of the rounds, since that is what stops them.
+        for (const c of characters) {
+          if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "head");
+        }
+
 
 
         // Vehicle chassis (parts drawn UNDER occupants); the turret/roof parts
@@ -1018,27 +1051,17 @@ function render(): void {
           ctx.stroke();
         }
 
-        // Highlight the item the player would grab with E (drawn by the item so
-        // the ring sits between its backdrop disc and its sprite).
-        if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
-        // ...and the heads on top of the rounds, since that is what stops them.
-        for (const c of characters) {
-          if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "head");
-        }
+
         // Turret/roof parts on top of the occupants.
         for (const v of world.vehicles) {
           if (v.z !== z || !aabbInView(v.aabb())) continue;
           for (const pw of v.worldParts()) if (pw.spec.over) drawVehiclePart(pw.box, pw.spec);
         }
         drawParticles(ctx, world.particles, z);
+        // ...and the letters over the top of the whole level, so a body standing
+        // on a point never hides which point it is.
+        if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomLabel(v);
       });
-
-    // Domination points render last for this level — on top of everything at
-    // this z, and unmasked (an objective marker is always visible), so nothing
-    // on the same floor hides them while higher floors still composite over.
-    // const drawDomPoints = (): void => {
-    //  if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomPoint(v);
-    // };
 
     // At and above the enclosure cap the world is hidden, except through the
     // stairwell shafts that pierce it — so from inside a bunker you still see
