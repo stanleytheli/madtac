@@ -543,11 +543,13 @@ export class Editor {
       ctx.rotate(o.angle ?? 0);
       ctx.fillStyle = o.fill;
       ctx.fillRect(-o.w / 2, -o.h / 2, o.w, o.h);
-      ctx.strokeStyle = o.stroke;
-      const ghost = borderFit(o.strokeWidth, Math.min(o.w, o.h));
-      ctx.lineWidth = ghost.width;
-      ctx.strokeRect(-o.w / 2 + ghost.inset, -o.h / 2 + ghost.inset,
-                     o.w - 2 * ghost.inset, o.h - 2 * ghost.inset);
+      if (o.strokeWidth > 0 && o.stroke) {
+        ctx.strokeStyle = o.stroke;
+        const ghost = borderFit(o.strokeWidth, Math.min(o.w, o.h));
+        ctx.lineWidth = ghost.width;
+        ctx.strokeRect(-o.w / 2 + ghost.inset, -o.h / 2 + ghost.inset,
+                       o.w - 2 * ghost.inset, o.h - 2 * ghost.inset);
+      }
       ctx.restore();
     }
 

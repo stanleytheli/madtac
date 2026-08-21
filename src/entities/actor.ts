@@ -526,9 +526,9 @@ export class Character {
    * Fire if the equipped weapon can. Returns true if a shot went out. The caller
    * decides *when* to attempt (held trigger for auto, click edge for semi).
    */
-  fire(world: World): boolean {
+  fire(world: World, targets: readonly Hittable[] = []): boolean {
     const gun = this.gun;
-    return gun.fire(world, this.pos, this.forward, this, this.speedRatio);
+    return gun.fire(world, this.pos, this.forward, this, this.speedRatio, targets);
   }
 
   /**

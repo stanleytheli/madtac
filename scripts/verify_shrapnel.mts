@@ -22,6 +22,9 @@ import {
   type Particle,
 } from "../src/engine/particle.ts";
 import {
+  BLAST_BLOOD_REFERENCE_DAMAGE,
+  blastBloodHeft,
+  explode,
   makeBarrelMetal,
   makeBarrelWood,
   makeCrate,
@@ -34,7 +37,7 @@ import {
 } from "../src/world/world.ts";
 import { ObstacleGrid } from "../src/engine/collision.ts";
 import { ENTITY_DEFS, loadLevel, serializeLevel } from "../src/world/level.ts";
-import { vec } from "../src/engine/vec.ts";
+import { dist, norm, sub, vec, type Vec2 } from "../src/engine/vec.ts";
 
 let passed = 0;
 let failed = 0;
@@ -342,6 +345,63 @@ console.log("\nthe setting round-trips through the level format:");
     !serializeLevel(bstate).includes('"shrapnel"'));
   check("...and still sparks after the round trip",
     obstacleShrapnel(bstate.world.obstacles[0]) === METAL_SPARKS);
+}
+
+// ------------------------------------------------------------ blast blood -----
+// A blast that damages somebody throws their blood back toward it, sized by the
+// RAW damage it landed — so a near miss weeps and a direct hit sprays.
+console.log("\nexplosions draw blood, sized by what they did:");
+{
+  const hurt = (at: Vec2, damage: number, radius = 250) => {
+    const w: World = {
+      obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
+      bullets: [], projectiles: [], particles: [],
+    } as unknown as World;
+    const took: number[] = [];
+    const victim = {
+      pos: vec(0, 0), z: 0,
+      registerHit: (_d: any, _p: any, dmg: number) => took.push(dmg),
+    } as any;
+    explode(w, at, 0, damage, radius, { l1: 1, l2: 1, l3: 1, l4: 1 }, null, [victim]);
+    const blood = w.particles.filter((p) => p.color === BLOOD.color && !p.noFade);
+    return { took: took[0] ?? 0, blood };
+  };
+
+  const direct = hurt(vec(0, 0), 100);
+  check("a blast that damages someone draws blood", direct.blood.length === BLOOD.count,
+    `${direct.blood.length} particles`);
+
+  // Direction: away from the body, toward the blast — the same reading as a
+  // bullet's blood spraying back toward the shooter.
+  const side = hurt(vec(-200, 0), 100);
+  check("it sprays from the body toward the blast",
+    side.blood.every((p) => p.vel.x < 0), side.blood.map((p) => p.vel.x.toFixed(1)).join(","));
+  check("...spawned on the side facing it", side.blood.every((p) => p.pos.x < 0));
+
+  // Size: linear in raw damage, calibrated so the reference damage matches the
+  // heaviest rifle round's spray (heft 2).
+  const at80 = hurt(vec(0, 0), BLAST_BLOOD_REFERENCE_DAMAGE);
+  check(`${BLAST_BLOOD_REFERENCE_DAMAGE} damage sprays like the AWM does`,
+    near(at80.blood[0].size, BLOOD.size * 2, 1e-9),
+    `${at80.blood[0].size} vs AWM's ${BLOOD.size * 2}`);
+  const at40 = hurt(vec(0, 0), BLAST_BLOOD_REFERENCE_DAMAGE / 2);
+  check("half the damage, half the spray", near(at40.blood[0].size, at80.blood[0].size / 2, 1e-9),
+    `${at40.blood[0].size} vs ${at80.blood[0].size}`);
+  check("a graze still shows something (the floor applies)",
+    blastBloodHeft(0) === BLOOD_MIN_HEFT && blastBloodHeft(1) === BLOOD_MIN_HEFT);
+  check("the scale is linear above the floor",
+    near(blastBloodHeft(160), blastBloodHeft(80) * 2), `${blastBloodHeft(160)} vs ${blastBloodHeft(80)}`);
+
+  // It is the RAW damage that sizes it, so distance falloff shows up as smaller
+  // spray on someone further out — armour never enters into it.
+  const close = hurt(vec(60, 0), 100);
+  const distant = hurt(vec(200, 0), 100);
+  check("someone further from the blast bleeds less",
+    distant.blood[0].size < close.blood[0].size && distant.took < close.took,
+    `${distant.blood[0].size.toFixed(1)} at ${distant.took.toFixed(0)} dmg vs ` +
+    `${close.blood[0].size.toFixed(1)} at ${close.took.toFixed(0)}`);
+  check("someone out of range entirely bleeds not at all",
+    hurt(vec(600, 0), 100).blood.length === 0);
 }
 
 console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);

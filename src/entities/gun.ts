@@ -1,8 +1,9 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
+import { SHRAPNEL_TRACER_WIDTH } from "../engine/particle.ts";
 import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
-import { spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
+import { meleeSwing, spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
 import { playSound } from "../engine/audio.ts";
 
 /** Firing sound played for a gun with no `fireSound` of its own. */
@@ -334,7 +335,16 @@ export class Gun implements Droppable {
    * recoil offset applied. Returns true if a shot went out. `owner` is protected
    * from its own bullet until it clears them; `speedRatio` drives move-inaccuracy.
    */
-  fire(world: World, origin: Vec2, forward: Vec2, owner: Hittable, speedRatio: number): boolean {
+  fire(
+    world: World,
+    origin: Vec2,
+    forward: Vec2,
+    owner: Hittable,
+    speedRatio: number,
+    /** Everyone a melee swing could connect with. Ignored by every other weapon,
+     *  which resolves against whatever its bullets meet in flight. */
+    targets: readonly Hittable[] = [],
+  ): boolean {
     // Per-round guns (pump shotguns): a trigger pull interrupts an in-progress
     // top-off so you can fire right away, as long as at least one round is
     // chambered — no need to tap X first. A whole-mag-swap reload still commits.
@@ -351,14 +361,33 @@ export class Gun implements Droppable {
       playSound(this.spec.cycleSound, { pos: origin, z: owner.z });
     }
     const f = this.spec.fire!;
+
+    // A melee weapon swings: reach and arc against the bodies in front of it, no
+    // projectile involved (see meleeSwing). Resolved before any of the ballistic
+    // bookkeeping below, since none of it — spread, recoil, magazine — applies.
+    if (this.spec.melee) {
+      meleeSwing(world, owner, forward, targets, {
+        reach: this.spec.meleeReach ?? 0,
+        coneDeg: this.spec.meleeConeDeg ?? 0,
+        damage: this.damage,
+        armorPen: this.spec.armorPen,
+        heft: (this.spec.particleScale ?? 0) / SHRAPNEL_TRACER_WIDTH,
+        stagger: this.spec.stagger,
+        gun: this.spec,
+      });
+      this.startPunch();
+      this.fireCooldown = f.delay;
+      this.idleTicks = 0;
+      return true; // the swing happened whether or not it found anyone
+    }
+
     // Project from the head center (not the muzzle) so shots can't originate past
     // objects/walls in front of the shooter.
     const dir = rotate(forward, this.shoot(speedRatio));
     const m = this.spec.muzzle;
     const muzzleLen = m ? Math.hypot(m.f, m.l) : 0;
-    // Melee "bullets" are never drawn (the punch is the visual); guns hide the
-    // bullet until it has cleared the muzzle.
-    const renderAfter = this.spec.melee ? Infinity : muzzleLen + 50;
+    // Hide the bullet until it has cleared the muzzle.
+    const renderAfter = muzzleLen + 50;
 
     // Launcher weapons throw an AoE projectile instead of a bullet. Blast damage /
     // penetration come from the spec; travel speed + range from the FireSpec.
@@ -458,9 +487,7 @@ export class Gun implements Droppable {
     const pattern = this.patternBound(recoilForPattern) * Math.sin(recoilForPattern);
     const random = (Math.random() * 2 - 1) * this.randomBound(speedRatio);
 
-    // Spend the round (melee weapons never drain) and, if melee, throw a punch.
-    if (s.melee) this.startPunch();
-    else this.mag -= 1;
+    this.mag -= 1; // melee returned above; nothing else fires for free
 
     // Then grow the spray; movement makes it grow faster.
     this.currentRecoil += s.recoilGain * this.moveMul(speedRatio);

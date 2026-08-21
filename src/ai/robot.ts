@@ -236,7 +236,7 @@ export class Robot extends Character {
     this.angle = turnToward(this.angle, this.aimAngle);
     this.forward = fromAngle(this.angle);
 
-    if (this.shouldFire(ai, target) && this.fire(ai.world)) this.onFired();
+    if (this.shouldFire(ai, target) && this.fire(ai.world, ai.characters)) this.onFired();
   }
 
   /** The full, expensive decision — acquire a target, aim at it, and act. Runs

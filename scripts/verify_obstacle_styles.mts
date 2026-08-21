@@ -21,7 +21,9 @@ import {
   makeFence,
   makeWall,
   type Obstacle,
+  obstacleShrapnel,
 } from "../src/world/world.ts";
+import { globSync, readFileSync } from "node:fs";
 import { borderFit } from "../src/engine/collision.ts";
 import { VEHICLE_SPECS } from "../src/entities/vehicles.ts";
 import { vec } from "../src/engine/vec.ts";
@@ -143,7 +145,8 @@ console.log("\nborders paint inside the collider, not around it:");
   check("a stroke thicker than the shape is cut down to fill it, not overrun it",
     borderFit(40, 14).width === 14 && borderFit(40, 14).inset === 7 &&
     painted(7, 40, 14) === 7, `w=${borderFit(40, 14).width} inset=${borderFit(40, 14).inset}`);
-  check("a zero stroke insets nothing", borderFit(0, 40).inset === 0);
+  check("a zero stroke insets nothing and has no width to draw",
+    borderFit(0, 40).inset === 0 && borderFit(0, 40).width === 0);
   check("the shipped strokes are never clamped (all thinner than what they outline)",
     borderFit(6, 40).width === 6 && borderFit(9, 100).width === 9 && borderFit(5, 14).width === 5);
   // Vehicle hull parts are colliders too — they stop rounds and bodies — so the
@@ -166,6 +169,48 @@ console.log("\nborders paint inside the collider, not around it:");
     check(`${kind} (stroke ${sw}, ${thin}px thick) now ${over === 0 ? "flush with the hitbox" : `${(-over).toFixed(1)}px inside it`}`,
       over <= 0 && over > -1, `was +${(sw / 2).toFixed(1)}px proud`);
   }
+}
+
+// ------------------------------------------------------- no border at all -----
+// Canvas cannot be told to stop stroking: assigning 0 to lineWidth (or an empty
+// colour to strokeStyle) is IGNORED and the previous value stays in force, so an
+// obstacle authored without a border draws whatever the last thing drawn used —
+// a width that changes with draw order. The renderer has to skip the stroke call
+// instead, and everything downstream has to agree the border isn't there.
+console.log("\nan obstacle with no border has no border:");
+{
+  const bare = { ...makeWall(vec(0, 0), 40, 200, 0), strokeWidth: 0 };
+  check("a 0 stroke leaves nothing to draw", borderFit(bare.strokeWidth, 40).width === 0);
+  check("its chips come off in its FILL, not a stroke colour nobody paints",
+    obstacleShrapnel(bare).color === bare.fill, `${obstacleShrapnel(bare).color} vs fill ${bare.fill}`);
+  const painted = makeWall(vec(0, 0), 40, 200, 0);
+  check("...while a bordered wall still chips in its stroke",
+    obstacleShrapnel(painted).color === painted.stroke);
+  const noColor = { ...makeWall(vec(0, 0), 40, 200, 0), stroke: "" };
+  check("an empty stroke colour counts as no border too",
+    obstacleShrapnel(noColor).color === noColor.fill);
+
+  // The shipped levels really do rely on this: borderless walls are authored.
+  let bareCount = 0;
+  let allZeroWidth = true;
+  let allFillColored = true;
+  for (const file of globSync("src/world/levels/*.json").sort()) {
+    let state;
+    try {
+      state = loadLevel(readFileSync(file, "utf8"));
+    } catch {
+      continue;
+    }
+    for (const o of state.world.obstacles) {
+      if (o.strokeWidth > 0 && o.stroke) continue;
+      bareCount++;
+      if (borderFit(o.strokeWidth, Math.min(o.w, o.h)).width !== 0) allZeroWidth = false;
+      if (!o.style && obstacleShrapnel(o).color !== o.fill) allFillColored = false;
+    }
+  }
+  check(`the shipped levels author ${bareCount} borderless obstacles`, bareCount > 0);
+  check("every one of them takes the no-border path", allZeroWidth);
+  check("...and chips in its own fill", allFillColored);
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed\n`);

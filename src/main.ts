@@ -561,13 +561,25 @@ function drawBarrelWood(r: number): void {
 
 }
 
+/**
+ * Does this obstacle have a border to draw at all?
+ *
+ * Canvas will not let you turn a stroke off by setting it to nothing: assigning
+ * 0, a negative, NaN or an invalid colour to lineWidth/strokeStyle is IGNORED
+ * and the previous value stays in force. So an obstacle authored with no border
+ * doesn't come out borderless — it comes out wearing whatever the last thing
+ * drawn happened to be using, which changes with draw order. The only way to
+ * mean it is to skip the stroke call.
+ */
+const hasBorder = (o: Obstacle): boolean => o.strokeWidth > 0 && !!o.stroke;
+
 function drawObstacle(o: Obstacle): void {
   ctx.save();
   ctx.translate(o.pos.x, o.pos.y);
   ctx.rotate(o.angle ?? 0);
   ctx.fillStyle = o.fill;
-  ctx.strokeStyle = o.stroke;
-  ctx.lineWidth = o.strokeWidth;
+  const bordered = hasBorder(o);
+  if (bordered) ctx.strokeStyle = o.stroke;
   if (o.round) {
     // Radius matches the collider: half the smaller extent.
     const r = Math.min(o.w, o.h) / 2;
@@ -579,20 +591,26 @@ function drawObstacle(o: Obstacle): void {
       ctx.beginPath();
       ctx.arc(0, 0, r, 0, Math.PI * 2);
       ctx.fill();
-      const edge = borderFit(o.strokeWidth, 2 * r);
-      ctx.lineWidth = edge.width;
-      ctx.beginPath();
-      ctx.arc(0, 0, r - edge.inset, 0, Math.PI * 2);
-      ctx.stroke();
+      if (bordered) {
+        const edge = borderFit(o.strokeWidth, 2 * r);
+        ctx.lineWidth = edge.width;
+        ctx.beginPath();
+        ctx.arc(0, 0, r - edge.inset, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
     ctx.restore();
     return;
   }
   const x = -o.w / 2;
   const y = -o.h / 2;
+  ctx.fillRect(x, y, o.w, o.h);
+  if (!bordered) {
+    ctx.restore(); // no border, and the plank X is drawn with the same pen
+    return;
+  }
   const { width, inset } = borderFit(o.strokeWidth, Math.min(o.w, o.h));
   ctx.lineWidth = width;
-  ctx.fillRect(x, y, o.w, o.h);
   ctx.strokeRect(x + inset, y + inset, o.w - 2 * inset, o.h - 2 * inset);
   if (o.cross) {
     // Plank "X", corner to corner of the INSET rect: a diagonal's stroke sticks
@@ -662,6 +680,7 @@ function drawBullets(z: number): void {
     const traveled = dist(b.pos, b.origin);
     if (traveled <= b.renderAfter) continue;
 
+    if (b.tracerWidth <= 0) continue; // no tracer means none drawn, not one inherited
     ctx.lineWidth = b.tracerWidth; // cosmetic, from the firing gun's spec
 
     const dir = norm(b.vel);

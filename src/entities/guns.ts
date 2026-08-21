@@ -224,6 +224,23 @@ export interface GunSpec {
    *  body for a bullet, everyone the blast damaged for a launcher. Omitted = none. */
   stagger?: StaggerSpec;
   /**
+   * What impact debris this weapon throws, in the same units as `fire.tracerWidth`
+   * — see SHRAPNEL_TRACER_WIDTH, where 4 is an ordinary round's burst. Bullets
+   * take their debris weight from the tracer, which is a fair stand-in for how
+   * heavy the round looks; a melee weapon has no tracer, so it says so here.
+   * Omitted = nothing thrown.
+   */
+  particleScale?: number;
+  /**
+   * Melee reach in px, centre to centre — so two bodies connect with
+   * `meleeReach - 2 * BODY_RADIUS` px of clear air between them.
+   */
+  meleeReach?: number;
+  /** Melee arc: the FULL apex angle in degrees, so 30 means 15 either side of
+   *  the facing. A body whose centre is inside it, in reach and in plain sight,
+   *  is struck (see meleeSwing). */
+  meleeConeDeg?: number;
+  /**
    * Melee weapon (fists, and knives/bats later). Modeled as a gun that fires a
    * very short-range, invisible bullet: it reuses the whole shooting/hit pipeline
    * but never drains ammo, never reloads, draws no tracer, and plays a punch
@@ -1640,6 +1657,13 @@ export const UNARMED: GunSpec = {
   name: "unarmed",
   primary: false,
   melee: true,
+  // Reach matches what the old invisible bullet actually achieved: it moved
+  // bulletSpeed px a tick for (bulletLife - 1) ticks and connected within
+  // BODY_RADIUS of a centre, i.e. 23*5 + 30. Kept so this is a change of
+  // mechanism, not of balance.
+  meleeReach: 145,
+  meleeConeDeg: 60, // 30 degrees either side of the facing
+  particleScale: 4, // an ordinary round's worth of debris (SHRAPNEL_TRACER_WIDTH)
   rightGrip: { f: 50, l: 15 },
   leftGrip: { f: 70, l: -20 },
   damage: 20,

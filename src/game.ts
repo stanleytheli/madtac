@@ -873,7 +873,7 @@ export class Game implements GameCtx {
           const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
           if (wantFire) {
             if (tgun) veh.fireTurret(seat, this.world, this.player);
-            else this.player.fire(this.world);
+            else this.player.fire(this.world, this.characters);
           }
         }
       } else if (this.player.holdingUtility) {
@@ -883,7 +883,7 @@ export class Game implements GameCtx {
         const f = this.player.gun.spec.fire;
         if (f) {
           const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
-          if (wantFire) this.player.fire(this.world);
+          if (wantFire) this.player.fire(this.world, this.characters);
         }
       }
     }

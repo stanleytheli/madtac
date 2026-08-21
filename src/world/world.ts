@@ -17,7 +17,7 @@ import {
 import type { GroundItem } from "../entities/item.ts";
 import type { Vehicle } from "../entities/vehicle.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
-import { add, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { add, deg2rad, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { playSound } from "../engine/audio.ts";
 
 // --- verticality ------------------------------------------------------------
@@ -280,7 +280,9 @@ export function makeBarrelWood(pos: Vec2, r = BARREL_R, z = 0): Obstacle {
 /** The shrapnel burst thrown when a bullet hits `o`, recolored to match the
  *  object. A generic obstacle debris-colors to its own paint — its stroke, or
  *  fill if the stroke is empty — so chips read as coming off *that* object even
- *  when a level overrides the paint. Obstacles with a dedicated renderer (`style`,
+ *  when a level overrides the paint (and its fill when it has no border drawn, a
+ *  stroke colour nobody paints being nobody's colour). Obstacles with a dedicated
+ *  renderer (`style`,
  *  e.g. barrels) keep the hand-authored `particle` color, since their on-screen
  *  look comes from that special pipeline, not the fill/stroke fields. An explicit
  *  `shrapnel` pick short-circuits both — see SHRAPNEL_STYLES. */
@@ -290,7 +292,8 @@ export function obstacleShrapnel(o: Obstacle): ParticleStyle {
   const named = o.shrapnel ? SHRAPNEL_STYLES[o.shrapnel] : undefined;
   if (named) return named;
   if (o.style) return o.particle;
-  return { ...o.particle, color: o.stroke || o.fill };
+  const painted = o.strokeWidth > 0 && o.stroke ? o.stroke : o.fill;
+  return { ...o.particle, color: painted };
 }
 
 /**
@@ -920,6 +923,25 @@ export const WALLBANG_MAX_DAMAGE = 0.75;
  *  and won't rate the spot as contact. Stops bots trading whole magazines for
  *  chip damage through geometry they can barely punch. See wallbangSightBudget. */
 export const WALLBANG_AI_MIN_DAMAGE = 0.35;
+
+/** Raw damage from a blast that sprays as much blood as the heaviest rifle round
+ *  does. The AWM's tracer is 8 px against SHRAPNEL_TRACER_WIDTH's 4, so its hits
+ *  throw blood at heft 2 — a blast doing this much damage matches it, and
+ *  anything either side of it scales in proportion. */
+export const BLAST_BLOOD_REFERENCE_DAMAGE = 80;
+/** The heft BLAST_BLOOD_REFERENCE_DAMAGE maps to (see above). */
+const BLAST_BLOOD_REFERENCE_HEFT = 2;
+
+/** How hard a blast throws its victim's blood: linear in the RAW damage dealt,
+ *  before armour takes its cut, so what you see is the size of the hit the blast
+ *  landed rather than how well dressed the target was. Floored like any other
+ *  blood, so a graze still shows something. */
+export function blastBloodHeft(rawDamage: number): number {
+  return Math.max(
+    BLOOD_MIN_HEFT,
+    (rawDamage / BLAST_BLOOD_REFERENCE_DAMAGE) * BLAST_BLOOD_REFERENCE_HEFT,
+  );
+}
 /** Entry and exit debris come off at this fraction of the round's usual heft —
  *  a wallbang scatters less than a round that spent everything stopping. */
 const WALLBANG_HEFT = 0.5;
@@ -1150,6 +1172,79 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
 }
 
 /**
+ * Resolve one melee swing: a reach-and-arc check against the bodies in front of
+ * the swinger, not a projectile.
+ *
+ * Fists used to be a bullet with the tracer turned off, flying 23px a tick for
+ * six ticks — which meant a punch could be dodged by walking, missed by a hair of
+ * spread, and (once debris started scaling with tracer width) threw nothing at
+ * all when it landed. A swing connects if a body is within `reach` of the
+ * swinger, inside a cone `coneDeg` wide about its facing, and in plain sight —
+ * plain meaning NO penetration: you cannot punch someone through a wall however
+ * thin.
+ *
+ * Only the nearest such body is struck: a punch lands on one person.
+ *
+ * Returns true if it connected with a body. A swing that meets only wall throws
+ * that wall's debris and returns false — it still happened, it just hit masonry.
+ */
+export function meleeSwing(
+  w: World,
+  owner: Hittable,
+  forward: Vec2,
+  targets: readonly Hittable[],
+  opts: {
+    reach: number;
+    coneDeg: number;
+    damage: number;
+    armorPen: ArmorPen;
+    /** Debris weight, in tracer-width units like a bullet's (see particleScale). */
+    heft: number;
+    stagger?: StaggerEffect;
+    gun?: GunSpec | null;
+  },
+): boolean {
+  const minDot = Math.cos(deg2rad(opts.coneDeg) / 2); // half-angle either side
+  let struck: Hittable | null = null;
+  let nearest = Infinity;
+  for (const t of targets) {
+    if (t === owner || t.z !== owner.z) continue;
+    const to = sub(t.pos, owner.pos);
+    const d = len(to);
+    if (d > opts.reach || d < 1e-6 || d >= nearest) continue;
+    // Inside the arc, measured to the body's centre.
+    if ((to.x * forward.x + to.y * forward.y) / d < minDot) continue;
+    if (!losClear(w, owner.pos, t.pos, owner.z)) continue; // no punching through walls
+    struck = t;
+    nearest = d;
+  }
+
+  if (struck) {
+    const dir = norm(sub(struck.pos, owner.pos));
+    const at = add(struck.pos, scale(dir, -BODY_RADIUS)); // the side it landed on
+    struck.registerHit(dir, at, opts.damage, opts.armorPen, owner, opts.gun ?? null);
+    if (opts.stagger) struck.applyStagger?.(opts.stagger.mul, opts.stagger.ticks);
+    spawnParticles(w.particles, at, scale(dir, -1), BLOOD, owner.z,
+      Math.max(BLOOD_MIN_HEFT, opts.heft));
+    return true;
+  }
+
+  // Nothing but scenery in front of it: chip whatever it met, at the first thing
+  // along the facing within reach.
+  const n = Math.max(1, Math.ceil(opts.reach / SAMPLE_DX));
+  for (let i = 1; i <= n; i++) {
+    const p = add(owner.pos, scale(forward, (i * opts.reach) / n));
+    const o = solidAt(w, p, owner.z);
+    if (!o) continue;
+    const back = scale(forward, -1);
+    const at = backOut(p, back, (q) => pointInObstacle(q, o));
+    spawnParticles(w.particles, at, back, obstacleShrapnel(o), owner.z, opts.heft);
+    return false;
+  }
+  return false;
+}
+
+/**
  * Spawn a bullet travelling along `dir` at `speed` from `origin`, at level `z`
  * (the shooter's). `renderAfter` is how far it must travel before it's drawn (so
  * it stays hidden inside the gun). `owner` is the shooter, protected from its
@@ -1263,7 +1358,19 @@ export function explode(
     if (v === 0) continue; // fully behind cover
 
     const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
-    t.registerHit(dir, t.pos, damage * frac * (v / 9), armorPen, owner, gun);
+    const dealt = damage * frac * (v / 9); // raw: armour's cut is registerHit's business
+    t.registerHit(dir, t.pos, dealt, armorPen, owner, gun);
+    // Blood off the side facing the blast, thrown back toward it — the same way a
+    // bullet's sprays back toward the shooter — and sized by what it actually did.
+    const toBlast = scale(dir, -1);
+    spawnParticles(
+      w.particles,
+      add(t.pos, scale(toBlast, BODY_RADIUS)),
+      toBlast,
+      BLOOD,
+      z,
+      blastBloodHeft(dealt),
+    );
     // Anyone the blast damaged at all (any distance in range, any sliver of
     // visibility) is staggered — this is past the frac<=0 / v===0 discards above.
     if (stagger) t.applyStagger?.(stagger.mul, stagger.ticks);
