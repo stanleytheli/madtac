@@ -113,10 +113,11 @@ console.log("\nround-trip through the level format preserves every kind:");
 
 // --------------------------------------------------- borders show the hitbox ---
 // A canvas stroke straddles its path, so a border drawn on an obstacle's own edge
-// paints half its width OUTSIDE the collider. borderInset pulls it in; what this
-// pins is the property that buys: the painted silhouette never exceeds the box a
-// bullet or a body actually hits, and never misses it by more than a px either.
-console.log("\nborders paint inside the collider, not around it:");
+// paints half its width OUTSIDE the collider — a 40px wall reading as 46. borderFit
+// pulls it in until the border's OUTER face lands on the collider's edge, which is
+// what makes the silhouette the hitbox. Fractional halves round outward, so the
+// border always reaches the edge and at worst laps half a pixel over it.
+console.log("\nborders sit on the collider's edge, not around it:");
 {
   // Painted half-extent along an axis: the inset path plus the half-stroke that
   // still hangs off it outward.
@@ -136,15 +137,19 @@ console.log("\nborders paint inside the collider, not around it:");
       cases++;
     }
   }
-  check(`never paints outside the collider (${cases} shape x stroke combinations)`,
-    worstOut <= 0, `worst overshoot ${worstOut.toFixed(2)}px`);
-  check("...and never falls more than a px short of it", worstGap <= 1,
-    `worst gap ${worstGap.toFixed(2)}px`);
+  // Rounding outward: the border always REACHES the edge, and on an odd width
+  // spills half a pixel past it rather than stopping half a pixel short.
+  check(`the border always reaches the collider's edge (${cases} shape x stroke combinations)`,
+    worstGap <= 0, `worst shortfall ${worstGap.toFixed(2)}px`);
+  check("...and never overshoots it by more than half a px", worstOut <= 0.5,
+    `worst overshoot ${worstOut.toFixed(2)}px`);
   check("an even stroke lands exactly on the edge", painted(20, 6, 40) === 20);
-  check("an odd one rounds inward, by half a px", painted(20, 5, 40) === 19.5);
+  check("an odd one rounds outward, by half a px", painted(20, 5, 40) === 20.5);
   check("a stroke thicker than the shape is cut down to fill it, not overrun it",
     borderFit(40, 14).width === 14 && borderFit(40, 14).inset === 7 &&
     painted(7, 40, 14) === 7, `w=${borderFit(40, 14).width} inset=${borderFit(40, 14).inset}`);
+  check("an odd shape with an oversized stroke still just fills it",
+    painted(7 / 2, 40, 7) - 7 / 2 <= 0.5, `${painted(7 / 2, 40, 7) - 7 / 2}`);
   check("a zero stroke insets nothing and has no width to draw",
     borderFit(0, 40).inset === 0 && borderFit(0, 40).width === 0);
   check("the shipped strokes are never clamped (all thinner than what they outline)",
@@ -161,13 +166,13 @@ console.log("\nborders paint inside the collider, not around it:");
       parts++;
     }
   }
-  check(`every shipped vehicle part paints inside its hull box (${parts} parts)`,
-    parts > 0 && hullWorst <= 0, `worst overshoot ${hullWorst.toFixed(2)}px`);
+  check(`every shipped vehicle part's border reaches its hull box (${parts} parts)`,
+    parts > 0 && hullWorst <= 0.5 && hullWorst >= 0, `worst overshoot ${hullWorst.toFixed(2)}px`);
 
   for (const [kind, sw, thin] of [["wall", 6, 40], ["fence", 5, 20], ["crate", 9, 100]] as [string, number, number][]) {
     const over = painted(thin / 2, sw, thin) - thin / 2;
-    check(`${kind} (stroke ${sw}, ${thin}px thick) now ${over === 0 ? "flush with the hitbox" : `${(-over).toFixed(1)}px inside it`}`,
-      over <= 0 && over > -1, `was +${(sw / 2).toFixed(1)}px proud`);
+    check(`${kind} (stroke ${sw}, ${thin}px thick) now ${over === 0 ? "flush with the hitbox" : `${over.toFixed(1)}px past it`}`,
+      over >= 0 && over <= 0.5, `was +${(sw / 2).toFixed(1)}px proud`);
   }
 }
 
@@ -205,12 +210,14 @@ console.log("\nan obstacle with no border has no border:");
       if (o.strokeWidth > 0 && o.stroke) continue;
       bareCount++;
       if (borderFit(o.strokeWidth, Math.min(o.w, o.h)).width !== 0) allZeroWidth = false;
-      if (!o.style && obstacleShrapnel(o).color !== o.fill) allFillColored = false;
+      if (o.style || o.shrapnel) continue; // debris chosen outright, not from the paint
+      if (obstacleShrapnel(o).color !== o.fill) allFillColored = false;
     }
   }
   check(`the shipped levels author ${bareCount} borderless obstacles`, bareCount > 0);
   check("every one of them takes the no-border path", allZeroWidth);
-  check("...and chips in its own fill", allFillColored);
+  check("...and chips in its own fill, unless it names a material outright",
+    allFillColored);
 }
 
 console.log(`\n${fail === 0 ? "ALL PASS" : "FAILURES"}: ${pass} passed, ${fail} failed\n`);

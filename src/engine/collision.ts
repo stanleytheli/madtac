@@ -161,16 +161,20 @@ export const obstacleRadius = (o: Obstacle): number => Math.min(o.w, o.h) / 2;
  * border thicker than the thing it outlines paints most of itself outside no
  * matter where the path goes; and the inset can't exceed half the extent, or the
  * path turns inside out. Between them, a border on something thinner than itself
- * simply fills it. The half is rounded UP so a fractional one never leaves a
- * sliver of paint outside — the cost is that a border can sit up to half a px
- * inside the true edge, which is the right way to be wrong.
+ * simply fills it.
+ *
+ * A fractional half rounds OUTWARD, so the border always reaches the collider's
+ * edge rather than stopping a fraction short of it and letting a sliver of fill
+ * show past its own outline. The cost is half a pixel of spill on odd widths,
+ * which is the better way to be wrong: the border is what reads as the object's
+ * boundary, so it should own the boundary.
  *
  * Lives here, with the collider geometry it has to agree with, because both the
  * game renderer and the editor draw obstacle edges and must say the same thing.
  */
 export function borderFit(strokeWidth: number, extent: number): { width: number; inset: number } {
   const width = Math.min(strokeWidth, extent);
-  return { width, inset: Math.min(Math.ceil(width / 2), extent / 2) };
+  return { width, inset: Math.min(Math.floor(width / 2), extent / 2) };
 }
 
 /** Push a body-circle out of an obstacle (box or barrel). */
