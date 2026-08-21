@@ -936,8 +936,9 @@ export class TacOracle extends Oracle {
     armorPen: ArmorPen,
     attacker: Hittable | null = null,
     gun: GunSpec | null = null,
+    throughWall = false,
   ): void {
-    super.registerHit(dir, point, damage, armorPen, attacker, gun);
+    super.registerHit(dir, point, damage, armorPen, attacker, gun, throughWall);
     if (this.mode !== "hold" || damage <= 0) return;
     if (!(attacker instanceof Character) || !areHostile(this.team, attacker.team)) return;
     this.clearHold();

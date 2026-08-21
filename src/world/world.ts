@@ -443,6 +443,9 @@ export interface Hittable {
     armorPen: ArmorPen,
     attacker: Hittable | null,
     gun?: GunSpec | null,
+    /** The round punched through something to get here (see wallbangDamageMul).
+     *  Optional so a bare Hittable — a test dummy, a future prop — can ignore it. */
+    throughWall?: boolean,
   ): void;
   /** Optional: take a movement stagger (a staggering weapon hit). Optional so
    *  non-character Hittables (test dummies, future props) simply ignore it. */
@@ -1143,7 +1146,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
           // A round that came through a wall arrives with less left in it.
-          t.registerHit(fwd, sample, b.damage * wallbangDamageMul(b), b.armorPen, b.owner, b.gun);
+          t.registerHit(
+            fwd, sample, b.damage * wallbangDamageMul(b), b.armorPen, b.owner, b.gun,
+            (b.penUsed || 0) > 0, // came through a wall: the kill feed says so
+          );
           if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           // Blood scales with the round like everything else, but floored: it is

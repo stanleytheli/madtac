@@ -37,6 +37,12 @@ export interface KillFeedEntry {
   gun: GunSpec | null;
   /** Kill distance in meters (1 m = 50 px), pre-rounded for display. */
   meters: number;
+  /** The fatal round came through a wall — the feed marks it, CSGO-style, with
+   *  its own icon after the weapon. */
+  wallbang: boolean;
+  /** Killer and victim are the same person: blew themselves up. The feed shows
+   *  one name, not the same one twice. */
+  selfKill: boolean;
   /** Ticks alive; the Game increments this and drops the entry past KILLFEED_TTL. */
   age: number;
 }

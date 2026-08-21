@@ -83,6 +83,9 @@ export class Character {
   /** The gun spec behind the most recent damaging hit — read on death to label the
    *  kill feed with the weapon used. Null if never shot, or shot by no gun. */
   lastAttackerGun: GunSpec | null = null;
+  /** Whether that last hit came through a wall — carried to the kill feed, which
+   *  marks a wallbanged kill with its own icon. */
+  lastAttackerWallbang = false;
 
   /** Worn armor, or null. Soaks bullet damage and renders on the head (see draw). */
   armor: Armor | null = null;
@@ -543,10 +546,12 @@ export class Character {
     armorPen: ArmorPen,
     attacker: Hittable | null = null,
     gun: GunSpec | null = null,
+    throughWall = false,
   ): void {
     this.lastHitDir = dir;
     this.lastAttacker = attacker;
     this.lastAttackerGun = gun;
+    this.lastAttackerWallbang = throughWall;
 
     let toBody = damage;
     const armor = this.armor;

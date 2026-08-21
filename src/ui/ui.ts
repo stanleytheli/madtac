@@ -465,6 +465,7 @@ function drawKillFeed(
   const PAD_X = 14; // squircle inner horizontal padding
   const ITEM_GAP = 10; // spacing between name / icon / name / distance
   const ICON_MAX = 44; // gun glyph's longest side
+  const WALLBANG_MAX = 24; // the through-wall mark, deliberately smaller than the gun
   const FADE_TICKS = 40; // fade window before a bar is pruned
 
   const nameFont = uiFont("bold 15px");
@@ -477,11 +478,13 @@ function drawKillFeed(
   feed.forEach((e, i) => {
     // Measure the row so the squircle hugs its contents.
     ctx.font = nameFont;
-    const killerW = ctx.measureText(e.killerName).width;
+    // A self-kill has nobody to name twice: it shows the weapon and the victim,
+    // and no distance, since the distance from yourself to yourself is not news.
+    const killerW = e.selfKill ? 0 : ctx.measureText(e.killerName).width;
     const victimW = ctx.measureText(e.victimName).width;
-    const distText = `(${e.meters.toFixed(1)}m)`;
+    const distText = e.selfKill ? "" : `(${e.meters.toFixed(1)}m)`;
     ctx.font = distFont;
-    const distW = ctx.measureText(distText).width;
+    const distW = distText ? ctx.measureText(distText).width : 0;
 
     // Melee kills carry the fists spec (no gun icon), so show the hand glyph;
     // ranged kills use the weapon's own icon. Both drawn as white silhouettes.
@@ -495,7 +498,24 @@ function drawKillFeed(
       iconH = sprite.height * k;
     }
 
-    const contentW = killerW + ITEM_GAP + iconW + ITEM_GAP + victimW + ITEM_GAP + distW;
+    // The through-wall mark rides just after the weapon, as CSGO's does.
+    const bangImg = e.wallbang ? assetImage("wallbang_icon.webp") : null;
+    const bangSprite = bangImg ? whiteIcon(bangImg) : null;
+    let bangW = 0;
+    let bangH = 0;
+    if (bangSprite) {
+      const k = WALLBANG_MAX / Math.max(bangSprite.width, bangSprite.height);
+      bangW = bangSprite.width * k;
+      bangH = bangSprite.height * k;
+    }
+
+    const contentW =
+      (killerW ? killerW + ITEM_GAP : 0) +
+      iconW +
+      (bangW ? ITEM_GAP + bangW : 0) +
+      ITEM_GAP +
+      victimW +
+      (distW ? ITEM_GAP + distW : 0);
     const barW = contentW + PAD_X * 2;
     const x = (w - barW) / 2;
     const y = topY + i * (BAR_H + GAP);
@@ -508,24 +528,35 @@ function drawKillFeed(
 
     let cursor = x + PAD_X;
     ctx.textAlign = "left";
-    ctx.font = nameFont;
-    ctx.fillStyle = e.killerColor;
-    ctx.fillText(e.killerName, cursor, cy + 1);
-    cursor += killerW + ITEM_GAP;
+    if (killerW) {
+      ctx.font = nameFont;
+      ctx.fillStyle = e.killerColor;
+      ctx.fillText(e.killerName, cursor, cy + 1);
+      cursor += killerW + ITEM_GAP;
+    }
 
     if (sprite) {
       ctx.drawImage(sprite, cursor, cy - iconH / 2, iconW, iconH);
-      cursor += iconW + ITEM_GAP;
+      cursor += iconW;
     }
+    if (bangSprite) {
+      cursor += ITEM_GAP;
+      ctx.drawImage(bangSprite, cursor, cy - bangH / 2, bangW, bangH);
+      cursor += bangW;
+    }
+    cursor += ITEM_GAP;
 
     ctx.font = nameFont;
     ctx.fillStyle = e.victimColor;
     ctx.fillText(e.victimName, cursor, cy + 1);
-    cursor += victimW + ITEM_GAP;
+    cursor += victimW;
 
-    ctx.font = distFont;
-    ctx.fillStyle = "rgba(255,255,255,0.6)";
-    ctx.fillText(distText, cursor, cy + 1);
+    if (distW) {
+      cursor += ITEM_GAP;
+      ctx.font = distFont;
+      ctx.fillStyle = "rgba(255,255,255,0.6)";
+      ctx.fillText(distText, cursor, cy + 1);
+    }
   });
 
   ctx.restore();

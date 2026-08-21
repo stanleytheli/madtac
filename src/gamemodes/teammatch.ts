@@ -404,9 +404,10 @@ export abstract class TeamMatchMode implements Gamemode {
     if (killer && killer !== victim && areHostile(attacker!.team, dead.team)) killer.kills += 1;
 
     // Kill feed: any kill the local player is part of — as the killer (enemies AND
-    // team kills) or as the victim — but never a self-kill (no one to name). Newest
-    // on top (unshift); the Game ages them out and a 5th kill evicts the oldest.
-    if (attacker && killer && killer !== victim && (attacker === ctx.player || dead === ctx.player)) {
+    // team kills), as the victim, or as both, since blowing yourself up is a death
+    // worth reporting even though it credits nobody. Newest on top (unshift); the
+    // Game ages them out and a 5th kill evicts the oldest.
+    if (attacker && killer && (attacker === ctx.player || dead === ctx.player)) {
       const meters = Math.hypot(attacker.pos.x - dead.pos.x, attacker.pos.y - dead.pos.y) / PX_PER_METER;
       ctx.killFeed.unshift({
         killerName: killer.name,
@@ -415,11 +416,14 @@ export abstract class TeamMatchMode implements Gamemode {
         victimColor: TEAMS[victim.team].color,
         gun: dead.lastAttackerGun,
         meters,
+        wallbang: dead.lastAttackerWallbang,
+        selfKill: killer === victim,
         age: 0,
       });
       if (ctx.killFeed.length > KILLFEED_MAX) ctx.killFeed.length = KILLFEED_MAX;
 
       // When it's the player who went down, headline the respawn screen with it.
+      // (A self-kill names the player as their own killer, which reads correctly.)
       if (dead === ctx.player) {
         this.playerDeath = { killerName: killer.name, gunName: dead.lastAttackerGun?.name ?? null, meters };
       }
