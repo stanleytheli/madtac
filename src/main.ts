@@ -270,6 +270,24 @@ function showPlayChip(on: boolean): void {
   if (playChip) playChip.style.display = on ? "" : "none";
 }
 
+/**
+ * Hide the OS pointer whenever a match is live, and only then: the HUD draws its
+ * own crosshair (see drawCrosshair), and the arrow sitting on top of it — hotspot
+ * at the tip, body hanging down-right across the centre dot — is just clutter.
+ *
+ * `game` is precisely the right test. It is set at boot in play mode and never
+ * cleared; in an editor session it is null while editing and non-null only for
+ * the duration of a playtest. So the editor keeps its pointer (it is a
+ * mouse-driven tool) and a playtest looks exactly like the real game.
+ *
+ * Set on the canvas rather than the page, so the editor's panels and the respawn
+ * menu — separate DOM, drawn over the top — keep a normal cursor to click with.
+ */
+function syncCursor(): void {
+  canvas.style.cursor = game ? "none" : "";
+}
+syncCursor();
+
 function startPlaytest(): void {
   if (!editor || game) return; // only from an idle editor session
   if (loaded.playerSpawn.length === 0) {
@@ -290,6 +308,7 @@ function startPlaytest(): void {
   updateRespawnMenu = g.gamemode.setPlayerLoadout ? buildRespawnMenu(g) : null;
   editor.setSuspended(true);
   showPlayChip(true);
+  syncCursor();
 }
 
 function stopPlaytest(): void {
@@ -305,6 +324,7 @@ function stopPlaytest(): void {
   teardownRespawnMenu(); // drop the match's respawn menu if it built one
   showPlayChip(false);
   editor.setSuspended(false);
+  syncCursor();
 }
 
 if (editor) {

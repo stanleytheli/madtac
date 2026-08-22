@@ -34,11 +34,40 @@ const SPREAD_PX_PER_RAD = 75;
 /** Ceiling on that retreat, so a future spec can't fling the marks off-screen. */
 const MAX_SPREAD_PX = 60;
 
+/** Tick geometry: white over a dark halo 1.25px wider on each side. The ticks
+ *  carry the whole pointer now that the OS cursor is hidden under a match
+ *  (see syncCursor in main.ts), so they are thicker than they would need to be
+ *  as mere decoration around an arrow. */
+const TICK_LEN = 9;
+const TICK_WIDTH = 3;
+const HALO_WIDTH = TICK_WIDTH + 2.5;
+/** Centre dot: white core over its own dark ring, so it survives a pale floor.
+ *  This dot IS the mouse pointer — it marks the exact aim point with nothing else
+ *  on screen to back it up — so it is sized to be found, not just to be present. */
+const DOT_R = 1.8;
+const DOT_HALO_R = 3.1;
+const XHAIR_INK = "#ffffff";
+const XHAIR_HALO = "rgba(0, 0, 0, 0.55)";
+
+/** Centre coordinate that renders TICK_WIDTH crisply (see drawCrosshair). Halves
+ *  for an odd width, whole pixels otherwise; a fractional width can't be crisp
+ *  either way, so it takes the whole-pixel case. */
+function snapToPixel(v: number): number {
+  const odd = Number.isInteger(TICK_WIDTH) && TICK_WIDTH % 2 === 1;
+  return odd ? Math.round(v - 0.5) + 0.5 : Math.round(v);
+}
+
 /**
  * The crosshair: four ticks around a centre dot, the ticks standing off from the
  * centre by the aimed weapon's inaccuracy. `spread` is the gun's maximum aim
  * offset in radians (see Gun.maxSpread) — already smoothed by the caller, since
  * the raw value steps every shot. The centre dot stays put as the true aim point.
+ *
+ * Everything is drawn twice: a dark halo, then the white on top of it. The map
+ * runs from near-black floors to pale concrete, and plain white loses the second
+ * one — most of all the centre dot, which is the single mark that matters and was
+ * the first thing to disappear. The halo costs one extra stroke and makes the
+ * crosshair read the same everywhere.
  */
 export function drawCrosshair(
   ctx: CanvasRenderingContext2D,
@@ -47,27 +76,42 @@ export function drawCrosshair(
   spread = 0,
 ): void {
   const gap = Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
-  const len = 9; // length of each tick
+  // Snap so the ticks land on pixel boundaries. A stroke straddles its own
+  // coordinate, so an EVEN width wants a whole-pixel centre and an ODD width
+  // wants a half-pixel one; get it backwards and the line renders as two grey
+  // half-covered columns instead of one crisp white one. Derived from the width
+  // rather than assumed, so retuning the thickness cannot quietly blur it.
+  const x = snapToPixel(cx);
+  const y = snapToPixel(cy);
+
   ctx.save();
-  ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
-  ctx.lineWidth = 2;
   ctx.lineCap = "round";
-  ctx.beginPath();
-  // up / down / left / right
-  ctx.moveTo(cx, cy - gap);
-  ctx.lineTo(cx, cy - gap - len);
-  ctx.moveTo(cx, cy + gap);
-  ctx.lineTo(cx, cy + gap + len);
-  ctx.moveTo(cx - gap, cy);
-  ctx.lineTo(cx - gap - len, cy);
-  ctx.moveTo(cx + gap, cy);
-  ctx.lineTo(cx + gap + len, cy);
-  ctx.stroke();
+  // The four ticks, as one path stroked twice — halo underneath, ink over it.
+  const ticks = new Path2D();
+  ticks.moveTo(x, y - gap);
+  ticks.lineTo(x, y - gap - TICK_LEN);
+  ticks.moveTo(x, y + gap);
+  ticks.lineTo(x, y + gap + TICK_LEN);
+  ticks.moveTo(x - gap, y);
+  ticks.lineTo(x - gap - TICK_LEN, y);
+  ticks.moveTo(x + gap, y);
+  ticks.lineTo(x + gap + TICK_LEN, y);
+  ctx.strokeStyle = XHAIR_HALO;
+  ctx.lineWidth = HALO_WIDTH;
+  ctx.stroke(ticks);
+  ctx.strokeStyle = XHAIR_INK;
+  ctx.lineWidth = TICK_WIDTH;
+  ctx.stroke(ticks);
+
   // Centre dot: with the ticks pushed out by spread, this is what still marks the
-  // exact point being aimed at.
+  // exact point being aimed at — so it gets the same treatment.
+  ctx.fillStyle = XHAIR_HALO;
   ctx.beginPath();
-  ctx.arc(cx, cy, 1.1, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.arc(x, y, DOT_HALO_R, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = XHAIR_INK;
+  ctx.beginPath();
+  ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
   ctx.fill();
   ctx.restore();
 }
