@@ -353,7 +353,7 @@ export const M16: GunSpec = {
     reserveMags: 4,
     reloadTime: 150,
     drawTime: 40,
-    tracerWidth: 3.5,
+    tracerWidth: 4.0,
     tracerLength: 200,
     tracerColor: "#ffe26b"
   },
@@ -416,7 +416,7 @@ export const M4A1S: GunSpec = {
     reserveMags: 4,
     reloadTime: 150,
     drawTime: 50,
-    tracerWidth: 3.5,
+    tracerWidth: 4.0,
     tracerLength: 200,
     tracerColor: "#ffe26b"
   },
@@ -475,7 +475,7 @@ export const AK47: GunSpec = {
     reserveMags: 3,
     reloadTime: 150,
     drawTime: 40,
-    tracerWidth: 4.5,
+    tracerWidth: 5.0,
     tracerLength: 170,
     tracerColor: "#ffe26b"
   },
@@ -686,7 +686,7 @@ export const Scout: GunSpec = {
     reserveMags: 3,
     reloadTime: 175,
     drawTime: 60,
-    tracerWidth: 6.0,
+    tracerWidth: 7.0,
     tracerLength: 180,
     tracerColor: "#ffe26b"
   },
@@ -771,7 +771,7 @@ export const AWM: GunSpec = {
     reserveMags: 3,
     reloadTime: 185,
     drawTime: 70,
-    tracerWidth: 8.0,
+    tracerWidth: 9.0,
     tracerLength: 200,
     tracerColor: "#ffe26b"
   },
@@ -838,7 +838,7 @@ export const MP220: GunSpec = {
     reserveMags: 10,
     reloadTime: 150,
     drawTime: 40,
-    tracerWidth: 3,
+    tracerWidth: 3.0,
     tracerLength: 150,
     tracerColor: "#ffe26b"
   },
@@ -916,7 +916,7 @@ export const Mossberg500: GunSpec = {
     reloadTime: 40, // ticks to chamber ONE shell
     perBullet: true,
     drawTime: 45,
-    tracerWidth: 3,
+    tracerWidth: 3.0,
     tracerLength: 150,
     tracerColor: "#ffe26b",
   },
@@ -993,7 +993,7 @@ export const M249: GunSpec = {
     reserveMags: 1,
     reloadTime: 360,
     drawTime: 75,
-    tracerWidth: 3.5,
+    tracerWidth: 4.0,
     tracerLength: 200,
     tracerColor: "#ffe26b"
   },
@@ -1226,7 +1226,7 @@ export const Golden_M249: GunSpec = {
     reserveMags: 1,
     reloadTime: 360,
     drawTime: 75,
-    tracerWidth: 4.5,
+    tracerWidth: 4.0,
     tracerLength: 200,
     tracerColor: "#ae9131"
   },
@@ -1285,7 +1285,7 @@ export const M9: GunSpec = {
     reserveMags: 4,
     reloadTime: 70,
     drawTime: 30,
-    tracerWidth: 3,
+    tracerWidth: 3.0,
     tracerLength: 130,
     tracerColor: "#ffe26b"
   },
@@ -1344,7 +1344,7 @@ export const Skorpion: GunSpec = {
     reserveMags: 4,
     reloadTime: 90,
     drawTime: 45,
-    tracerWidth: 3,
+    tracerWidth: 3.0,
     tracerLength: 130,
     tracerColor: "#ffe26b"
   },
@@ -1402,7 +1402,7 @@ export const Uzi: GunSpec = {
     reserveMags: 4,
     reloadTime: 90,
     drawTime: 45,
-    tracerWidth: 3,
+    tracerWidth: 3.0,
     tracerLength: 130,
     tracerColor: "#ffe26b"
   },
@@ -1458,7 +1458,7 @@ export const Colt44: GunSpec = {
     perBullet: true,
     reloadTime: 45,
     drawTime: 30,
-    tracerWidth: 4,
+    tracerWidth: 5.0,
     tracerLength: 150,
     tracerColor: "#ffe26b"
   },
@@ -1520,7 +1520,7 @@ export const USPS: GunSpec = {
     reserveMags: 4,
     reloadTime: 90,
     drawTime: 45,
-    tracerWidth: 4,
+    tracerWidth: 4.0,
     tracerLength: 130,
     tracerColor: "#ffe26b"
   },
@@ -1577,7 +1577,7 @@ export const Deagle: GunSpec = {
     reserveMags: 3,
     reloadTime: 90,
     drawTime: 40,
-    tracerWidth: 5,
+    tracerWidth: 5.0,
     tracerLength: 175,
     tracerColor: "#ffe26b"
   },
@@ -1633,7 +1633,7 @@ export const Golden_Deagle: GunSpec = {
     reserveMags: 3,
     reloadTime: 90,
     drawTime: 50,
-    tracerWidth: 5,
+    tracerWidth: 5.0,
     tracerLength: 140,
     tracerColor: "#ae9131", // gold
   },

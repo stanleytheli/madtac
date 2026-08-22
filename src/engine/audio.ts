@@ -61,6 +61,15 @@ const STOP_FADE_S = 0.1;
 const PARAM_EVENTS_HARD = 150;
 const PARAM_EVENTS_SOFT = 20;
 
+/** Global output level, 0..1, applied at the master node — i.e. AFTER the
+ *  per-sound gain that distance falloff, coalescing and the MIN_GAIN/MAX_VOICES
+ *  culling all read. Turning it down therefore makes the game quieter without
+ *  changing WHICH sounds play or how they mix; the whole scheme above is
+ *  unaffected. Ships at half: full scale is loud on a laptop, and there is no
+ *  in-game slider yet — see setMasterVolume. */
+export const DEFAULT_MASTER_VOLUME = 0.5;
+let masterVolume = DEFAULT_MASTER_VOLUME;
+
 /** False when there's no Web Audio at all (headless Node — the verify/bench
  *  scripts run game.update() there); every entry point no-ops so a bot firing
  *  in a script doesn't try to construct an AudioContext. */
@@ -159,6 +168,7 @@ function getAudio(): SharedAudio {
   if (!a) {
     const ctx = new AudioContext();
     const master = ctx.createGain();
+    master.gain.value = masterVolume; // and stays in step via setMasterVolume
     master.connect(ctx.destination);
     const voices: Voice[] = [];
     for (let i = 0; i < POOL_VOICES; i++) {
@@ -190,6 +200,27 @@ function getAudio(): SharedAudio {
     a = shared;
   }
   return a;
+}
+
+/** The global output level, 0..1. */
+export function masterVolume0to1(): number {
+  return masterVolume;
+}
+
+/**
+ * Set the global output level (0..1), live. Glides rather than jumps, so a slider
+ * being dragged doesn't click. Applied to the existing master node if there is
+ * one — and remembered either way, so a context built later (first unlock, or a
+ * resetAudioContext) comes up at the same level.
+ *
+ * No UI reaches this yet; it is here so the eventual settings menu has one place
+ * to call, and so the console can tune it in the meantime.
+ */
+export function setMasterVolume(v: number): void {
+  masterVolume = Math.max(0, Math.min(1, v));
+  if (!HAS_AUDIO || resetting) return;
+  const a = (globalThis as Record<string, unknown>)[G_KEY] as SharedAudio | undefined;
+  if (a) a.master.gain.setTargetAtTime(masterVolume, a.ctx.currentTime, GLIDE_TC);
 }
 
 /** Nudge the context back to running. Kept on our key/mouse handlers because
@@ -537,6 +568,10 @@ async function audioEcho(rounds = 3): Promise<void> {
     console.log(`[audio] echo: context is "${ctx.state}" — click the page first`);
     return;
   }
+  if (masterVolume <= 0) {
+    console.log("[audio] echo: master volume is 0 — nothing to hear; setMasterVolume(0.5) first");
+    return;
+  }
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
   });
@@ -573,11 +608,18 @@ async function audioEcho(rounds = 3): Promise<void> {
       peakV = 0;
       const src = ctx.createBufferSource();
       src.buffer = click;
-      src.connect(master);
+      // Through the master node (the path being measured), but at whatever gain
+      // cancels the global volume out: this is a peak-detection instrument, and
+      // a quiet setting should not cost it the headroom to find its own click.
+      const boost = ctx.createGain();
+      boost.gain.value = 1 / masterVolume;
+      src.connect(boost);
+      boost.connect(master);
       const at = ctx.currentTime + 0.2;
       src.start(at);
       await sleep(2000); // window sized so even a ~1.5s-delayed click lands in its own round
       src.disconnect();
+      boost.disconnect();
       console.log(
         peakV > 0.01
           ? `[audio] echo ${r}/${rounds}: click arrived ${((peakT - at) * 1000).toFixed(0)}ms after its scheduled time (peak ${peakV.toFixed(2)})`
@@ -626,6 +668,7 @@ if (HAS_AUDIO)
     audioTag,
     audioEcho,
     resetAudioContext,
+    setMasterVolume,
     setHideSuspend(on: boolean): void {
       hideSuspend = on;
     },
