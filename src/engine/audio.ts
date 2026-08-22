@@ -140,6 +140,8 @@ interface Voice {
   stopping: boolean;
   /** AudioParam events absorbed by this chain since its nodes were created. */
   paramEvents: number;
+  /** Serial of the play currently in this slot, 0 when free — see SoundHandle. */
+  id: SoundHandle;
 }
 
 interface SharedAudio {
@@ -182,6 +184,7 @@ function getAudio(): SharedAudio {
         stopTime: 0,
         stopping: false,
         paramEvents: 0,
+        id: 0,
       });
     }
     const shared: SharedAudio = { ctx, master, voices, allocs: 0, unlocked: false };
@@ -314,6 +317,7 @@ function reclaim(v: Voice): void {
   v.file = null;
   v.gain = 0;
   v.stopping = false;
+  v.id = 0; // the play is over; its handle must stop matching anything
 }
 
 /** Steal: fade to silence (no click, no hard graph op) and let updateAudio
@@ -340,6 +344,18 @@ export function updateAudio(): void {
   }
 }
 
+/**
+ * Names one PLAY, so it can be stopped later — 0 meaning "nothing started".
+ *
+ * It has to be a serial rather than a reference to the voice, because voices are
+ * pooled: by the time a caller wants to stop its sound, that slot may have been
+ * reclaimed and handed to somebody's gunshot, and cutting THAT would be worse
+ * than the sound you were trying to cancel. Each allocation stamps a fresh
+ * serial, and stopSound only acts on a voice still carrying the one it was given.
+ */
+export type SoundHandle = number;
+let nextVoiceId = 1;
+
 /** How specs name a sound: a bare filename, or { file, volume } to bake in a
  *  per-sound loudness multiplier (default 1, multiplies any opts.volume). */
 export type SoundRef = string | { file: string; volume?: number };
@@ -360,11 +376,16 @@ export interface PlayOpts {
   pitchVar?: number;
 }
 
-/** Play `sound` once, positioned relative to the listener. */
-export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
-  if (!HAS_AUDIO) return; // headless script
-  if (resetting) return; // context teardown window during resetAudioContext()
-  if (!emitting) return; // catch-up tick — advance the sim silently, don't stack sounds
+/**
+ * Play `sound` once, positioned relative to the listener. Returns a SoundHandle
+ * naming this play, or 0 if nothing started (inaudible, out of earshot, muted by
+ * the voice cap, or the buffer wasn't cached yet). Callers that never need to
+ * stop the sound can ignore it, which is nearly all of them.
+ */
+export function playSound(sound: SoundRef, opts: PlayOpts = {}): SoundHandle {
+  if (!HAS_AUDIO) return 0; // headless script
+  if (resetting) return 0; // context teardown window during resetAudioContext()
+  if (!emitting) return 0; // catch-up tick — advance the sim silently, don't stack sounds
 
   const file = soundFile(sound);
   let gain = (opts.volume ?? 1) * (typeof sound === "string" ? 1 : sound.volume ?? 1);
@@ -373,18 +394,18 @@ export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
     const dx = opts.pos.x - listener.x;
     const dy = opts.pos.y - listener.y;
     const d = Math.hypot(dx, dy);
-    if (d > MAX_DIST_PX) return; // out of earshot — don't spend a voice on it
+    if (d > MAX_DIST_PX) return 0; // out of earshot — don't spend a voice on it
     // Exponential (half-life) falloff: full within FULL_PX, halving every HALF_LIFE_PX.
     if (d > FULL_PX) gain *= 2 ** (-(d - FULL_PX) / HALF_LIFE_PX);
     if (opts.z !== undefined && opts.z !== listener.z) gain *= OFFLEVEL_GAIN;
-    if (gain < MIN_GAIN) return; // inaudible
+    if (gain < MIN_GAIN) return 0; // inaudible
     pan = Math.max(-1, Math.min(1, dx / PAN_PX));
   }
 
   const buf = buffers.get(file);
   if (!buf) {
     load(file); // kick off the fetch, but never queue: a late one-shot is worse than a missing one
-    return;
+    return 0;
   }
 
   const a = getAudio();
@@ -392,7 +413,7 @@ export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
   // same frame and the browser holds the source until the context runs. After
   // that, a non-running context means suspension/interruption — drop the sound
   // rather than queue a stale burst for whenever it resumes.
-  if (a.ctx.state !== "running" && a.unlocked) return;
+  if (a.ctx.state !== "running" && a.unlocked) return 0;
   const now = a.ctx.currentTime;
 
   // Coalesce: merge into a just-started voice of the same file instead of
@@ -406,7 +427,9 @@ export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
       v.pan = mergedPan;
       setVoiceGain(a, v, mergedGain, true);
       setVoicePan(a, v, mergedPan);
-      return;
+      // The merged voice IS this play now, so its handle is the honest answer —
+      // with the caveat that stopping it stops the sound it merged with too.
+      return v.id;
     }
   }
 
@@ -424,10 +447,10 @@ export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
     }
   }
   if (playing >= MAX_VOICES) {
-    if (!quietest || quietest.gain >= gain) return; // nothing quieter is playing — drop this
+    if (!quietest || quietest.gain >= gain) return 0; // nothing quieter is playing — drop this
     fadeStop(a, quietest);
   }
-  if (!free) return; // whole pool busy (incl. fades) — drop rather than hard-steal
+  if (!free) return 0; // whole pool busy (incl. fades) — drop rather than hard-steal
 
   // Periodic chain renewal (survev: "WebAudio nodes fill with garbage over
   // time") — chains that have absorbed many AudioParam events get fresh nodes.
@@ -463,6 +486,26 @@ export function playSound(sound: SoundRef, opts: PlayOpts = {}): void {
   setVoicePan(a, free, pan);
   source.start();
   free.stopTime = now + buf.duration / rate;
+  free.id = nextVoiceId++;
+  return free.id;
+}
+
+/**
+ * Stop the play named by `h`, fading out over STOP_FADE_S rather than cutting, so
+ * an abort sounds like an abort and not like a click. A no-op on 0, on a play
+ * that has already finished, and — the point of the serial — on one whose voice
+ * has since been reclaimed and reused by something else.
+ */
+export function stopSound(h: SoundHandle): void {
+  if (!HAS_AUDIO || !h || resetting) return;
+  const a = (globalThis as Record<string, unknown>)[G_KEY] as SharedAudio | undefined;
+  if (!a) return;
+  for (const v of a.voices) {
+    if (v.id === h && v.source && !v.stopping) {
+      fadeStop(a, v);
+      return;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

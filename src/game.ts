@@ -668,6 +668,12 @@ export class Game implements GameCtx {
       const c = this.characters[i];
       if (c.hp > 0) continue;
 
+      // Abort whatever it was in the middle of. Every other way a reload ends —
+      // X, a weapon switch, dropping the gun — goes through cancelReload, but
+      // dying never did: the corpse leaves this list and simply stops ticking,
+      // so its reload clip would play on to the end over a dead body.
+      c.cancelAction();
+
       // A dead occupant frees its seat and stops driving (the body drops at the seat).
       if (c.vehicle) {
         const s = c.vehicle.seats[c.seatIndex];

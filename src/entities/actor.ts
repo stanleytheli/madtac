@@ -492,7 +492,8 @@ export class Character {
     if (this.gun.reloadPulse) {
       this.gun.reloadPulse = false;
       if (this.gun.spec.reloadSound) {
-        playSound(this.gun.spec.reloadSound, { pos: this.pos, z: this.z });
+        // Handed to the gun so an abort can stop it — see Gun.reloadVoice.
+        this.gun.reloadVoice = playSound(this.gun.spec.reloadSound, { pos: this.pos, z: this.z });
       }
     }
   }

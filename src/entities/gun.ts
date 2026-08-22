@@ -4,7 +4,7 @@ import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { meleeSwing, spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
-import { playSound } from "../engine/audio.ts";
+import { playSound, stopSound, type SoundHandle } from "../engine/audio.ts";
 
 /** Firing sound played for a gun with no `fireSound` of its own. */
 export const DEFAULT_FIRE_SOUND = "gunshot.wav";
@@ -59,6 +59,15 @@ export class Gun implements Droppable {
   mag = 0; // rounds currently in the magazine
   reserveMags = 0; // spare full magazines
   reloadTicks = 0; // ticks left in the current reload (0 = not reloading)
+  /** The reload clip currently playing for this gun, as a stoppable handle (0 =
+   *  none). The HOLDER starts it — Character.tickWeapon, off reloadPulse, since
+   *  only the holder knows where in the world it should sound — and hands the
+   *  handle back here, so whoever aborts the reload can silence it without
+   *  needing to know who was carrying the gun. See cancelReload. */
+  reloadVoice: SoundHandle = 0;
+  /** The bolt/pump "action" clip currently cycling, as a stoppable handle. Same
+   *  deal as reloadVoice, but started by the gun itself in fire(). */
+  cycleVoice: SoundHandle = 0;
   reloadPulse = false; // set the tick a reload cycle (re)starts; the holder reads
                        // it to play the reload sound — fires once per shell on a
                        // perBullet gun, so the holder clears it after reading.
@@ -196,6 +205,30 @@ export class Gun implements Droppable {
   cancelReload(): void {
     this.reloadTicks = 0;
     this.reloadPulse = false; // drop a just-started cycle's pending sound
+    this.stopActionSounds(); // ...and cut the one already sounding
+  }
+
+  /**
+   * Cut every sound this gun is making as an ONGOING action: the reload clip and
+   * the bolt/pump cycle. Both run to a fitted length (reloadTime, fire.delay), so
+   * an interruption that ends the action early leaves them clacking away with
+   * nothing behind them.
+   *
+   * The shot itself is deliberately NOT here. A report is an event that already
+   * happened — the round is gone — and cutting one mid-bang sounds like a glitch,
+   * where a bolt stopping halfway sounds like the interruption it is.
+   *
+   * Called from cancelReload because the things that abort a reload — X, a weapon
+   * switch, dropping the gun, dying — are exactly the things that should also cut
+   * a cycle short. (X during a bare cycle with no reload running therefore
+   * silences the bolt too; the gun is still on cooldown, but a half-second of
+   * click-clack is not what it is telling you.)
+   */
+  stopActionSounds(): void {
+    stopSound(this.reloadVoice);
+    this.reloadVoice = 0;
+    stopSound(this.cycleVoice);
+    this.cycleVoice = 0;
   }
 
   /**
@@ -207,6 +240,10 @@ export class Gun implements Droppable {
    */
   private finishReload(): void {
     const f = this.spec.fire!;
+    // The clip is fitted to reloadTime (see scripts/fit_audio.mts), so it has just
+    // ended on its own — drop the handle rather than leave a spent one lying
+    // around. A perBullet gun's next shell sets a fresh one below.
+    this.reloadVoice = 0;
     if (f.perBullet) {
       this.mag += 1;
       this.reserveMags -= 1;
@@ -358,8 +395,10 @@ export class Gun implements Droppable {
     if (report) playSound(report, { pos: origin, z: owner.z, pitchVar: 0.06 });
     // The bolt/pump "action" that cycles between shots, fitted to fire.delay. No
     // pitch wobble — it's synced to the delay, and pitching it would drift its end.
+    // Kept as a handle: unlike the report above, a cycle is an ONGOING action, and
+    // an interruption should cut it (see stopActionSounds).
     if (this.spec.cycleSound) {
-      playSound(this.spec.cycleSound, { pos: origin, z: owner.z });
+      this.cycleVoice = playSound(this.spec.cycleSound, { pos: origin, z: owner.z });
     }
     const f = this.spec.fire!;
 
