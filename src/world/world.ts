@@ -5,6 +5,7 @@ import {
   BLOOD_MIN_HEFT,
   CRATE_SHRAPNEL,
   METAL_SPARKS,
+  impactBurst,
   SHRAPNEL_STYLES,
   SHRAPNEL_TRACER_WIDTH,
   STANDARD_EXPLOSION,
@@ -1106,8 +1107,8 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           b.penUsed = (b.penUsed || 0) + pen.cost;
           // Debris off both faces, at half a normal impact's heft: some of the
           // round's energy went through the wall rather than into it.
-          spawnParticles(w.particles, pen.entry, backDir, obstacleShrapnel(struck), b.z, grit * WALLBANG_HEFT);
-          spawnParticles(w.particles, pen.exit, fwd, obstacleShrapnel(pen.exitOf), b.z, grit * WALLBANG_HEFT);
+          spawnParticles(w.particles, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT);
+          spawnParticles(w.particles, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT);
           // Fly on from the far face: everything nearer than that is the wall it
           // just crossed, and it has already been charged for it.
           skipUntil = Math.max(
@@ -1117,7 +1118,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           continue;
         }
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
-        spawnParticles(w.particles, at, backDir, obstacleShrapnel(struck), b.z, grit);
+        spawnParticles(w.particles, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit);
         consumed = true;
         break;
       }
@@ -1135,7 +1136,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         }
         if (hb) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, hb!));
-          spawnParticles(w.particles, at, backDir, WALL_SHRAPNEL, b.z, grit);
+          spawnParticles(w.particles, at, backDir, impactBurst(WALL_SHRAPNEL), b.z, grit);
           consumed = true;
           break;
         }
@@ -1383,7 +1384,7 @@ export function explode(
   }
   // Detonation visuals: each burst in the round's blast preset (see ProjectileSpec
   // .explosion). spread is a full circle, so the ejection direction is irrelevant.
-  for (const style of blast) spawnParticles(w.particles, at, vec(1, 0), style, z);
+  spawnParticles(w.particles, at, vec(1, 0), blast, z);
 }
 
 /**

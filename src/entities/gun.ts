@@ -351,10 +351,11 @@ export class Gun implements Droppable {
     if (this.reloading && this.spec.fire?.perBullet && this.mag > 0) this.cancelReload();
     if (!this.canFire) return false;
     // A shot is now committed — one report per trigger pull (shotguns included),
-    // positioned at the muzzle on the shooter's floor. Melee "fires" no sound.
-    if (!this.spec.melee) {
-      playSound(this.spec.fireSound ?? DEFAULT_FIRE_SOUND, { pos: origin, z: owner.z, pitchVar: 0.06 });
-    }
+    // positioned at the muzzle on the shooter's floor. A melee weapon gets only
+    // the sound it names: the default is a gunshot, which a fist has no business
+    // making, so a swing with no fireSound stays silent.
+    const report = this.spec.melee ? this.spec.fireSound : (this.spec.fireSound ?? DEFAULT_FIRE_SOUND);
+    if (report) playSound(report, { pos: origin, z: owner.z, pitchVar: 0.06 });
     // The bolt/pump "action" that cycles between shots, fitted to fire.delay. No
     // pitch wobble — it's synced to the delay, and pitching it would drift its end.
     if (this.spec.cycleSound) {

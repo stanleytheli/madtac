@@ -17,12 +17,17 @@ import * as Oracles from "../ai/oracle.ts";
 import * as Robots from "../ai/robot.ts";
 import * as TacOracles from "../ai/tacoracle.ts";
 
+/** Every exported GunSpec, icon-less ones (fists) included. They can't lie on the
+ *  ground, but they still fire and make noise — so anything about the weapon
+ *  itself (sounds to warm, say) reads this, not GUN_SPECS. */
+export const ALL_GUN_SPECS: Record<string, GunSpec> = {};
 /** Every exported GunSpec with a ground icon (icon-less specs like fists can't
  *  lie on the ground anyway). */
 export const GUN_SPECS: Record<string, GunSpec> = {};
 for (const [k, v] of Object.entries(Guns)) {
-  if (v && typeof v === "object" && "armorPen" in v && (v as GunSpec).icon) {
-    GUN_SPECS[k] = v as GunSpec;
+  if (v && typeof v === "object" && "armorPen" in v) {
+    ALL_GUN_SPECS[k] = v as GunSpec;
+    if ((v as GunSpec).icon) GUN_SPECS[k] = v as GunSpec;
   }
 }
 

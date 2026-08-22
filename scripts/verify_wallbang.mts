@@ -105,8 +105,11 @@ console.log("a gun with no penetration is exactly the game as it was:");
     wallbangDamageMul({ penetration: 0, penUsed: 0 } as Bullet) === 1);
   check("...and 1 for a budgeted round that has hit nothing",
     wallbangDamageMul({ penetration: 100, penUsed: 0 } as Bullet) === 1);
-  check("the shotguns and the fist carry no budget",
-    Mossberg500.penetration === 0 && UNARMED.penetration === 0);
+  // A fist is the standing example of a zero-budget weapon; the shotguns have
+  // been given budgets since, so only the fist is asserted by name. Nothing else
+  // here depends on WHICH gun has none — `fire(..., 0)` above states the budget
+  // outright — so this is a balance fact, not a mechanism one.
+  check("the fist carries no budget", (UNARMED.penetration ?? 0) === 0);
   check("a fence is still free to shoot through (permeable, not penetrated)",
     fire([{ ...makeFence(vec(0, 0), 20, 400, 0) }], 0).took === 100);
 }
@@ -375,14 +378,16 @@ console.log("\nbots see what their gun can reach:");
   check(`a ${thin}px wall: the AWM (${AWM.penetration}px) engages through it`,
     seesThrough(AWM, thin) > 0, `points seen ${seesThrough(AWM, thin).toFixed(2)}`);
   check(`...the M9 (${M9.penetration}px) does not`, seesThrough(M9, thin) === 0);
-  check("...nor does buckshot, which has no budget at all",
+  check(`...nor does buckshot (${Mossberg500.penetration}px, well under ${thin}px)`,
     seesThrough(Mossberg500, thin) === 0);
   check("nobody sees through a wall thicker than any rating",
     seesThrough(AWM, AWM.penetration! + 20) === 0);
   check("everybody sees an empty lane, budget or not",
-    seesThrough(AWM, 0) === 5 && seesThrough(Mossberg500, 0) === 5);
+    seesThrough(AWM, 0) === 5 && seesThrough(Mossberg500, 0) === 5 && seesThrough(UNARMED, 0) === 5);
+  // The zero-budget case, stated with a weapon that actually has no budget (the
+  // shotguns carry one now). A wall is a wall: no thickness is thin enough.
   check("even a hairline wall stops a weapon with no budget — a wall is a wall",
-    seesThrough(Mossberg500, 0.5) === 0);
+    (UNARMED.penetration ?? 0) === 0 && seesThrough(UNARMED, 0.5) === 0);
   check("a free-pass wall is transparent to a bot that can penetrate at all",
     seesThrough(AWM, 400, 0) === 5, `${seesThrough(AWM, 400, 0)}`);
   check("a reinforced wall stops a bot that would otherwise get through",

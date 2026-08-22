@@ -13,10 +13,12 @@ import {
   BLOOD_MIN_HEFT,
   CRATE_SHRAPNEL,
   EXPLOSION_SHRAPNEL,
+  IMPACT_SMOKE,
   METAL_SPARKS,
   SHRAPNEL_STYLES,
   SHRAPNEL_TRACER_WIDTH,
   WALL_SHRAPNEL,
+  impactBurst,
   spawnParticles,
   updateParticles,
   type Particle,
@@ -145,6 +147,12 @@ check("...and an unknown one on a styled object keeps that object's particle",
   obstacleShrapnel({ ...wood, shrapnel: "plasma" }) === CRATE_SHRAPNEL);
 
 // ------------------------------------------------------------ end to end ------
+// Every bullet impact throws two layers now (impactBurst): the material's debris
+// over a puff of IMPACT_SMOKE. The material checks below are about the debris, so
+// they sieve the smoke out first.
+const isSmoke = (p: Particle): boolean => p.color === IMPACT_SMOKE.color;
+const debrisOf = (ps: Particle[]): Particle[] => ps.filter((p) => !isSmoke(p));
+
 console.log("\nshooting one: a real bullet into a wall set to `sparks`:");
 function shootInto(o: Obstacle, tracerWidth = SHRAPNEL_TRACER_WIDTH): Particle[] {
   const w: World = {
@@ -162,7 +170,7 @@ function shootInto(o: Obstacle, tracerWidth = SHRAPNEL_TRACER_WIDTH): Particle[]
   // back is the burst plus the afterimage each spark has already stamped behind it.
   const ps = shootInto(metalWall);
   const sparks = ps.filter((p) => p.trail !== undefined);
-  const stamps = ps.filter((p) => p.trail === undefined);
+  const stamps = ps.filter((p) => p.trail === undefined && !isSmoke(p));
   check("the hit spawns a burst", sparks.length === METAL_SPARKS.count, `n=${sparks.length}`);
   check("every spark is a yellow square",
     sparks.every((p) => p.color === METAL_SPARKS.color && p.shape === "square"));
@@ -180,8 +188,10 @@ function shootInto(o: Obstacle, tracerWidth = SHRAPNEL_TRACER_WIDTH): Particle[]
 }
 {
   const ps = shootInto(makeWall(vec(0, 0), 64, 64, 0));
+  const chips = debrisOf(ps);
   check("an unflagged wall's hit is NOT sparks — chips, no trail, no stamps",
-    ps.length === 6 && ps.every((p) => p.trail === undefined && !p.noFade), `n=${ps.length}`);
+    chips.length === WALL_SHRAPNEL.count && chips.every((p) => p.trail === undefined && !p.noFade),
+    `n=${chips.length}`);
 }
 
 // ------------------------------------------------- size vs. the round ---------
@@ -248,9 +258,99 @@ console.log("\nheavier rounds throw bigger, faster debris:");
   check("lifetime is untouched — heavier means further, not longer",
     shootInto(metalWall, 8).filter((p) => p.trail !== undefined)
       .every((p) => p.maxLife <= METAL_SPARKS.life));
+  const chip8 = debrisOf(shootInto(makeWall(vec(0, 0), 64, 64, 0), 8))[0];
   check("a plain wall's chips scale the same way",
-    near(shootInto(makeWall(vec(0, 0), 64, 64, 0), 8)[0].size, WALL_SHRAPNEL.size * 2),
-    `${shootInto(makeWall(vec(0, 0), 64, 64, 0), 8)[0].size} vs ${WALL_SHRAPNEL.size}`);
+    near(chip8.size, WALL_SHRAPNEL.size * 2), `${chip8.size} vs ${WALL_SHRAPNEL.size}`);
+}
+
+// ------------------------------------------------------- layered bursts -------
+// A burst is now one style OR a list of them, thrown from the same point in list
+// order — so a hit can grow a second layer with no change to whatever spawns it.
+console.log("\na burst can be several styles at once:");
+{
+  const one: Particle[] = [];
+  spawnParticles(one, vec(0, 0), vec(1, 0), METAL_SPARKS, 0);
+  const many: Particle[] = [];
+  spawnParticles(many, vec(0, 0), vec(1, 0), [METAL_SPARKS, WALL_SHRAPNEL], 0);
+  check("a bare style still throws exactly its own count", one.length === METAL_SPARKS.count);
+  check("a list throws every layer",
+    many.length === METAL_SPARKS.count + WALL_SHRAPNEL.count, `n=${many.length}`);
+  check("layers come out in order, so later ones draw on top",
+    many.slice(0, METAL_SPARKS.count).every((p) => p.color === METAL_SPARKS.color) &&
+      many.slice(METAL_SPARKS.count).every((p) => p.color === WALL_SHRAPNEL.color));
+  check("each layer keeps its own look (a list is not a blend)",
+    many.some((p) => p.shape === METAL_SPARKS.shape && p.trail === METAL_SPARKS.trail) &&
+      many.some((p) => p.trail === undefined));
+
+  // heft reaches every layer, and 0 still means "throw nothing at all".
+  const heavy: Particle[] = [];
+  spawnParticles(heavy, vec(0, 0), vec(1, 0), [METAL_SPARKS, WALL_SHRAPNEL], 0, 2);
+  check("heft scales every layer of a list",
+    heavy.filter((p) => p.color === METAL_SPARKS.color).every((p) => p.size === METAL_SPARKS.size * 2) &&
+      heavy.filter((p) => p.color === WALL_SHRAPNEL.color).every((p) => p.size === WALL_SHRAPNEL.size * 2));
+  const none: Particle[] = [];
+  spawnParticles(none, vec(0, 0), vec(1, 0), [METAL_SPARKS, WALL_SHRAPNEL], 0, 0);
+  check("scale 0 silences the whole list, not just the first layer", none.length === 0);
+  const empty: Particle[] = [];
+  spawnParticles(empty, vec(0, 0), vec(1, 0), [], 0);
+  check("an empty list is legal and throws nothing", empty.length === 0);
+}
+
+// ----------------------------------------------------------- impact smoke -----
+// Every bullet impact lays a little dust under whatever the material throws.
+console.log("\nbullet impacts also puff smoke, under the debris:");
+{
+  check("impactBurst layers smoke UNDER the debris (drawn first = drawn below)",
+    impactBurst(WALL_SHRAPNEL)[0] === IMPACT_SMOKE && impactBurst(WALL_SHRAPNEL)[1] === WALL_SHRAPNEL);
+  check("the smoke is small and slow — it marks the point, the debris does the spray",
+    IMPACT_SMOKE.size < WALL_SHRAPNEL.size && IMPACT_SMOKE.speed < WALL_SHRAPNEL.speed,
+    `size ${IMPACT_SMOKE.size} vs ${WALL_SHRAPNEL.size}, speed ${IMPACT_SMOKE.speed} vs ${WALL_SHRAPNEL.speed}`);
+  // An unparseable fillStyle is IGNORED by canvas rather than throwing, so a color
+  // missing its "#" would silently paint the puff in whatever the last particle
+  // used. Cheap to state, impossible to spot by eye.
+  check("its color is one canvas will actually accept",
+    /^(#[0-9a-f]{3,8}|rgba?\(|hsla?\()/i.test(IMPACT_SMOKE.color), IMPACT_SMOKE.color);
+  check("it expands as it drifts, and fades with age like everything else",
+    IMPACT_SMOKE.sizeChange! > 0 && !IMPACT_SMOKE.noFade);
+  check("it drags no trail (dust does not streak)", IMPACT_SMOKE.trail === undefined);
+
+  // Through a real bullet, on every material a round can stop against.
+  for (const [what, o] of [
+    ["a wall", makeWall(vec(0, 0), 64, 64, 0)],
+    ["a crate", makeCrate(vec(0, 0), 64, 64, 0)],
+    ["a metal barrel", makeBarrelMetal(vec(0, 0), 64, 0)],
+    ["a wall set to `sparks`", metalWall],
+  ] as [string, Obstacle][]) {
+    const ps = shootInto(o);
+    const smoke = ps.filter(isSmoke);
+    check(`shooting ${what} raises smoke`, smoke.length === IMPACT_SMOKE.count, `n=${smoke.length}`);
+    check(`...alongside its own debris, not instead of it`, debrisOf(ps).length > 0);
+  }
+
+  // Smoke rides the same heft as the debris it accompanies: a heavier round
+  // raises proportionally more dust.
+  const smokeSizeAt = (tracerWidth: number): number => {
+    const ps = shootInto(metalWall, tracerWidth).filter(isSmoke);
+    return ps.length ? ps[0].size : 0;
+  };
+  const ref = smokeSizeAt(SHRAPNEL_TRACER_WIDTH);
+  check("a width-4 round raises the authored puff",
+    near(ref, IMPACT_SMOKE.size + IMPACT_SMOKE.sizeChange!), `${ref}`);
+  check("the AWM's width-8 round raises twice as much", near(smokeSizeAt(8), ref * 2),
+    `${smokeSizeAt(8)} vs ${ref}`);
+  check("the M9's width-3 round three quarters as much", near(smokeSizeAt(3), ref * 0.75),
+    `${smokeSizeAt(3)} vs ${ref}`);
+  check("a punch (no tracer) raises none", smokeSizeAt(0) === 0);
+
+  // It must clear: dust that accumulates would fog a firefight permanently.
+  let live = shootInto(metalWall);
+  for (let i = 0; i < IMPACT_SMOKE.life + METAL_SPARKS.life + 20; i++) live = updateParticles(live);
+  check("the whole impact — smoke included — clears away", live.length === 0, `n=${live.length}`);
+
+  // Blood is a hit confirmation, not an impact on scenery: no dust off a body.
+  const dummyWorld = shootInto(makeWall(vec(0, 0), 64, 64, 0));
+  check("smoke belongs to surfaces, and the blood style carries none",
+    !dummyWorld.some((p) => p.color === BLOOD.color));
 }
 
 // ------------------------------------------------------------- blood ----------

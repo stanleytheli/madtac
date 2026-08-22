@@ -22,7 +22,7 @@ import {
   updateAudio,
 } from "./engine/audio.ts";
 import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
-import { GUN_SPECS } from "./entities/specs.ts";
+import { ALL_GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
@@ -63,7 +63,7 @@ initInput(canvas);
 preload(DEFAULT_FIRE_SOUND);
 // Warm each weapon's fire + explosion sound (filenames live only on the specs) so
 // the first shot / detonation isn't silent while it decodes.
-for (const spec of Object.values(GUN_SPECS)) {
+for (const spec of Object.values(ALL_GUN_SPECS)) {
   if (spec.fireSound) preload(spec.fireSound);
   if (spec.reloadSound) preload(spec.reloadSound);
   if (spec.cycleSound) preload(spec.cycleSound);

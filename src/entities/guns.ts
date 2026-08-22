@@ -340,7 +340,7 @@ export const M16: GunSpec = {
   ],
   damage: 20,
   armorPen: DEFAULT_AP_MED,
-  penetration: 20,
+  penetration: 23,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -403,7 +403,7 @@ export const M4A1S: GunSpec = {
   ],
   damage: 23,
   armorPen: DEFAULT_AP_MED,
-  penetration: 20,
+  penetration: 23,
   zoom: 2.3,
   speed: 0.85,
   fire: {
@@ -823,7 +823,7 @@ export const MP220: GunSpec = {
   ],
   damage: 10,
   armorPen: DEFAULT_AP_XLOW,
-  penetration: 0, // buckshot: a wall eats it
+  penetration: 10,
   shotgunPellets: 9,
   shotgunSpread: 2.5,
   zoom: 1.9,
@@ -900,7 +900,7 @@ export const Mossberg500: GunSpec = {
   ],
   damage: 10,
   armorPen: DEFAULT_AP_XLOW,
-  penetration: 0, // buckshot: a wall eats it
+  penetration: 10,
   shotgunPellets: 9,
   shotgunSpread: 2.25,
   zoom: 1.9,
@@ -980,7 +980,7 @@ export const M249: GunSpec = {
 
   damage: 18,
   armorPen: DEFAULT_AP_MED,
-  penetration: 20,
+  penetration: 23,
   zoom: 2.3,
   speed: 0.75,
   fire: {
@@ -1213,7 +1213,7 @@ export const Golden_M249: GunSpec = {
 
   damage: 15,
   armorPen: DEFAULT_AP_MED,
-  penetration: 20,
+  penetration: 23,
   zoom: 2.3,
   speed: 0.75,
   fire: {
@@ -1507,7 +1507,7 @@ export const USPS: GunSpec = {
 
   damage: 22,
   armorPen: DEFAULT_AP_MLOW,
-  penetration: 20,
+  penetration: 23,
   zoom: 2.1,
   speed: 0.925,
   fire: {
@@ -1657,6 +1657,9 @@ export const UNARMED: GunSpec = {
   name: "unarmed",
   primary: false,
   melee: true,
+
+  fireSound: "Punch_swing_01.wav",
+
   // Reach matches what the old invisible bullet actually achieved: it moved
   // bulletSpeed px a tick for (bulletLife - 1) ticks and connected within
   // BODY_RADIUS of a centre, i.e. 23*5 + 30. Kept so this is a change of

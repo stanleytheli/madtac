@@ -65,26 +65,36 @@ export interface ParticleStyle {
   noFade?: boolean;
 }
 
+/**
+ * What a single event throws: one style, or several layered together (dust under
+ * splinters, smoke under a fireball). Layers are emitted in list order and drawn
+ * in that order too, so earlier ones sit UNDER later ones.
+ *
+ * Every consumer takes one of these rather than a bare style, so any hit can grow
+ * a second layer without touching the code that spawns it — see spawnParticles.
+ */
+export type ParticleBurst = ParticleStyle | readonly ParticleStyle[];
+
 /** Brown wooden splinters kicked off a crate when shot. */
 export const CRATE_SHRAPNEL: ParticleStyle = {
   color: "#8a5a26",
   shape: "square",
-  size: 4,
+  size: 5,
   speed: 4.5,
   spread: 1.0,
-  life: 16,
-  count: 7,
+  life: 20,
+  count: 5,
 };
 
 /** Gray concrete chips kicked off a wall when shot. */
 export const WALL_SHRAPNEL: ParticleStyle = {
   color: "#3a3d40",
   shape: "square",
-  size: 4,
-  speed: 4.0,
+  size: 5,
+  speed: 4.5,
   spread: 1.0,
-  life: 14,
-  count: 6,
+  life: 20,
+  count: 5,
 };
 
 /** Bright steel sparks struck off a metal object by a bullet — the explosion's burning
@@ -128,6 +138,40 @@ export const SHRAPNEL_STYLES: Record<string, ParticleStyle> = {
   wood: CRATE_SHRAPNEL,
   concrete: WALL_SHRAPNEL,
 };
+
+/**
+ * Faint dust/smoke kicked up where a round bites into something solid. Deliberately
+ * slow and short on reach — it marks the impact POINT while the debris flies away
+ * from it — and billows out as it goes, so it thins away as it fades rather than
+ * sitting there as a dot. Nothing but the usual life fade makes it translucent, so
+ * the color wants to be a dark one that reads as shadow while the puff is small.
+ *
+ * Layered UNDER the debris by impactBurst, so chips read on top of their own dust.
+ */
+export const IMPACT_SMOKE: ParticleStyle = {
+  color: "#4a4038", // the explosion's smoke, at bullet scale
+  shape: "circle",
+  size: 2.5,
+  speed: 2.5,
+  spread: 1.2, // a touch wider than the debris cone: it billows rather than sprays
+  life: 22,
+  count: 3,
+  sizeChange: 0.7,
+};
+
+
+/**
+ * Everything a bullet throws off a surface made of `debris`: the material's own
+ * chips over a small puff of IMPACT_SMOKE. One place decides that impacts smoke,
+ * so it holds for every material — the object's own debris, a named pick from
+ * SHRAPNEL_STYLES, or a vehicle hull.
+ *
+ * Both layers scale with the round's `heft` at spawn time, so a heavier hit raises
+ * proportionally more dust the same way it throws bigger chips.
+ */
+export function impactBurst(debris: ParticleStyle): readonly ParticleStyle[] {
+  return [IMPACT_SMOKE, debris];
+}
 
 /** The lightest a blood puff is ever thrown, however small the round. Blood is
  *  the game's ONLY hit confirmation, so unlike wall debris it must never scale
@@ -262,13 +306,20 @@ export function spawnParticles(
   out: Particle[],
   pos: Vec2,
   dir: Vec2,
-  style: ParticleStyle,
+  burst: ParticleBurst,
   z = 0,
   heft = 1,
 ): void {
   // Nothing to throw: a round with no visible tracer at all (a punch) leaves no
   // debris, rather than a burst of zero-size particles nobody can see.
   if (heft <= 0) return;
+  // A multi-layer burst is just each of its layers thrown from the same point,
+  // in order — the later ones land on top.
+  if (Array.isArray(burst)) {
+    for (const layer of burst) spawnParticles(out, pos, dir, layer, z, heft);
+    return;
+  }
+  const style = burst as ParticleStyle;
   const base = angleOf(dir);
   for (let i = 0; i < style.count; i++) {
     const ang = base + (Math.random() * 2 - 1) * style.spread;
