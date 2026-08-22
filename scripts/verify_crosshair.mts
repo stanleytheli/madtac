@@ -18,6 +18,43 @@ import { Game } from "../src/game.ts";
 import { Gun, EnemyGun } from "../src/entities/gun.ts";
 import { GUN_SPECS } from "../src/entities/specs.ts";
 import { UNARMED } from "../src/entities/guns.ts";
+import { drawCrosshair } from "../src/ui/ui.ts";
+
+// A canvas stand-in that records the crosshair's geometry, so the checks below
+// read what is actually DRAWN rather than restating the arithmetic that draws it.
+// Path2D is a browser global; drawCrosshair only touches it at call time, so
+// shimming it here (before any call) is enough.
+interface Seg { x1: number; y1: number; x2: number; y2: number }
+class FakePath {
+  segs: Seg[] = [];
+  private cx = 0;
+  private cy = 0;
+  moveTo(x: number, y: number): void { this.cx = x; this.cy = y; }
+  lineTo(x: number, y: number): void {
+    this.segs.push({ x1: this.cx, y1: this.cy, x2: x, y2: y });
+    this.cx = x;
+    this.cy = y;
+  }
+}
+(globalThis as any).Path2D = FakePath;
+
+interface Stroke { width: number; segs: Seg[] }
+interface Arc { x: number; y: number; r: number; fill: string }
+function recordCrosshair(cx: number, cy: number, spread: number) {
+  const strokes: Stroke[] = [];
+  const arcs: Arc[] = [];
+  let pending = 0;
+  const ctx: any = {
+    save() {}, restore() {}, beginPath() {}, fill() {},
+    set lineWidth(w: number) { pending = w; },
+    get lineWidth() { return pending; },
+    strokeStyle: "", fillStyle: "", lineCap: "",
+    stroke(p: FakePath) { strokes.push({ width: pending, segs: p.segs }); },
+    arc(x: number, y: number, r: number) { arcs.push({ x, y, r, fill: ctx.fillStyle }); },
+  };
+  drawCrosshair(ctx as CanvasRenderingContext2D, cx, cy, spread);
+  return { strokes, arcs };
+}
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ""): void {
@@ -125,6 +162,78 @@ while (
 }
 check("but it does converge on the gun once left alone", steps < 400,
   `tracked back to ${game.crosshairSpread.toFixed(5)} in ${steps} ticks`);
+
+// ---- the drawn geometry -------------------------------------------------------
+// The ticks used to start AT the centre, under the dot and its ring, so the first
+// several px of bloom were invisible and small spreads all drew alike.
+console.log("\n--- drawn geometry: the ticks clear the dot ---");
+{
+  /** Distance from the centre to the nearer end of each tick. The centre is taken
+   *  from the dot the crosshair actually drew, not the one it was asked for: the
+   *  two differ by the pixel snap, and measuring from the request would fold that
+   *  offset into every gap and make the four ticks look asymmetric. */
+  const innerGaps = (r: ReturnType<typeof recordCrosshair>): number[] => {
+    const { x: cx, y: cy } = r.arcs[0];
+    return r.strokes[0].segs.map((sg) =>
+      Math.min(Math.hypot(sg.x1 - cx, sg.y1 - cy), Math.hypot(sg.x2 - cx, sg.y2 - cy)),
+    );
+  };
+
+  const at0 = recordCrosshair(400, 300, 0);
+  check("four ticks are drawn", at0.strokes[0].segs.length === 4);
+  check("...stroked twice: a halo, then the ink over it",
+    at0.strokes.length === 2 && at0.strokes[0].width > at0.strokes[1].width,
+    `${at0.strokes[0].width} then ${at0.strokes[1].width}`);
+  check("...and the dot is likewise a ring under a core",
+    at0.arcs.length === 2 && at0.arcs[0].r > at0.arcs[1].r,
+    `r=${at0.arcs[0].r} then ${at0.arcs[1].r}`);
+
+  const gaps0 = innerGaps(at0);
+  check("all four sit the same distance out (symmetric at rest)",
+    Math.max(...gaps0) - Math.min(...gaps0) < 1e-9, gaps0.join(", "));
+
+  // The load-bearing one: a tick's round cap reaches halfWidth back from its
+  // endpoint, so the outline's inner edge is gap - haloWidth/2 from the centre.
+  // That must clear the dot's outer ring — and only just, or the crosshair reads
+  // as a ring of marks with a lost dot in the middle.
+  const haloHalf = at0.strokes[0].width / 2;
+  const dotOuter = at0.arcs[0].r;
+  const clearance = gaps0[0] - haloHalf - dotOuter;
+  check("at zero spread the ticks do NOT overlap the dot", clearance >= -1e-9,
+    `clearance ${clearance.toFixed(2)}px`);
+  check("...but only just — they touch, not float", clearance <= 1,
+    `clearance ${clearance.toFixed(2)}px`);
+
+  // Small spreads must now be distinguishable, which is the whole point.
+  const gapAt = (spread: number): number => innerGaps(recordCrosshair(400, 300, spread))[0];
+  const rest = gapAt(0);
+  let monotone = true;
+  let prev = rest;
+  for (const sp of [0.005, 0.01, 0.02, 0.04, 0.08, 0.15]) {
+    const g = gapAt(sp);
+    if (g <= prev) monotone = false;
+    prev = g;
+  }
+  check("every step up in spread pushes the ticks further out", monotone);
+  check("a rifle's resting spread is already visibly off the dot",
+    gapAt(0.01) - rest > 0.5, `${(gapAt(0.01) - rest).toFixed(2)}px past rest`);
+  check("the rest offset survives even a gun at the spread ceiling",
+    gapAt(10) > rest, `${gapAt(10).toFixed(1)}px vs rest ${rest.toFixed(1)}px`);
+  check("...and the ceiling still bounds it", gapAt(10) === gapAt(100));
+
+  // The centre is snapped so an odd-width stroke lands on pixel boundaries.
+  // A stroke straddles its own coordinate, so only the axis ACROSS each tick has
+  // to land right: a vertical tick's x, a horizontal tick's y. The ends are round
+  // caps at a fractional gap and are free to sit anywhere.
+  const frac = recordCrosshair(400.7, 300.4, 0);
+  const width = frac.strokes[1].width;
+  const wantHalf = Number.isInteger(width) && width % 2 === 1;
+  const offBoundary = (v: number): number => Math.abs(v - Math.round(v));
+  const across = frac.strokes[1].segs.map((sg) => (sg.x1 === sg.x2 ? sg.x1 : sg.y1));
+  check("the centre is pixel-snapped for the tick width in use",
+    across.every((v) => offBoundary(v) === (wantHalf ? 0.5 : 0)),
+    `width ${width}, ${wantHalf ? "half-pixel" : "whole-pixel"} expected, got ${across.join(", ")}`);
+}
 
 console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

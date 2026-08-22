@@ -46,6 +46,18 @@ const HALO_WIDTH = TICK_WIDTH + 2.5;
  *  on screen to back it up — so it is sized to be found, not just to be present. */
 const DOT_R = 1.8;
 const DOT_HALO_R = 3.1;
+/**
+ * Where the ticks sit with a perfectly steady weapon. Zero spread used to put the
+ * tick ENDS at the centre, buried under the dot and its ring, so the first few px
+ * of bloom were invisible and every small difference in spread drew the same
+ * picture. Standing them off means the readout starts moving the moment the
+ * spread does.
+ *
+ * Sized so the tick's dark outline just kisses the dot's: the tick's round cap
+ * reaches HALO_WIDTH/2 back from its endpoint, so that endpoint has to clear the
+ * dot's outer ring by exactly that much.
+ */
+const REST_GAP = DOT_HALO_R + HALO_WIDTH / 2;
 const XHAIR_INK = "#ffffff";
 const XHAIR_HALO = "rgba(0, 0, 0, 0.55)";
 
@@ -75,7 +87,10 @@ export function drawCrosshair(
   cy: number,
   spread = 0,
 ): void {
-  const gap = Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
+  // The cap bounds the SPREAD-driven part, not the total: the rest offset is
+  // structural (it keeps the ticks off the dot) and shouldn't be eaten into by a
+  // gun spraying hard enough to hit the ceiling.
+  const gap = REST_GAP + Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
   // Snap so the ticks land on pixel boundaries. A stroke straddles its own
   // coordinate, so an EVEN width wants a whole-pixel centre and an ODD width
   // wants a half-pixel one; get it backwards and the line renders as two grey
