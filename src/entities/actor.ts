@@ -7,7 +7,7 @@ import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.
 import { gunIcon, utilityIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, mid, perp, scale, scaleAlong, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { playSound } from "../engine/audio.ts";
-import type { Hittable, World } from "../world/world.ts";
+import type { HitMarks, Hittable, World } from "../world/world.ts";
 import type { Vehicle } from "./vehicle.ts";
 
 const SQRT1_2 = Math.SQRT1_2; // 1/sqrt(2), for diagonal movement normalization
@@ -83,9 +83,10 @@ export class Character {
   /** The gun spec behind the most recent damaging hit — read on death to label the
    *  kill feed with the weapon used. Null if never shot, or shot by no gun. */
   lastAttackerGun: GunSpec | null = null;
-  /** Whether that last hit came through a wall — carried to the kill feed, which
-   *  marks a wallbanged kill with its own icon. */
-  lastAttackerWallbang = false;
+  /** How that last hit happened — carried to the kill feed, which marks it with
+   *  an icon per flag (through a wall, taken on the move with a sniper). Reset
+   *  wholesale on every hit, so a mark can never leak from an earlier one. */
+  lastAttackerMarks: HitMarks = {};
 
   /** Worn armor, or null. Soaks bullet damage and renders on the head (see draw). */
   armor: Armor | null = null;
@@ -216,11 +217,24 @@ export class Character {
     return len(this.vel);
   }
 
-  /** The movement fraction gun inaccuracy scales by: current speed over the most
-   *  this loadout can manage. Exactly what fire() hands the gun, exposed so the
-   *  HUD can ask the gun what its spread would be without guessing at it. */
+  /** The movement fraction gun inaccuracy scales by: current speed over what the
+   *  GUN alone allows. Armor and the heal slowdown are deliberately not in it —
+   *  they cut your actual speed, and moving slower is already less inaccuracy, so
+   *  counting them again in the denominator would charge you twice. Exactly what
+   *  fire() hands the gun, exposed so the HUD can ask the gun what its spread
+   *  would be without guessing at it. */
   get speedRatio(): number {
     return this.speed / maxSpeedFor(this.gun.spec);
+  }
+
+  /** Current speed over the fastest this character can ACTUALLY move right now —
+   *  gun weight, worn armor and any heal slowdown all included. Use this for
+   *  anything that means "how close to flat out is this player", since heavy armor
+   *  caps speedRatio well below 1 and would otherwise hold them to a stricter
+   *  bar than everyone else (see NOSCOPE_SPEED_RATIO). */
+  get speedFraction(): number {
+    const mul = this.moveSpeedMul;
+    return mul > 0 ? this.speed / ((ACCEL * mul) / (1 - FRICTION)) : 0;
   }
 
   /** This character's movement speed multiplier: the held gun's weight, worn
@@ -532,7 +546,7 @@ export class Character {
    */
   fire(world: World, targets: readonly Hittable[] = []): boolean {
     const gun = this.gun;
-    return gun.fire(world, this.pos, this.forward, this, this.speedRatio, targets);
+    return gun.fire(world, this.pos, this.forward, this, this.speedRatio, targets, this.speedFraction);
   }
 
   /**
@@ -547,12 +561,12 @@ export class Character {
     armorPen: ArmorPen,
     attacker: Hittable | null = null,
     gun: GunSpec | null = null,
-    throughWall = false,
+    marks: HitMarks = {},
   ): void {
     this.lastHitDir = dir;
     this.lastAttacker = attacker;
     this.lastAttackerGun = gun;
-    this.lastAttackerWallbang = throughWall;
+    this.lastAttackerMarks = marks;
 
     let toBody = damage;
     const armor = this.armor;

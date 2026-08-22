@@ -10,6 +10,7 @@ import type { Gun } from "../entities/gun.ts";
 import { armorIcon, assetImage, gunIcon, OUTLINE_PX, outlinedIcon, utilityIcon, whiteIcon } from "../entities/item.ts";
 import { Minimap, type DeathMark } from "./minimap.ts";
 import type { Vec2 } from "../engine/vec.ts";
+import type { HitMarks } from "../world/world.ts";
 
 /** Uniform downscale for the whole screen-space HUD (1 = original size). */
 export const UI_SCALE = 0.8;
@@ -508,6 +509,17 @@ function drawScoreboard(ctx: CanvasRenderingContext2D, players: PlayerRow[], w: 
 }
 
 /**
+ * The marks a kill can carry, drawn as white glyphs after the weapon in THIS
+ * order (CSGO's: how the shot was taken, then what it went through). One entry
+ * per HitMarks flag — adding a mark means adding a line here and setting the flag
+ * where the hit is registered, and the feed lays it out with no further work.
+ */
+const MARK_ICONS: readonly { flag: keyof HitMarks; file: string }[] = [
+  { flag: "noscope", file: "csgo_noscope.webp" },
+  { flag: "throughWall", file: "wallbang_icon.webp" },
+];
+
+/**
  * The kill feed: one squircle bar per recent player kill, centered horizontally
  * and stacked downward from `topY` with the newest on top. Each bar reads
  * "killer  [white gun glyph]  victim  (N meters)". Bars fade out over their last
@@ -524,7 +536,7 @@ function drawKillFeed(
   const PAD_X = 14; // squircle inner horizontal padding
   const ITEM_GAP = 10; // spacing between name / icon / name / distance
   const ICON_MAX = 44; // gun glyph's longest side
-  const WALLBANG_MAX = 24; // the through-wall mark, deliberately smaller than the gun
+  const MARK_MAX = 24; // a mark's longest side, deliberately smaller than the gun
   const FADE_TICKS = 40; // fade window before a bar is pruned
 
   const nameFont = uiFont("bold 15px");
@@ -557,21 +569,26 @@ function drawKillFeed(
       iconH = sprite.height * k;
     }
 
-    // The through-wall mark rides just after the weapon, as CSGO's does.
-    const bangImg = e.wallbang ? assetImage("wallbang_icon.webp") : null;
-    const bangSprite = bangImg ? whiteIcon(bangImg) : null;
-    let bangW = 0;
-    let bangH = 0;
-    if (bangSprite) {
-      const k = WALLBANG_MAX / Math.max(bangSprite.width, bangSprite.height);
-      bangW = bangSprite.width * k;
-      bangH = bangSprite.height * k;
-    }
+    // The marks ride just after the weapon, as CSGO's do — one icon per flag the
+    // hit carries, in MARK_ICONS order however they came in, so two kills with the
+    // same pair never draw them in a different order. Adding a mark is a line in
+    // that table; the measuring and drawing below are already general.
+    const marks = MARK_ICONS.filter((m) => e.marks[m.flag] === true)
+      .map((m) => {
+        const img = assetImage(m.file);
+        return img ? whiteIcon(img) : null; // still decoding: skip it this frame
+      })
+      .filter((sprite): sprite is HTMLCanvasElement => sprite !== null)
+      .map((sprite) => {
+        const k = MARK_MAX / Math.max(sprite.width, sprite.height);
+        return { sprite, w: sprite.width * k, h: sprite.height * k };
+      });
+    const marksW = marks.reduce((sum, m) => sum + ITEM_GAP + m.w, 0);
 
     const contentW =
       (killerW ? killerW + ITEM_GAP : 0) +
       iconW +
-      (bangW ? ITEM_GAP + bangW : 0) +
+      marksW +
       ITEM_GAP +
       victimW +
       (distW ? ITEM_GAP + distW : 0);
@@ -598,10 +615,10 @@ function drawKillFeed(
       ctx.drawImage(sprite, cursor, cy - iconH / 2, iconW, iconH);
       cursor += iconW;
     }
-    if (bangSprite) {
+    for (const m of marks) {
       cursor += ITEM_GAP;
-      ctx.drawImage(bangSprite, cursor, cy - bangH / 2, bangW, bangH);
-      cursor += bangW;
+      ctx.drawImage(m.sprite, cursor, cy - m.h / 2, m.w, m.h);
+      cursor += m.w;
     }
     cursor += ITEM_GAP;
 

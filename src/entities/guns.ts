@@ -11,6 +11,14 @@
  * tracks recoil/cooldown/etc. is the `Gun` class (see gun.ts).
  */
 import { STANDARD_EXPLOSION, SMALL_EXPLOSION, type ParticleStyle } from "../engine/particle.ts";
+
+/** How fast you have to be moving for a sniper kill to count as a no-scope: this
+ *  fraction of the fastest the shooter can actually move, ARMOR INCLUDED — see
+ *  Character.speedFraction, not speedRatio, which measures against the gun alone
+ *  and would quietly hold a Level V wearer (0.75x) to 67% of their own top speed
+ *  while everyone else got 50%. Half speed is a walk you could have stopped out
+ *  of: deliberate enough to be a choice, fast enough that it wasn't a planted shot. */
+export const NOSCOPE_SPEED_RATIO = 0.5;
 import type { SoundRef } from "../engine/audio.ts";
 
 export interface GripLocal {
@@ -205,6 +213,11 @@ export interface GunSpec {
    * bolt guns get through one and a bit more. Omitted or 0 = no wallbang at all;
    * the round dies at the first thing it touches, exactly as it always has.
    */
+  /** This weapon can earn the no-scope mark: a kill with it counts as a no-scope
+   *  when the shot was taken at NOSCOPE_SPEED_RATIO or more of the shooter's top
+   *  speed. Snipers only — landing one from a hip-fired SMG on the move is just
+   *  called shooting. Cosmetic: it changes the kill feed, nothing else. */
+  noscope?: boolean;
   penetration?: number;
   /** Camera zoom while equipped. Higher = more vision; longer-range weapons see further. */
   zoom: number;
@@ -613,6 +626,7 @@ export const SCAR17: GunSpec = {
 
 
 export const Scout: GunSpec = {
+  noscope: true, // a sniper: kills on the move are no-scopes
   name: "Steyr Scout",
   primary: true,
   icon: "scout",
@@ -700,6 +714,7 @@ export const Scout: GunSpec = {
   movingFirstShotRecoilMax: 28,
 };
 export const AWM: GunSpec = {
+  noscope: true, // a sniper: kills on the move are no-scopes
   name: "AWM",
   primary: true,
   icon: "awm",

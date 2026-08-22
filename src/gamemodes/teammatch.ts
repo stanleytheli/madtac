@@ -416,7 +416,7 @@ export abstract class TeamMatchMode implements Gamemode {
         victimColor: TEAMS[victim.team].color,
         gun: dead.lastAttackerGun,
         meters,
-        wallbang: dead.lastAttackerWallbang,
+        marks: dead.lastAttackerMarks,
         selfKill: killer === victim,
         age: 0,
       });

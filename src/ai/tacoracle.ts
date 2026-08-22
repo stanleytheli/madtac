@@ -79,7 +79,7 @@ import { profiler } from "../engine/profiler.ts";
 import { targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { losClear, shotClear, shotCost, wallbangDamageFor, wallbangSightBudget, type Hittable } from "../world/world.ts";
+import { losClear, shotClear, shotCost, wallbangDamageFor, wallbangSightBudget, type HitMarks, type Hittable } from "../world/world.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 
 /** Desert gold with the Oracle lineage's teal right arm. */
@@ -936,9 +936,12 @@ export class TacOracle extends Oracle {
     armorPen: ArmorPen,
     attacker: Hittable | null = null,
     gun: GunSpec | null = null,
-    throughWall = false,
+    marks: HitMarks = {},
   ): void {
-    super.registerHit(dir, point, damage, armorPen, attacker, gun, throughWall);
+    // Forward EVERYTHING: this override once passed six of seven arguments and
+    // quietly dropped the wallbang flag for every bot victim in the game. One
+    // `marks` object is now the whole tail, so there is nothing left to lose.
+    super.registerHit(dir, point, damage, armorPen, attacker, gun, marks);
     if (this.mode !== "hold" || damage <= 0) return;
     if (!(attacker instanceof Character) || !areHostile(this.team, attacker.team)) return;
     this.clearHold();

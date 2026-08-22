@@ -1,7 +1,7 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
 import { SHRAPNEL_TRACER_WIDTH } from "../engine/particle.ts";
 import { GunItem, type Droppable, type GroundItem } from "./item.ts";
-import { interpGrip, type GunSpec } from "./guns.ts";
+import { interpGrip, NOSCOPE_SPEED_RATIO, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { meleeSwing, spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
 import { playSound, stopSound, type SoundHandle } from "../engine/audio.ts";
@@ -381,6 +381,11 @@ export class Gun implements Droppable {
     /** Everyone a melee swing could connect with. Ignored by every other weapon,
      *  which resolves against whatever its bullets meet in flight. */
     targets: readonly Hittable[] = [],
+    /** How close to FLAT OUT the shooter is, armor included (Character.speedFraction).
+     *  Only the no-scope mark reads it; spread uses speedRatio, which measures
+     *  against the gun alone. Defaults to speedRatio for callers with no body
+     *  behind the trigger, like a vehicle turret. */
+    speedFraction = speedRatio,
   ): boolean {
     // Per-round guns (pump shotguns): a trigger pull interrupts an in-progress
     // top-off so you can fire right away, as long as at least one round is
@@ -420,6 +425,12 @@ export class Gun implements Droppable {
       this.idleTicks = 0;
       return true; // the swing happened whether or not it found anyone
     }
+
+    // Was this taken on the move? Decided HERE, at the muzzle, because that is
+    // when it is true: a sniper round is still in the air long after the shooter
+    // has stopped, and the shot is what earns the mark. Inert for every weapon
+    // that isn't flagged a sniper. See GunSpec.noscope.
+    const noscope = this.spec.noscope === true && speedFraction >= NOSCOPE_SPEED_RATIO;
 
     // Project from the head center (not the muzzle) so shots can't originate past
     // objects/walls in front of the shooter.
@@ -475,6 +486,7 @@ export class Gun implements Droppable {
         this.spec.stagger,
         this.spec,
         this.spec.penetration ?? 0,
+        noscope,
       );
     } else {
       for (let i = 0; i < this.spec.shotgunPellets; i++) {
@@ -496,6 +508,7 @@ export class Gun implements Droppable {
           this.spec.stagger,
           this.spec,
           this.spec.penetration ?? 0,
+          noscope,
         );
       }
     }

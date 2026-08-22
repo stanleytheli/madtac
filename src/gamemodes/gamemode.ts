@@ -16,7 +16,7 @@ import type { LevelMeta, LevelState } from "../world/level.ts";
 import type { NavGraph } from "../world/nav.ts";
 import type { TeamId } from "../entities/team.ts";
 import type { Vec2 } from "../engine/vec.ts";
-import type { World } from "../world/world.ts";
+import type { HitMarks, World } from "../world/world.ts";
 import { SandboxMode } from "./sandbox.ts";
 import { TeamDeathmatchMode } from "./tdm.ts";
 import { DominationMode } from "./domination.ts";
@@ -37,9 +37,10 @@ export interface KillFeedEntry {
   gun: GunSpec | null;
   /** Kill distance in meters (1 m = 50 px), pre-rounded for display. */
   meters: number;
-  /** The fatal round came through a wall — the feed marks it, CSGO-style, with
-   *  its own icon after the weapon. */
-  wallbang: boolean;
+  /** How the fatal hit happened. The feed draws one icon per flag after the
+   *  weapon, CSGO-style — so a new mark is a field on HitMarks and an entry in
+   *  the renderer's table, and nothing here has to change. */
+  marks: HitMarks;
   /** Killer and victim are the same person: blew themselves up. The feed shows
    *  one name, not the same one twice. */
   selfKill: boolean;

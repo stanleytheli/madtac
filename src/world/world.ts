@@ -434,6 +434,22 @@ export function updateSurfaceAlphas(w: World, viewerZ: number, viewerPos: Vec2, 
  * Anything a bullet can strike and damage. Characters satisfy this structurally
  * (declared here, not imported, to keep world.ts free of an actor.ts cycle).
  */
+/**
+ * How a hit happened, for the kill feed to mark it with (CSGO-style icons after
+ * the weapon). Every field is optional, and a new mark is a FIELD here rather
+ * than another positional argument on registerHit: the through-wall flag was
+ * silently dropped once by an override that forwarded six of seven arguments,
+ * and each extra trailing boolean makes that likelier, not less.
+ */
+export interface HitMarks {
+  /** The round punched through something to get here (see wallbangDamageMul). */
+  throughWall?: boolean;
+  /** Landed by a sniper fired on the move — the game's no-scope. Decided when the
+   *  shot LEAVES (see GunSpec.noscope), not when it arrives: it is a fact about
+   *  how the shot was taken, and a long-range round lands well after you stop. */
+  noscope?: boolean;
+}
+
 export interface Hittable {
   pos: Vec2;
   z: number;
@@ -444,9 +460,8 @@ export interface Hittable {
     armorPen: ArmorPen,
     attacker: Hittable | null,
     gun?: GunSpec | null,
-    /** The round punched through something to get here (see wallbangDamageMul).
-     *  Optional so a bare Hittable — a test dummy, a future prop — can ignore it. */
-    throughWall?: boolean,
+    /** Optional so a bare Hittable — a test dummy, a future prop — can ignore it. */
+    marks?: HitMarks,
   ): void;
   /** Optional: take a movement stagger (a staggering weapon hit). Optional so
    *  non-character Hittables (test dummies, future props) simply ignore it. */
@@ -487,6 +502,9 @@ export interface Bullet {
   penSkip: number;
   stagger?: StaggerEffect; // movement stagger applied to the body it strikes (from the gun)
   gun: GunSpec | null; // the firing gun's spec, carried for kill-feed attribution
+  /** Taken on the move with a sniper — stamped at the muzzle, since that is when
+   *  it is true, and carried to the kill feed on a fatal hit. See GunSpec.noscope. */
+  noscope?: boolean;
 }
 
 /**
@@ -1147,10 +1165,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
           // A round that came through a wall arrives with less left in it.
-          t.registerHit(
-            fwd, sample, b.damage * wallbangDamageMul(b), b.armorPen, b.owner, b.gun,
-            (b.penUsed || 0) > 0, // came through a wall: the kill feed says so
-          );
+          t.registerHit(fwd, sample, b.damage * wallbangDamageMul(b), b.armorPen, b.owner, b.gun, {
+            throughWall: (b.penUsed || 0) > 0, // came through a wall: the feed says so
+            noscope: b.noscope,
+          });
           if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           // Blood scales with the round like everything else, but floored: it is
@@ -1274,6 +1292,7 @@ export function spawnBullet(
   stagger?: StaggerEffect,
   gun: GunSpec | null = null,
   penetration = 0,
+  noscope = false,
 ): void {
   w.bullets.push({
     pos: origin,
@@ -1290,6 +1309,7 @@ export function spawnBullet(
     tracerColor,
     armorPen,
     penetration,
+    noscope,
     penUsed: 0,
     penSkip: 0,
     stagger,
