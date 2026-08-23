@@ -35,6 +35,7 @@ import {
   enclosureCap,
   floorVisible,
   stairsVisible,
+  wallbangDamageMul,
   zsetHas,
   type Floor,
   type Obstacle,
@@ -728,11 +729,14 @@ function drawBullets(z: number): void {
     const tip = b.pos;
     const tail = sub(tip, scale(dir, tailLen));
 
-    // Fade the gun's tracer color from transparent at the tail to solid at the tip.
+    // Fade the gun's tracer color from transparent at the tail to solid at the tip,
+    // the whole streak scaled by the damage the round has left — the SAME number
+    // that will be applied when it lands, so a wallbanged shot looks exactly as
+    // weak as it hits. See wallbangDamageMul.
     const rgb = rgbTriple(b.tracerColor);
     const grad = ctx.createLinearGradient(tail.x, tail.y, tip.x, tip.y);
     grad.addColorStop(0, `rgba(${rgb},0)`);
-    grad.addColorStop(1, `rgba(${rgb},0.95)`);
+    grad.addColorStop(1, `rgba(${rgb},${(0.95 * wallbangDamageMul(b)).toFixed(3)})`);
     ctx.strokeStyle = grad;
     ctx.beginPath();
     ctx.moveTo(tail.x, tail.y);

@@ -1050,6 +1050,12 @@ export function wallbangSightBudget(penetration: number): number {
  * — and any clean shot from one that has — deals exactly its listed damage. The
  * ceiling is a wallbang tax, not a range falloff: it applies the moment a round
  * has actually paid to cross something.
+ *
+ * Doubles as the tracer's opacity (see drawBullets): a round is drawn as strong
+ * as it hits, so what you see IS the damage it will do. Nothing needs clamping
+ * for that — the curve is already bounded by its own two ends, and bottoms out at
+ * WALLBANG_MIN_DAMAGE rather than at nothing, so a round that can still kill you
+ * can still be seen.
  */
 export function wallbangDamageMul(b: Bullet): number {
   return wallbangDamageFor(b.penUsed || 0, b.penetration || 0);

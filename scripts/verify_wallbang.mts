@@ -24,6 +24,7 @@ import {
   makeWall,
   spawnBullet,
   updateBullets,
+  wallbangDamageFor,
   wallbangDamageMul,
   type Bullet,
   type Hittable,
@@ -616,6 +617,64 @@ console.log("\nbelief vs. reality, over random geometry:");
   check("...and arrived for at least the cutoff",
     underCutoff === 0, `${underCutoff} under; worst ${(worstBelieved * 100).toFixed(1)}%`);
   check("no worthwhile shot was passed up", missedChance === 0, `${missedChance} missed`);
+}
+
+// ---------------------------------------------------------- tracer fade -------
+// A spent round LOOKS spent: the tracer is drawn at the damage multiplier it will
+// land with, so what you see is what it will do.
+console.log("a round's tracer is drawn at the damage it has left:");
+{
+  const bullet = (penetration: number, penUsed: number): Bullet =>
+    ({ penetration, penUsed } as Bullet);
+  const fade = (penetration: number, penUsed: number): number =>
+    wallbangDamageMul(bullet(penetration, penUsed));
+
+  check("a fresh round draws at full strength", fade(100, 0) === 1);
+  check("a gun with no budget draws at full strength, always",
+    fade(0, 0) === 1 && fade(0, 50) === 1);
+  check("the tracer IS the damage multiplier — one number, not two rules",
+    fade(100, 50) === wallbangDamageMul(bullet(100, 50)) &&
+      near(fade(100, 50), wallbangDamageFor(50, 100)));
+
+  // The curve's own ends bound it, so nothing has to be clamped for display:
+  // crossing anything at all costs the wallbang tax, and a fully spent round
+  // still lands — and still shows — at the damage floor.
+  check("crossing anything drops it to the wallbang ceiling or below",
+    fade(100, 1) <= WALLBANG_MAX_DAMAGE && fade(100, 1) < 1,
+    `${fade(100, 1).toFixed(3)} vs ceiling ${WALLBANG_MAX_DAMAGE}`);
+  check("a fully spent round is still visible, at the damage floor",
+    fade(100, 100) === WALLBANG_MIN_DAMAGE);
+  check("over-spending cannot push it below that floor",
+    fade(100, 500) === WALLBANG_MIN_DAMAGE);
+  check("it is never outside the curve's own two ends",
+    [1, 25, 50, 75, 100, 300].every((sp) => {
+      const f = fade(100, sp);
+      return f >= WALLBANG_MIN_DAMAGE && f <= WALLBANG_MAX_DAMAGE;
+    }));
+
+  // Monotone: more wall crossed is never a brighter tracer.
+  let monotone = true;
+  let prev = fade(200, 0);
+  for (let spent = 10; spent <= 260; spent += 10) {
+    const f = fade(200, spent);
+    if (f > prev + 1e-9) monotone = false;
+    prev = f;
+  }
+  check("every px of wall crossed dims it further (or holds at the floor)", monotone);
+
+  // End to end: the same round, before and after a wall — and the tracer's
+  // brightness equals the damage that round actually deals on arrival.
+  const w = world([wallAt(0, 40)]);
+  spawnBullet(w, vec(-200, 0), vec(1, 0), 60, 40, 0, null, 10, 4, 20, "#fff", AP, 0,
+    undefined, AWM, 200);
+  const fresh = wallbangDamageMul(w.bullets[0]);
+  for (let i = 0; i < 40 && w.bullets.length && (w.bullets[0].penUsed || 0) === 0; i++) {
+    updateBullets(w, []);
+  }
+  const after = w.bullets.length ? wallbangDamageMul(w.bullets[0]) : 0;
+  check("a real round dims the moment it crosses a wall", fresh === 1 && after < 1,
+    `${fresh} -> ${after.toFixed(3)}`);
+  check("...to no more than the wallbang ceiling", after <= WALLBANG_MAX_DAMAGE);
 }
 
 console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);
