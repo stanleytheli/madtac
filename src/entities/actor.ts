@@ -18,8 +18,8 @@ const SLUNG_ANGLE_DEG = 100; // rotation off the aim direction (diagonal across 
 const SLUNG_BACK_OFFSET = 40; // world px shifted opposite the aim, so it peeks out behind
 
 // Movement tuning (per 60 Hz tick).
-const ACCEL = 1.5; // velocity gained per tick at full input
-const FRICTION = 0.80; // velocity retained per tick
+const ACCEL = 1.0; // velocity gained per tick at full input
+const FRICTION = 0.85; // velocity retained per tick
 /** On a staircase, the velocity component along the climb axis is scaled by this
  *  each tick — climbing is slower than flat ground (see Character.applyStairMove).
  *  1/sqrt2. */
