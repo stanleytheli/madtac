@@ -47,7 +47,7 @@ const ZOOM_EASE = 0.12;
 /** How fast the crosshair's displayed spread chases the gun's real spread. Eased
  *  per tick, like the camera zoom above, so it doesn't snap open on the first
  *  shot of a burst or snap shut the instant recoil resets. */
-const CROSSHAIR_EASE = 0.75;
+const CROSSHAIR_EASE = 1.0;
 
 // --- inferred player route (nav congestion) ---------------------------------
 /** How often the player's route is re-inferred (ticks). The inference costs a
