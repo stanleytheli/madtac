@@ -608,7 +608,7 @@ export class TacOracle extends Oracle {
     // HEAL: follow the committed retreat/cover spot, or hold — never coast toward
     // the enemy (that's the opposite of taking cover to heal).
     if (this.mode === "heal") {
-      if (this.strafeTarget) this.stepToward(this.strafeTarget);
+      if (this.strafeTarget) this.stepToward(ai, this.strafeTarget);
       return;
     }
     // HOLD: keep walking the committed route (and keep the gun on the entry
@@ -624,7 +624,7 @@ export class TacOracle extends Oracle {
     // Mirror act's stand-to-shoot hold so a heavy gunner doesn't creep mid-burst.
     if (this.standToShoot(ai, target)) return;
     if (this.strafeTarget) {
-      this.stepToward(this.strafeTarget);
+      this.stepToward(ai, this.strafeTarget);
       return;
     }
     // Keep clearing a teammate's firing lane between plan ticks too (drive
@@ -1101,7 +1101,7 @@ export class TacOracle extends Oracle {
       this.evalIn = EVAL_TICKS;
       this.strafeTarget = this.retreatSpot(ai, threat);
     }
-    if (this.strafeTarget) this.stepToward(this.strafeTarget);
+    if (this.strafeTarget) this.stepToward(ai, this.strafeTarget);
   }
 
   /** HOLD movement: get to the committed spot and sit on it, gun already on the
@@ -1419,7 +1419,7 @@ export class TacOracle extends Oracle {
       this.clearHold();
       return;
     }
-    this.stepToward(next);
+    this.stepToward(ai, next);
   }
 
   /** HOLD owns its facing outright — the gun sits on the entry point the whole
@@ -1921,7 +1921,7 @@ export class TacOracle extends Oracle {
         }
       }
     }
-    if (this.strafeTarget) this.stepToward(this.strafeTarget);
+    if (this.strafeTarget) this.stepToward(ai, this.strafeTarget);
   }
 
   /** The best objective-ward firing spot among `cands`, or null if none can
@@ -2013,7 +2013,7 @@ export class TacOracle extends Oracle {
       this.strafeTarget = this.dodging || best.offset === 0 ? null : best.point;
     }
     if (this.strafeTarget) {
-      this.stepToward(this.strafeTarget);
+      this.stepToward(ai, this.strafeTarget);
       return;
     }
     if (!this.dodging) return; // already at the least-exposed spot: hold it
@@ -2024,13 +2024,14 @@ export class TacOracle extends Oracle {
       this.dodgeIn = DODGE_TICKS;
     }
     const side = this.sideAxis(chase);
-    const step = add(this.pos, scale(side, this.dodgeDir * this.moveSpeed));
+    const move = this.unshove(ai, scale(side, this.dodgeDir * this.moveSpeed));
+    const step = add(this.pos, move);
     if (!walkable(ai.world, this.pos, this.z, step, this.z)) {
       this.dodgeDir = this.dodgeDir === 1 ? -1 : 1;
       this.dodgeIn = DODGE_TICKS;
       return;
     }
-    this.vel = sub(step, this.pos);
+    this.vel = move;
     this.pos = step;
   }
 
@@ -2085,9 +2086,14 @@ export class TacOracle extends Oracle {
       openR,
     ];
     for (const d of dirs) {
-      const step = add(this.pos, scale(norm(d), this.moveSpeed));
+      // Body-filter first, then test the spot we'd actually reach: veering out
+      // of one mate's lane used to walk straight into another, since `walkable`
+      // only knows about walls.
+      const move = this.unshove(ai, scale(norm(d), this.moveSpeed));
+      if (Math.hypot(move.x, move.y) < 1e-3) continue; // wholly into a body
+      const step = add(this.pos, move);
       if (walkable(ai.world, this.pos, this.z, step, this.z)) {
-        this.vel = sub(step, this.pos);
+        this.vel = move;
         this.pos = step;
         return true;
       }
@@ -2173,11 +2179,15 @@ export class TacOracle extends Oracle {
     );
   }
 
-  /** One movement tick toward `dest`, recording the step in `vel`. */
-  private stepToward(dest: Vec2): void {
+  /** One movement tick toward `dest`, recording the step in `vel`. The step is
+   *  body-filtered on the way out (see Oracle.unshove), so walking to a strafe
+   *  spot, a cover spot or a hold peek can't press into a teammate — those are
+   *  free-space points the graph knows nothing about, so this is the only place
+   *  they can be made body-aware. */
+  private stepToward(ai: AiContext, dest: Vec2): void {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const step = scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d));
+    const step = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d)));
     this.vel = step;
     this.pos = add(this.pos, step);
   }

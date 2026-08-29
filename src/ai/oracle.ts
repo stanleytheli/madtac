@@ -17,7 +17,8 @@
  * a stair midpoint (waypoint legs are the only sanctioned level changes).
  */
 import type { Character } from "../entities/actor.ts";
-import type { Skin } from "../entities/character.ts";
+import { BODY_RADIUS, type Skin } from "../entities/character.ts";
+import { areHostile } from "../entities/team.ts";
 import { walkable, zAt, type NavGraph } from "../world/nav.ts";
 import { Robot, type AiContext, type RobotOptions } from "./robot.ts";
 import { add, angleOf, dist, norm, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
@@ -45,6 +46,16 @@ const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a 
  *  landed on the same tick drift apart instead of re-planning together forever. */
 const REPLAN_JITTER = 10;
 const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this much cheaper (px)
+/** Bodies this close are in contact: exactly touching is 2*BODY_RADIUS. Inside
+ *  it, `unshove` removes whatever part of a step drives further in. */
+const CONTACT_DIST = BODY_RADIUS * 2;
+/** Projection passes in `unshove`. One pass satisfies one contact exactly, but
+ *  with two contacts the second projection can put motion back into the first,
+ *  so a second pass runs. It converges fast because the constraints a bot is
+ *  actually in at once are few and rarely opposed; more passes measured no
+ *  different from two, and a bot wedged between two mates is meant to end up
+ *  moving along neither of them. */
+const UNSHOVE_PASSES = 2;
 const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
@@ -134,10 +145,59 @@ export class Oracle extends Robot {
     if (direct && chase && dist(this.pos, dest) <= this.standoffFor(chase)) return;
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const next = add(this.pos, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)));
+    const move = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)));
+    const next = add(this.pos, move);
     if (direct && zAt(ai.world, next, this.z) !== this.z) return; // beeline never flips z
-    this.vel = sub(next, this.pos);
+    this.vel = move;
     this.pos = next;
+  }
+
+  /** Take the part of `move` that does not drive into a teammate we are already
+   *  touching, and drop the rest.
+   *
+   *  This is the whole anti-shoving rule, and it lives here because it is the
+   *  only place every kind of movement passes through. Bots collide walking
+   *  BETWEEN destinations far more than at them, and a third of contacts have no
+   *  graph node involved at all (strafe spots and hold peeks are free-space
+   *  points), so nothing that picks destinations — occupancy tests, node
+   *  blocking, spot claims — can reach the problem. Steps can.
+   *
+   *  It is a contact projection, not a dodge. For each mate inside CONTACT_DIST,
+   *  the component of the step along the line to them is removed and the
+   *  tangential part is kept, so a bot walking past a teammate keeps sliding
+   *  past and only the part that presses into them disappears. That is what
+   *  makes it deadlock-free without a timer or a give-way rule: nothing ever
+   *  stops on account of another body, it just stops pushing. It is symmetric
+   *  for free, because both bots run it and neither can close.
+   *
+   *  `separateCharacters` still owns easing an existing overlap apart. Its work
+   *  used to be undone the same tick by movers walking straight back in; this is
+   *  what stops the undoing. Contacts with ENEMIES are left alone — driving into
+   *  someone you are trying to shoot is a fight, not a traffic problem. */
+  protected unshove(ai: AiContext, move: Vec2): Vec2 {
+    let mx = move.x;
+    let my = move.y;
+    for (let pass = 0; pass < UNSHOVE_PASSES; pass++) {
+      let touched = false;
+      for (const c of ai.characters) {
+        if (c === this || c.hp <= 0 || c.vehicle) continue;
+        if (c.z !== this.z || areHostile(this.team, c.team)) continue;
+        const dx = c.pos.x - this.pos.x;
+        const dy = c.pos.y - this.pos.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= CONTACT_DIST * CONTACT_DIST || d2 < 1e-9) continue;
+        const d = Math.sqrt(d2);
+        const nx = dx / d;
+        const ny = dy / d;
+        const into = mx * nx + my * ny; // how much of the step points at them
+        if (into <= 0) continue; // already moving away: nothing to remove
+        mx -= into * nx;
+        my -= into * ny;
+        touched = true;
+      }
+      if (!touched) break; // no contact resolved this pass: nothing left to fix
+    }
+    return vec(mx, my);
   }
 
   /** The Oracle's whole movement policy, reusable by subclasses: walk the
@@ -168,12 +228,13 @@ export class Oracle extends Robot {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
     const dir = norm(sub(dest, this.pos));
-    const next = add(this.pos, scale(dir, Math.min(this.stepSpeed(), d)));
+    const move = this.unshove(ai, scale(dir, Math.min(this.stepSpeed(), d)));
+    const next = add(this.pos, move);
     // A direct step never crosses a stair midpoint: flipping z would drop the
     // target from sight and re-route — the rapid-flicker failure mode. Hold
     // the line and keep shooting; only waypoint legs change level.
     if (direct && zAt(ai.world, next, this.z) !== this.z) return;
-    this.vel = sub(next, this.pos);
+    this.vel = move;
     this.pos = next;
 
     // Facing while walking blind — after holding the last combat aim for a
