@@ -244,10 +244,6 @@ const HEAL_SAFE_DISTANCE = 400;
  *  a "reasonable" safe cushion. Past it, just hold cover and use items (don't
  *  keep fleeing across the map). */
 const HEAL_SEEK_DISTANCE = 1200;
-/** How many nearest hostiles (by straight-line) the contact scan routes over.
- *  The min distance-until-visibility is dominated by the closest enemies, so a
- *  small K keeps the O(nodes) nav scans bounded regardless of the roster size. */
-const CONTACT_SCAN_K = 3;
 /** Sampling stride (world px) for the first-sight march in routeUntilSight. The
  *  coarser cousin of HOLD_ENTRY_STEP: that one places a spot to aim at and wants
  *  precision, this one feeds distance BANDS hundreds of px wide, so a stride this
@@ -414,6 +410,80 @@ function fightingRangeOf(c: Character): number {
 function fightingPenetrationOf(c: Character): number {
   return wallbangSightBudget(fightingRatingOf(c));
 }
+
+/** Reach of the weapon `c` is holding RIGHT NOW, and what it can shoot through.
+ *  The counterpart to fightingRangeOf/fightingPenetrationOf, and the convention
+ *  the reach cache uses on BOTH sides of a pair.
+ *
+ *  Why in-hand rather than "the weapon they'd draw": the cache's whole point is
+ *  that a pair costs one query instead of two, and that only holds if my reading
+ *  of your reach is the same number as your reading of your own. Your own sight
+ *  checks use the gun in your hands (Robot.wallbangBudget), so that is the
+ *  convention both ends have to speak. It also mixes less than what was here
+ *  before, which asked for the FIGHTING range but the IN-HAND budget in the same
+ *  call. The cost is a holstered sprinter reading as a weaker threat than the
+ *  rifle on its back — acceptable because anyone in or near a fight has their
+ *  weapon out, which is exactly when these numbers are consulted. */
+function inHandRange(c: Character): number {
+  return c.gun.feasibleRange;
+}
+function inHandBudget(c: Character): number {
+  return wallbangSightBudget(c.gun.spec.penetration ?? 0);
+}
+
+/** A character's nearest walkable node, cached. `nearestWalkable` is an O(nodes)
+ *  scan and the most expensive primitive in the AI (~24us measured), and the
+ *  answer is a property of the CHARACTER, not of whoever is asking — so this is
+ *  n entries shared by everyone rather than n^2. Deliberately used only by
+ *  walkDist: plan() and contactScan derive their own, and retrofitting them
+ *  would change routing decisions, not just their cost. */
+interface NodeEntry {
+  tick: number;
+  node: number;
+}
+const nodeCache = new WeakMap<Character, NodeEntry>();
+function nodeOf(ai: AiContext, c: Character): number {
+  const nav = ai.nav;
+  if (!nav || nav.nodes.length === 0) return -1;
+  const hit = nodeCache.get(c);
+  if (hit && ai.tick - hit.tick < REACH_CACHE_TICKS) return hit.node;
+  const node = nav.nearestWalkable(ai.world, c.pos, c.z);
+  nodeCache.set(c, { tick: ai.tick, node });
+  return node;
+}
+
+/** Physical walking distance between two characters, cached BOTH ways: the graph
+ *  is undirected on the plain metric, so one query answers for either end — a
+ *  strictly better deal than the reach cache, which has to stay directional
+ *  because the weapon differs by end. */
+interface WalkEntry {
+  tick: number;
+  dist: number;
+}
+const walkCache = new WeakMap<Character, WeakMap<Character, WalkEntry>>();
+function walkPut(a: Character, b: Character, tick: number, d: number): void {
+  for (const [x, y] of [[a, b], [b, a]] as const) {
+    let row = walkCache.get(x);
+    if (!row) {
+      row = new WeakMap<Character, WalkEntry>();
+      walkCache.set(x, row);
+    }
+    row.set(y, { tick, dist: d });
+  }
+}
+
+/** One cached "distance until `from` could shoot `to`", stamped with the tick it
+ *  was computed on. */
+interface ReachEntry {
+  tick: number;
+  dist: number;
+}
+/** observer -> target -> entry. Weak on both axes so a dead or respawned
+ *  character drops out on its own; nothing here is ever iterated. */
+const reachCache = new WeakMap<Character, WeakMap<Character, ReachEntry>>();
+/** How long a cached reach stays good. Matches CONTACT_EVAL_TICKS, which is the
+ *  staleness contactScan already accepted for its own copy of this number. */
+const REACH_CACHE_TICKS = CONTACT_EVAL_TICKS;
 
 /** `c`'s raw penetration rating (what the damage curve is measured against),
  *  before the "worth shooting through" cut fightingPenetrationOf applies. */
@@ -1602,6 +1672,77 @@ export class TacOracle extends Oracle {
    * loop (see contactScan). No graph / unreachable falls back to straight-line /
    * Infinity.
    */
+  /** Physical walking distance from `a` to `b`: the gap to a's node, the plain
+   *  (uncongested) route between the two nodes, and the gap from b's node.
+   *
+   *  Target selection's distance term used to be the straight line. That is the
+   *  wrong quantity the moment geometry is involved — an enemy 200px away
+   *  through a wall is a 1500px walk, and ranking him as "near" is the same
+   *  mistake that made CONTACT_SCAN_K wrong. This is the number that survives
+   *  contact with the map.
+   *
+   *  NOT harvested from routeUntilSight, though it looks like it should be: that
+   *  routes to `nearestInSight(target)`, the nearest node that can SEE them,
+   *  which is a different node from the one nearest to them. Sharing the two
+   *  would quietly mix "walk until I can shoot you" with "walk to you".
+   *
+   *  Plain metric on purpose — congestion surcharges are for choosing a path to
+   *  walk, not for judging how far away somebody is. */
+  private walkDist(ai: AiContext, a: Character, b: Character): number {
+    const hit = walkCache.get(a)?.get(b);
+    if (hit && ai.tick - hit.tick < REACH_CACHE_TICKS) return hit.dist;
+    const nav = ai.nav;
+    const na = nodeOf(ai, a);
+    const nb = nodeOf(ai, b);
+    let d: number;
+    if (!nav || na < 0 || nb < 0 || na === nb) {
+      d = dist(a.pos, b.pos); // no graph, or the same cell: the line is the walk
+    } else {
+      const r = nav.route(na, nb);
+      d = r
+        ? dist(a.pos, nav.nodes[na].pos) + r.dist + dist(nav.nodes[nb].pos, b.pos)
+        : dist(a.pos, b.pos); // disconnected: fall back rather than rank it last
+    }
+    walkPut(a, b, ai.tick, d);
+    return d;
+  }
+
+  /** Distance until `from` could put a round on `to`, shared and cached.
+   *
+   *  This is the one number three different questions were each computing their
+   *  own way: contactScan's `my` (when can I engage them), contactScan's `en`
+   *  (when can they engage me), and holdThreat's pick of who to watch. With both
+   *  sides on the in-hand convention they are literally the same query, so a
+   *  pair now costs ONE march instead of two — my reading of your reach IS your
+   *  reading of your own, and whichever of us asks first pays for both.
+   *
+   *  `fromNode` / `tgtGoal` are pure hints; routeUntilSight derives the same
+   *  values when they are absent, so an entry is identical no matter who
+   *  computed it or which hints they happened to have. That is what makes the
+   *  entry shareable rather than merely similar.
+   *
+   *  Stale by up to REACH_CACHE_TICKS, and computed from where `from` stood at
+   *  the time. contactScan already accepted exactly that for its own copy. */
+  private reachTo(
+    ai: AiContext,
+    from: Character,
+    to: Character,
+    fromNode?: number,
+    tgtGoal?: number,
+  ): number {
+    let row = reachCache.get(from);
+    if (!row) {
+      row = new WeakMap<Character, ReachEntry>();
+      reachCache.set(from, row);
+    }
+    const hit = row.get(to);
+    if (hit && ai.tick - hit.tick < REACH_CACHE_TICKS) return hit.dist;
+    const d = this.routeUntilSight(
+      ai, from.pos, from.z, to, inHandRange(from), inHandBudget(from), fromNode, tgtGoal);
+    row.set(to, { tick: ai.tick, dist: d });
+    return d;
+  }
+
   private routeUntilSight(
     ai: AiContext,
     fromPos: Vec2,
@@ -1673,22 +1814,20 @@ export class TacOracle extends Oracle {
    *  `enemyMin` = the soonest ANYONE could see US with `threat` the enemy that owns
    *  it (gates HEAL, and the retreat backs away from `threat`).
    *
-   *  Cost matters — a nav route needs two O(nodes) closest-node scans, so routing
-   *  every hostile every plan tick is an O(N·nodes) blowup. Both minima are
-   *  dominated by the CLOSEST enemies, so we route only the `CONTACT_SCAN_K`
-   *  nearest by straight-line distance (a cheap sort) and hoist our own two node
-   *  scans out of the loop — bounding the expensive scans to a constant. */
+   *  Cost matters — a nav route needs two O(nodes) closest-node scans — so our
+   *  own two node scans are hoisted out of the loop, and every reach goes through
+   *  the shared reachTo cache, where one query serves both directions of a pair.
+   *
+   *  This used to route only the `CONTACT_SCAN_K` (3) nearest hostiles by
+   *  straight-line distance. That bound the cost but ranked a multi-storey map
+   *  backwards — someone directly above you is 50px away by straight line, and
+   *  the enemy round the corner who can actually reach you is "far" — so the
+   *  genuinely soonest threat could be discarded before it was ever costed.
+   *  Now every hostile is routed. Measured price: about +11% of AI think() time
+   *  on a 5v5 (see scripts/prof_ai.mts). */
   private contactScan(ai: AiContext): { myMin: number; enemyMin: number; threat: Character | null } {
     const hostiles = this.hostiles(ai);
     if (hostiles.length === 0) return { myMin: Infinity, enemyMin: Infinity, threat: null };
-    const near =
-      hostiles.length <= CONTACT_SCAN_K
-        ? hostiles
-        : hostiles
-            .map((h) => ({ h, d: dist(this.pos, h.pos) }))
-            .sort((a, b) => a.d - b.d)
-            .slice(0, CONTACT_SCAN_K)
-            .map((e) => e.h);
 
     const nav = ai.nav;
     const haveNav = !!nav && nav.nodes.length > 0;
@@ -1697,15 +1836,12 @@ export class TacOracle extends Oracle {
     let myMin = Infinity;
     let enemyMin = Infinity;
     let threat: Character | null = null;
-    const myRange = this.fightingRange; // not what's in hand — see fightingRange
-    for (const h of near) {
-      const my = this.routeUntilSight(ai, this.pos, this.z, h, myRange, this.wallbangBudget, myNode, undefined);
+    for (const h of hostiles) {
+      const my = this.reachTo(ai, this, h, myNode, undefined);
       if (my < myMin) myMin = my;
       // The enemy shoots us with ITS weapon, so its reach gates its contact.
-      // Their FIGHTING range too — a hostile sprinting at us with its weapon
-      // holstered is not actually a punching-only threat.
-      const en = this.routeUntilSight(
-        ai, h.pos, h.z, this, fightingRangeOf(h), fightingPenetrationOf(h), undefined, mySightGoal);
+      // Same cache row `h` fills in for its own `my` against us — see reachTo.
+      const en = this.reachTo(ai, h, this, undefined, mySightGoal);
       if (en < enemyMin) {
         enemyMin = en;
         threat = h;
@@ -1865,8 +2001,10 @@ export class TacOracle extends Oracle {
     const range = this.gun.feasibleRange;
     for (const h of this.hostiles(ai)) {
       if (h.z !== this.z || !this.canSee(ai.world, h)) continue;
+      // Range is ballistic — the bullet flies the straight line, so that is what
+      // gates it. Proximity is a travel question, so that one walks.
       const d = dist(this.pos, h.pos);
-      let cost = this.shootCost(ai, h) + BETA_DIST * d;
+      let cost = this.shootCost(ai, h) + BETA_DIST * this.walkDist(ai, this, h);
       if (d > range) cost += OUT_OF_RANGE_PENALTY; // prefer anyone we can actually reach
       cost += this.targetShareCost(ai, h); // spread fire: shun a mate-crowded target
       if (h === this.focus) cost -= FOCUS_STICKINESS;
@@ -1940,13 +2078,16 @@ export class TacOracle extends Oracle {
    *  is an angle to watch, so the right ordering is who gets eyes and reach on us
    *  first.
    *
-   *  Deliberately NOT contactScan's cached `threat`, though it computes the same
-   *  metric: that pre-filters to the CONTACT_SCAN_K nearest hostiles BY STRAIGHT
-   *  LINE, which on a multi-storey map throws away the genuinely closest enemy
-   *  before it is ever costed. This scans every hostile. It is an approximation
-   *  in the way routeUntilSight is — the route to the nearest node that sees us,
-   *  plus any gap left to close — but the approximation is in the distance, not
-   *  in which enemies get considered.
+   *  This used to be the ONLY full scan: contactScan pre-filtered to the
+   *  CONTACT_SCAN_K nearest hostiles BY STRAIGHT LINE, which on a multi-storey
+   *  map threw away the genuinely closest enemy before it was ever costed, so
+   *  this deliberately would not read its cached `threat`. That filter is gone —
+   *  both scan everyone now, and both read the same reachTo cache, so the second
+   *  scan in a window is close to free. It stays separate only because it wants
+   *  the value fresh at plan time rather than whenever contactScan last ran.
+   *  Still an approximation in the way routeUntilSight is (the route to the
+   *  nearest node that sees us, plus any gap left to close), but the
+   *  approximation is in the distance, not in which enemies get considered.
    *
    *  Only called when a plan is built or refreshed, so the per-hostile node scans
    *  are paid at most once per HOLD_REPLAN_TICKS. */
@@ -1958,16 +2099,9 @@ export class TacOracle extends Oracle {
     let best: Character | null = null;
     let bestReach = Infinity;
     for (const h of this.hostiles(ai)) {
-      const reach = this.routeUntilSight(
-        ai,
-        h.pos,
-        h.z,
-        this,
-        fightingRangeOf(h), // their drawn weapon, not whatever is in their hands
-        fightingPenetrationOf(h), // ...and what that weapon can shoot through
-        undefined,
-        mySightGoal,
-      );
+      // Same quantity, same cache as contactScan's `en` — a hold plan built in
+      // the same window as a contact scan now pays nothing for this.
+      const reach = this.reachTo(ai, h, this, undefined, mySightGoal);
       if (reach < bestReach) {
         bestReach = reach;
         best = h;

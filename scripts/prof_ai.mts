@@ -50,6 +50,45 @@ timed(Robot.prototype, "think");
 timed(Oracle.prototype, "plan");
 timed(TacOracle.prototype, "contactScan");
 timed(TacOracle.prototype, "routeUntilSight");
+if ((TacOracle.prototype as any).reachTo) timed(TacOracle.prototype, "reachTo");
+// REACH CACHE hit rate: how often a pair was already computed by whoever asked
+// first (either side of the pair, or an earlier consumer this beat).
+let reachCalls = 0, reachMiss = 0;
+const dirs = new Map<string, number>();
+const noRow = new Map<string, number>();
+{
+  const rt = (TacOracle.prototype as any).reachTo;
+  const ru = (TacOracle.prototype as any).routeUntilSight;
+  if (rt) {
+    (TacOracle.prototype as any).reachTo = function (this: any, ...a: any[]) {
+      reachCalls++;
+      const before = ru;
+      let missed = false;
+      (this as any).routeUntilSight = function (this: any, ...b: any[]) { missed = true; return before.apply(this, b); };
+      try { return rt.apply(this, a); } finally {
+        delete (this as any).routeUntilSight;
+        if (missed) reachMiss++;
+      const self = a[1] === this;           // "my" direction vs "en" direction
+      const k = (self ? "my" : "en") + (missed ? " MISS" : " hit");
+      dirs.set(k, (dirs.get(k) ?? 0) + 1);
+      if (!self && missed) {
+        // Why did the reverse entry not exist? Either that character never runs
+        // a scan (not a TacOracle), or it is in contact and skips scanning.
+        const tgt: any = a[1];
+        noRow.set(tgt instanceof TacOracle ? "is a TacOracle (in contact / off-beat?)" : "not a TacOracle (no rows ever)",
+          (noRow.get(tgt instanceof TacOracle ? "is a TacOracle (in contact / off-beat?)" : "not a TacOracle (no rows ever)") ?? 0) + 1);
+      }
+      }
+    };
+  }
+}
+process.on("exit", () => {
+  if (reachCalls) {
+    console.log(`REACHCACHE\t${reachCalls}\t${reachMiss}\t${(100*(reachCalls-reachMiss)/reachCalls).toFixed(1)}`);
+    for (const [k, v] of [...dirs.entries()].sort()) console.log(`  DIR ${k.padEnd(10)} ${v}`);
+    for (const [k, v] of noRow.entries()) console.log(`  ENMISS ${k}  ${v}`);
+  }
+});
 timed(NavGraph.prototype, "route");
 timed(NavGraph.prototype, "routePath");
 timed(NavGraph.prototype, "nearestWalkable");

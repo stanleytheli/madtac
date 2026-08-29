@@ -421,10 +421,13 @@ walking distance ranks those backwards. Switching from walk distance to
 distance-until-visibility cut the damage taken while dug in by roughly 11x on
 dom-arena-big and 2.6x on tdm-arena-big, while holds also lasted longer.
 
-It deliberately does **not** reuse contactScan's cached `threat`, which computes
-the same quantity: that pre-filters to the `CONTACT_SCAN_K` nearest hostiles *by
-straight line* before routing any of them, and on a multi-storey map that throws
-away the genuinely closest enemy before it is ever costed — which is how bots
+It keeps its own scan rather than reusing contactScan's cached `threat`, which
+computes the same quantity — but only because it wants the value fresh at plan
+time. Both scan every hostile now and both read the same `reachTo` cache, so the
+second scan in a window is close to free. (Historically contactScan pre-filtered
+to the `CONTACT_SCAN_K` nearest hostiles *by straight line* before routing any of
+them, and on a multi-storey map that threw away the genuinely closest enemy
+before it was ever costed — which is how bots
 ended up digging in against whoever happened to be standing directly overhead.
 `holdThreat` scans every hostile. The approximation is in the distance
 (route-to-nearest-sighting-node plus any residual gap), not in which enemies are
@@ -619,9 +622,10 @@ on it.
 
 ### 3h. Contact metrics — when is a fight on? (`contactScan`)
 
-Two nav-route distances, both z- and range-aware, minimised over the
-`CONTACT_SCAN_K` nearest hostiles (the rest can't be the soonest threat), cached
-`CONTACT_EVAL_TICKS`:
+Two nav-route distances, both z- and range-aware, minimised over **every**
+hostile, cached `CONTACT_EVAL_TICKS`. Each goes through the shared `reachTo`
+cache, so one march serves both directions of a pair — my reading of your reach
+is your reading of your own, on the in-hand-weapon convention:
 
 - **`visDist`** = *our* distance-until-contact: how far WE must travel to both see
   a hostile **and** be within weapon range of it. Drives RUN.
@@ -831,7 +835,7 @@ Combat feel lives in these constants. All ticks are 60/s; all distances world px
 | `HEAL_HP` | 75 | heal-seeking HP threshold |
 | `HEAL_SAFE` / `_SEEK` / `_ALARM` _DISTANCE | 700 / 1200 / 400 | heal enter / back-off-to / abort |
 | `HEAL_COMMIT_TICKS` | 90 | heal entry dwell |
-| `CONTACT_SCAN_K` / `CONTACT_EVAL_TICKS` | 3 / 15 | contact-scan breadth / cadence |
+| `CONTACT_EVAL_TICKS` / `REACH_CACHE_TICKS` | 15 / 15 | contact-scan cadence / shared reach-cache TTL |
 | `HOLD_COVER_DISTANCE` | 500 | how far the covered-node search may wander |
 | `HOLD_SEARCH_NODES` | 48 | nodes the search may settle before giving up |
 | `HOLD_PATH_HOPS` | 24 | hops of the enemy's route walked for the entry point |
