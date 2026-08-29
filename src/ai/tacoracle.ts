@@ -223,8 +223,23 @@ const RUN_DISTANCE = 1000;
 const RUN_COMMIT_TICKS = 90;
 /** Below this HP, look for a safe moment to heal. */
 const HEAL_HP = 75;
-/** Distance-until-visibility needed to START healing (a safe buffer). */
-const HEAL_SAFE_DISTANCE = 700;
+/** Distance-until-visibility needed to START healing (a safe buffer).
+ *
+ *  Was 700, which almost never opened: measured over four maps, hurt bots spent
+ *  85-93% of their hurt time not healing, and the single biggest reason (45-60%
+ *  of it) was this gate. Not because 700 was slightly too far — because the
+ *  distribution is bimodal. Of hurt-with-an-item ticks, 65-87% sat in the 0-100
+ *  band, not just short of the bar: in a 5v5 somebody can nearly always see you,
+ *  and enemyVisDist collapses to ~0 when they can. Only 3-15% of ticks lived in
+ *  400-700, which is all a threshold move can recover.
+ *
+ *  Do not push it below HEAL_ALARM_DISTANCE. Entering under the abort threshold
+ *  means the stay-condition fails on the next tick, and the bot flip-flops: at
+ *  200 the measurement showed 411 "heals" restoring LESS HP than the 7 at 700.
+ *  At 400 it now EQUALS the abort threshold, so there is no hysteresis margin
+ *  left — the entry dwell is the only thing damping re-entry. Lowering the alarm
+ *  to restore a gap is untested. */
+const HEAL_SAFE_DISTANCE = 400;
 /** While healing, keep backing off to grow the enemy's reach-to-us up to this —
  *  a "reasonable" safe cushion. Past it, just hold cover and use items (don't
  *  keep fleeing across the map). */
@@ -245,15 +260,54 @@ const SIGHT_MARCH_HOPS = 24;
  *  distance-until-visibility drifts slowly, so it's cached between. */
 const CONTACT_EVAL_TICKS = 15;
 /** Distance-until-visibility at which an in-progress heal is aborted and the
- *  weapon comes back out (the enemy is getting close). Below HEAL_SAFE_DISTANCE
- *  so the two thresholds hysteresis instead of chattering. */
+ *  weapon comes back out (the enemy is getting close). Was below
+ *  HEAL_SAFE_DISTANCE so the two hysteresis instead of chattering; now EQUAL to
+ *  it, so there is no gap left and the entry dwell is the only thing damping
+ *  re-entry. Measured fine in practice (10-13 heals per run, not the flip-flop
+ *  the 200 entry cell produced), but it is a margin that no longer exists.
+ *
+ *  Swept 400/300/250/200/150 over 8 maps x 8 seeds, paired, vs HP restored:
+ *
+ *      300  +5%  t=1.41      200   +8%  t=1.53
+ *      250  +6%  t=1.55      150  +17%  t=3.00  (completion 64% -> 74%)
+ *
+ *  Monotone, and 150 is the first cell that clears noise. The safety cost never
+ *  showed: deaths WHILE mid-heal went 0.00 -> 0.02 per run (about one across 64
+ *  runs, and exactly zero on the domination maps), and total deaths went DOWN
+ *  (-0.8) — a finished heal is worth more than the extra seconds of exposure.
+ *  Left at 400 by choice, not by evidence; 150 is available and measured.
+ *
+ *  Do NOT expect this to fix domination heals being cut short. 54-77% of dom
+ *  heals end here, but that is the alarm working: dom bots stand on contested
+ *  ground, so enemyVisDist is chronically ~0, and it blows past any threshold in
+ *  this range on its way there. 250 measured +4% on dom (t=0.69, 4/16 seeds).
+ *  The untested idea for that case is gating on EXPOSURE rather than distance —
+ *  a bot in real cover tolerating a nearer enemy than one in the open. */
 const HEAL_ALARM_DISTANCE = 400;
-/** The enemy's reach must stay past HEAL_SAFE_DISTANCE for this long (ticks, ~1.5s)
+/** The enemy's reach must stay past HEAL_SAFE_DISTANCE for this long (ticks, 1s)
  *  before a heal is committed — an a-priori dwell. The abort stays instant
  *  (safety); this only gates entry, so a reach that dips-and-recovers (peeking,
  *  or the route metric snapping across nav nodes) keeps resetting the dwell and
- *  never turtles, instead of a lockout that expires and re-triggers. */
-const HEAL_COMMIT_TICKS = 90;
+ *  never turtles, instead of a lockout that expires and re-triggers.
+ *
+ *  Was 90. With the 400 distance above, this measures +22% HP restored (t=2.76,
+ *  CI [+5,+33], better in 45 of 64 paired runs) at no cost in damage dealt.
+ *
+ *  That figure is deliberately the 8-map one. Tuned on four maps it looked like
+ *  +37%, and every candidate that looked strong there went NULL on four maps it
+ *  had not been tuned on (700/60: +48% -> +0%). Re-tune on held-out maps or the
+ *  number will flatter itself again.
+ *
+ *  Lower is NOT monotonically better and heal COUNT is a trap: 30 measured worse
+ *  than both 60 and 10, and dropping HEAL_SAFE_DISTANCE to 200 produced 411
+ *  "heals" that restored less HP than the 7 at 700. Judge a change on HP
+ *  restored — scripts/probe_heal.mts reports it.
+ *
+ *  Use completion (86% -> 64% here) is worth watching but is NOT a cost in
+ *  items: cancelUse aborts without consuming, only finishUse spends the charge.
+ *  An interrupted heal costs a few seconds of walking to cover, which is why
+ *  damage dealt does not move. */
+const HEAL_COMMIT_TICKS = 60;
 
 // --- HOLD posture (defend an angle from cover) ------------------------------
 /** How far the covered-node search may wander from where we stand (px of walking
@@ -293,6 +347,13 @@ const HOLD_RETRY_TICKS = 60;
  *  refreshing it mid-walk would chase its own tail — the plan moves us, which
  *  moves the plan. Standing still, that loop can't close. */
 const HOLD_REPLAN_TICKS = 60;
+/** How often the held angle is re-tested (ticks). Cheap — one lane query. */
+const HOLD_LOS_CHECK_TICKS = 10;
+/** Total ticks of a BROKEN angle before the hold is torn up and re-planned.
+ *  Debounced on purpose: a teammate crossing the line is over in a few ticks
+ *  and is not worth abandoning a good position for, while one who settles in
+ *  it is. Three checks at HOLD_LOS_CHECK_TICKS. */
+const HOLD_LOS_BROKEN_TICKS = 30;
 /** A base soldier gives up a hold after this many ticks (60/s) without a fight
  *  ever starting — a hold is a bet that contact is coming, and if it doesn't pay
  *  off there's no point waiting on a dead angle. (DominationOracle opts out and
@@ -457,6 +518,11 @@ export class TacOracle extends Oracle {
   /** Node id of `holdEntry`, so a refresh can tell "same angle, nothing to do"
    *  from "they're coming another way now". */
   private holdEntryNode = -1;
+  /** Ticks until the held angle is re-tested (see HOLD_LOS_CHECK_TICKS). */
+  private holdLosCheckIn = 0;
+  /** Ticks the held angle has been broken for, across checks. Reset by any
+   *  check that finds it clear, so only a SUSTAINED obstruction counts. */
+  private holdLosBroken = 0;
   /** Ticks until the planted refresh (see HOLD_REPLAN_TICKS). */
   private holdReplanIn = HOLD_REPLAN_TICKS;
   /** Remaining node-to-node legs of the walk to `holdCover` (movable-linked, so
@@ -921,6 +987,8 @@ export class TacOracle extends Oracle {
     this.holdEntryNode = -1;
     this.holdPath = [];
     this.holdReplanIn = HOLD_REPLAN_TICKS;
+    this.holdLosCheckIn = 0;
+    this.holdLosBroken = 0;
   }
 
   /** Taking damage from an enemy while dug in breaks the hold into SHOOT: a hold
@@ -1141,8 +1209,51 @@ export class TacOracle extends Oracle {
         if (threat) this.refreshHold(ai, threat);
       }
     }
+    if (this.angleBroken(ai)) return; // hold torn up; nothing to walk to or face
     this.followHold(ai, dest());
     this.faceHold();
+  }
+
+  /** Is the angle we're dug in on still a real angle, and if it has stopped
+   *  being one, tear the hold up. Returns whether the plan is now gone.
+   *
+   *  The plan is checked at the PEEK, not at wherever we happen to be standing.
+   *  The cover spot cannot see the entry — that is what makes it cover — so
+   *  testing from `this.pos` reports a break every time the bot ducks to reload.
+   *  `shootingLaneClear` is the same predicate peekSpot used to accept the spot
+   *  in the first place, so this asks exactly "would we still choose this?".
+   *
+   *  Debounced over HOLD_LOS_BROKEN_TICKS. A teammate crossing the line is gone
+   *  in a few ticks and re-planning for them would throw away a good position
+   *  for nothing; one who stops in it is worth moving for. Any clear check
+   *  resets the count, so only a sustained break spends a rebuild.
+   *
+   *  On a confirmed break: rebuild past the same-node bail (the enemy still
+   *  comes from the same door, so the entry node is usually unchanged — what
+   *  needs re-deriving is the cover and peek around it). If nothing better
+   *  exists, drop the hold entirely rather than keep watching a door we cannot
+   *  see: the normal approach then takes over, and HOLD_RETRY_TICKS stops it
+   *  from dug back into the same dead angle immediately. */
+  private angleBroken(ai: AiContext): boolean {
+    this.holdLosCheckIn -= this.stagger;
+    if (this.holdLosCheckIn > 0) return false;
+    this.holdLosCheckIn = HOLD_LOS_CHECK_TICKS;
+    const peek = this.holdPeek;
+    const clear =
+      peek === null || this.holdEntry === null || this.shootingLaneClear(ai, peek, this.holdEntry);
+    if (clear) {
+      this.holdLosBroken = 0;
+      return false;
+    }
+    this.holdLosBroken += HOLD_LOS_CHECK_TICKS;
+    if (this.holdLosBroken < HOLD_LOS_BROKEN_TICKS) return false;
+    this.holdLosBroken = 0;
+    const threat = this.holdThreat(ai);
+    if (threat && this.refreshHold(ai, threat, true)) return false; // re-planned in place
+    this.clearHold();
+    this.holdRetryIn = HOLD_RETRY_TICKS;
+    this.holdDwell = 0;
+    return true;
   }
 
   /** Planted refresh: re-derive where the nearest enemy would now enter view.
@@ -1150,11 +1261,18 @@ export class TacOracle extends Oracle {
    *  all — so a settled soldier can't be jittered between two equally good spots
    *  by a timer. A genuinely different approach rebuilds cover and peek around
    *  it, and a rebuild that fails leaves the old plan untouched (planFromEntry
-   *  only commits on success). */
-  private refreshHold(ai: AiContext, threat: Character): void {
+   *  only commits on success).
+   *
+   *  `force` skips the same-node bail, for the case where the approach hasn't
+   *  changed but the plan built on it has gone bad anyway — see the broken-angle
+   *  check in holdMove. Measured: dropping the bail for ALL refreshes (and
+   *  halving the timer) moved the fouling rate not at all (-2.6%, t=-0.27 over
+   *  70 paired runs) while adding 9% more walking during holds, because the
+   *  extra rebuilds were re-deriving against the enemy, not the obstruction. */
+  private refreshHold(ai: AiContext, threat: Character, force = false): boolean {
     const entry = this.findEntry(ai, threat);
-    if (entry === null || entry.node === this.holdEntryNode) return;
-    this.planFromEntry(ai, entry);
+    if (entry === null || (!force && entry.node === this.holdEntryNode)) return false;
+    return this.planFromEntry(ai, entry);
   }
 
   /** Build the hold plan and freeze it. Three steps, in the order they depend on
