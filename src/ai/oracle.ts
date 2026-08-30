@@ -56,6 +56,22 @@ const CONTACT_DIST = BODY_RADIUS * 2;
  *  different from two, and a bot wedged between two mates is meant to end up
  *  moving along neither of them. */
 const UNSHOVE_PASSES = 2;
+/** A contact mate WANTING to close on us faster than this (px/tick along the
+ *  centre line, measured on its pre-projection intent — see `moveIntent`)
+ *  counts as opposing traffic, and `unshove` turns our removed radial step
+ *  sideways instead of dropping it. Half a slow walker's step: a mate
+ *  drifting or being squished about does not trigger it. */
+const OPPOSE_MIN = 0.5;
+/** Opposing traffic starts side-stepping THIS far out, before bodies touch.
+ *  Acting only inside CONTACT_DIST set up a boundary cycle (traced in
+ *  scripts/probe_churn.mts): a pair hovers right at the contact edge, pressing
+ *  in at full speed on the tick that starts just outside it and slipping on
+ *  the tick inside, with the free tick's waypoint-aimed step cancelling the
+ *  slip's lateral progress — a multi-second grind at ~40% push-through speed.
+ *  Diverting the step in an approach shell turns that into a smooth arc past
+ *  each other. Only the opposing-slip acts out here; the plain projection
+ *  (stop pressing into ANY mate) stays contact-only. */
+const SLIP_DIST = CONTACT_DIST * 1.5;
 const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
@@ -85,6 +101,12 @@ export class Oracle extends Robot {
    *  -1. Kept so blind facing can look up the hop after the waypoint. */
   private goal = -1;
   private replanIn = 0;
+  /** The raw step handed to `unshove` this tick, BEFORE projection — what this
+   *  bot wants to do, readable by other bots' opposing-traffic test even when
+   *  the projection stalled it and `vel` reads zero. Only meaningful while
+   *  `moveIntentTick` is current (a resting bot stops publishing). */
+  readonly moveIntent: Vec2 = vec(0, 0);
+  moveIntentTick = -1;
 
   constructor(pos: Vec2, options: OracleOptions = {}) {
     super(pos, { skin: ORACLE_SKIN, ...options });
@@ -132,7 +154,12 @@ export class Oracle extends Robot {
     const nav = ai.nav;
     let dest: Vec2 | null = null;
     let direct = false;
-    const chase = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
+    // Same rule as navChase: a beeline is a same-level manoeuvre. Between plans
+    // this is the path that would otherwise coast into a staircase and stall.
+    const chase =
+      this.lastTarget && this.lastTarget.hp > 0 && this.lastTarget.z === this.z
+        ? this.lastTarget
+        : null;
     if (this.atGoalNode) {
       if (chase) {
         direct = true;
@@ -145,7 +172,7 @@ export class Oracle extends Robot {
     if (direct && chase && dist(this.pos, dest) <= this.standoffFor(chase)) return;
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const move = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)));
+    const move = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)), d);
     const next = add(this.pos, move);
     if (direct && zAt(ai.world, next, this.z) !== this.z) return; // beeline never flips z
     this.vel = move;
@@ -174,7 +201,18 @@ export class Oracle extends Robot {
    *  used to be undone the same tick by movers walking straight back in; this is
    *  what stops the undoing. Contacts with ENEMIES are left alone — driving into
    *  someone you are trying to shoot is a fight, not a traffic problem. */
-  protected unshove(ai: AiContext, move: Vec2): Vec2 {
+  protected unshove(ai: AiContext, move: Vec2, destD = Infinity): Vec2 {
+    // Publish the RAW step for other bots' opposing-traffic test below. Their
+    // post-projection `vel` is useless for it: a stalled bot's vel is exactly
+    // what this function zeroed, so two bots meeting head-on both read the
+    // other as "stationary", nobody slips, and the stall never re-arms — the
+    // pair just leans into each other. Intent stays hot while stalled. The
+    // tick stamp keeps it honest: a bot that stops calling unshove (resting at
+    // its spot, planted to shoot) goes stale within a tick and is treated as
+    // stationary again, so nobody dances around a holder.
+    this.moveIntent.x = move.x;
+    this.moveIntent.y = move.y;
+    this.moveIntentTick = ai.tick;
     let mx = move.x;
     let my = move.y;
     for (let pass = 0; pass < UNSHOVE_PASSES; pass++) {
@@ -185,14 +223,51 @@ export class Oracle extends Robot {
         const dx = c.pos.x - this.pos.x;
         const dy = c.pos.y - this.pos.y;
         const d2 = dx * dx + dy * dy;
-        if (d2 >= CONTACT_DIST * CONTACT_DIST || d2 < 1e-9) continue;
+        if (d2 >= SLIP_DIST * SLIP_DIST || d2 < 1e-9) continue;
         const d = Math.sqrt(d2);
         const nx = dx / d;
         const ny = dy / d;
         const into = mx * nx + my * ny; // how much of the step points at them
         if (into <= 0) continue; // already moving away: nothing to remove
-        mx -= into * nx;
-        my -= into * ny;
+        // Head-on traffic: when the mate WANTS to walk into us too AND the
+        // step is mostly at them, the pair would stall — each step is radial,
+        // nothing tangential survives, and the symmetry never breaks. Turn
+        // the radial part sideways, each bot to its own side of the line, so
+        // an opposing pair picks opposite sides and arcs past. This starts in
+        // the approach shell (SLIP_DIST), before bodies touch — see the
+        // boundary-cycle note on that constant. The guards all matter:
+        //  - The mate's INTENT (published at the top of this function), not
+        //    its vel, is what must oppose us — a stalled mate's vel is
+        //    already projected to nothing, and reading it deadlocked real
+        //    matches. A resting mate has a cold intent and gets no slip, so
+        //    walkers still stop pushing holders rather than orbiting them.
+        //  - A step with real tangential motion is already sliding past and
+        //    needs no help.
+        //  - The walk goal must lie BEYOND the mate (`destD` past the far
+        //    side of the contact): two bots converging on a SHARED spot also
+        //    read as opposing, and slipping there is an endless dance around
+        //    a destination neither can stand on (measured: common-dest drift
+        //    doubled in probe_cross without this guard).
+        const wish =
+          c instanceof Oracle && ai.tick - c.moveIntentTick <= 1 ? c.moveIntent : c.vel;
+        const tx = mx - into * nx;
+        const ty = my - into * ny;
+        if (
+          destD > CONTACT_DIST + BODY_RADIUS &&
+          into > Math.hypot(tx, ty) &&
+          wish.x * nx + wish.y * ny < -OPPOSE_MIN
+        ) {
+          mx = tx + into * ny;
+          my = ty - into * nx;
+          touched = true;
+          continue;
+        }
+        // Not opposing traffic: outside contact the step is left alone (the
+        // shell exists only for the slip); inside it the plain projection
+        // stands — stop pressing into the body.
+        if (d2 >= CONTACT_DIST * CONTACT_DIST) continue;
+        mx = tx;
+        my = ty;
         touched = true;
       }
       if (!touched) break; // no contact resolved this pass: nothing left to fix
@@ -210,8 +285,13 @@ export class Oracle extends Robot {
 
     if (ai.nav && ai.nav.nodes.length > 0) {
       this.updatePlan(ai.nav, ai.world, chase, ai.tick);
-      if (this.atGoalNode && (target || this.z === chase.z)) {
+      if (this.atGoalNode && this.z === chase.z) {
         // Same node as the target: close-quarters chase on the target itself.
+        // Was `(target || this.z === chase.z)`. A target used to imply a shared
+        // level — selectTarget refused anyone else — so the shorthand was safe.
+        // Now that off-level hostiles are targets, it made a bot beeline at
+        // someone a floor away and freeze on the stair boundary, where the guard
+        // below refuses the level change. Only waypoint legs cross floors.
         direct = true;
         dest = chase.pos;
       } else if (this.waypoint >= 0) {
@@ -228,7 +308,7 @@ export class Oracle extends Robot {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
     const dir = norm(sub(dest, this.pos));
-    const move = this.unshove(ai, scale(dir, Math.min(this.stepSpeed(), d)));
+    const move = this.unshove(ai, scale(dir, Math.min(this.stepSpeed(), d)), d);
     const next = add(this.pos, move);
     // A direct step never crosses a stair midpoint: flipping z would drop the
     // target from sight and re-route — the rapid-flicker failure mode. Hold

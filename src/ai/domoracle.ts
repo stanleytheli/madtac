@@ -123,6 +123,9 @@ export class DominationOracle extends TacOracle {
    *  which off-site enemies are ignored so the bot commits back to the objective. */
   private pursueTicks = 0;
   private pursueCooldown = 0;
+  /** Set by selectTarget each plan tick: the leash is holding, so chaseOf must
+   *  send movement to the objective even if a shootable runner stayed target. */
+  private leashed = false;
 
   /** Objective holds run on their own clock — the HOLD_MAX vigil in wantsHold,
    *  which only fires once the point is won AND quiet. A defender must NOT abandon
@@ -148,34 +151,57 @@ export class DominationOracle extends TacOracle {
 
   /** Leash the base's target picker to the objective: an enemy that's ON or
    *  contesting a site is always fair game, but one loitering in open ground is
-   *  only chased for PURSUE_MAX before we break off (and then ignore off-site
-   *  enemies for PURSUE_COOLDOWN, committing back to the point). Dropping the
-   *  target AND the remembered focus is what actually ends the pursuit — `act`
-   *  chases `target ?? focus ?? bestChase`, so with both cleared it falls to the
-   *  objective. On-site enemies never trip the leash, so defending/capturing
-   *  firefights are untouched; only the "chase a runner across the map" case is. */
+   *  only WALKED AFTER for PURSUE_MAX before we break off (and then refuse to
+   *  walk after off-site enemies for PURSUE_COOLDOWN, committing back to the
+   *  point). Two things the leash never touches:
+   *
+   *  - A fight is not a chase. An enemy we can trade with right now — same
+   *    level, inside engageRange — is fair game wherever they stand. The old
+   *    leash ignored them purely for being off-site, and two cooled-down bots
+   *    would walk past each other point-blank, mutually blind for 4s
+   *    (scripts/probe_ignore.mts measured it as the cause of 15/16 long
+   *    ignore episodes).
+   *  - The trigger. A leashed runner who is still shootable (same level,
+   *    inside the gun's feasibleRange) stays the TARGET — aim and fire keep
+   *    working — and only the movement breaks off: chaseOf sends the walk back
+   *    to the objective instead of after them. Only a runner the gun can't
+   *    touch anyway (out of range, or another floor) is dropped outright,
+   *    because a target like that is nothing BUT a movement goal. */
   protected override selectTarget(ai: AiContext): Character | null {
     const t = super.selectTarget(ai);
-    const offSite = t !== null && !this.nearAnySite(ai, t);
-    if (this.pursueCooldown > 0) {
-      this.pursueCooldown -= 1;
+    this.leashed = false;
+    if (this.pursueCooldown > 0) this.pursueCooldown -= 1;
+    if (t === null) {
       this.pursueTicks = 0;
-      if (offSite) {
-        this.focus = null;
-        return null;
-      }
-      return t; // an enemy that reached a site is worth engaging again
+      return null;
     }
-    if (!offSite) {
+    const engageable = t.z === this.z && dist(this.pos, t.pos) <= this.engageRange;
+    if (engageable || this.nearAnySite(ai, t)) {
       this.pursueTicks = 0;
       return t;
     }
-    this.pursueTicks += 1;
-    if (this.pursueTicks < PURSUE_MAX) return t;
-    this.pursueTicks = 0;
-    this.pursueCooldown = PURSUE_COOLDOWN;
+    // An off-site runner beyond trading range: chase on a budget.
+    if (this.pursueCooldown <= 0) {
+      this.pursueTicks += 1;
+      if (this.pursueTicks < PURSUE_MAX) return t;
+      this.pursueTicks = 0;
+      this.pursueCooldown = PURSUE_COOLDOWN;
+    } else {
+      this.pursueTicks = 0;
+    }
+    this.leashed = true;
+    if (t.z === this.z && dist(this.pos, t.pos) <= this.gun.feasibleRange) return t;
     this.focus = null;
     return null;
+  }
+
+  /** While the leash holds, movement belongs to the objective — even though the
+   *  gun may still be on the runner (see selectTarget). Without this the chase
+   *  falls to `target ?? focus`, which is the runner, and the leash would stop
+   *  nothing. */
+  protected override chaseOf(ai: AiContext, target: Character | null): Character | null {
+    if (this.leashed) return this.bestChase(ai);
+    return super.chaseOf(ai, target);
   }
 
   /** Is `e` on or contesting any capture point — within a ring plus the contest

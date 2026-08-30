@@ -232,7 +232,14 @@ export class Robot extends Character {
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     // Aim at the (jittered) point, not the exact target — aimError is a per-plan
     // Gaussian offset in world units, so the miss is bigger up close than far.
-    if (target) this.aimAngle = angleOf(sub(add(target.pos, this.aimError), this.pos));
+    // Only a target on OUR level drives the gun. An off-level target is pursued,
+    // not aimed at — tracking someone through the floor while crossing the map
+    // reads psychic and points the muzzle at nothing shootable (z-bound rounds).
+    // Facing while walking belongs to navChase's travel/lookahead logic, which
+    // takes over once the aim-hold below expires.
+    if (target && target.z === this.z) {
+      this.aimAngle = angleOf(sub(add(target.pos, this.aimError), this.pos));
+    }
     this.angle = turnToward(this.angle, this.aimAngle);
     this.forward = fromAngle(this.angle);
 
@@ -268,7 +275,11 @@ export class Robot extends Character {
     if (target) {
       // Track and shoot — think() eases the heading toward the target each tick.
       this.alerted = true;
-      this.ticksSinceTarget = 0;
+      // The aim-hold/blind-facing clock counts "ticks since something aimable":
+      // an off-level target is chased but not aimed at, so it must NOT pin this
+      // to 0 — that would freeze the gun on a stale angle forever (navChase's
+      // travel-facing waits for AIM_HOLD_TICKS to pass before it takes over).
+      if (target.z === this.z) this.ticksSinceTarget = 0;
     } else if (!this.alerted && this.speed < 1e-3) {
       // Never spotted anyone and standing still: idly turn to a new random
       // heading now and then. (While walking, movement owns the facing — see
@@ -282,7 +293,7 @@ export class Robot extends Character {
     }
     // else: has seen a target but lost sight -> hold aimAngle, "on alert".
 
-    if (!target) this.ticksSinceTarget += gain; // Infinity stays Infinity
+    if (!target || target.z !== this.z) this.ticksSinceTarget += gain; // Infinity stays Infinity
 
     profiler.measure("ai.act", () => this.act(ai, target));
     this.lastTarget = target;
@@ -362,7 +373,16 @@ export class Robot extends Character {
   }
 
   /** Sees the target if any of its sample points has a clear ray. */
+  /** Do we perceive `target` at all? On our own level it's exposure — the
+   *  raycast below. Across levels: ALWAYS, roofs and hidden floors included.
+   *  A deliberate bot advantage, chosen on feel: a renderer-faithful version
+   *  (seen only when the screen would draw them) was built and played, and
+   *  always-aware bots made for the better game. Costing keeps it fair — an
+   *  off-level enemy is priced like one behind cover (no lane + the real walk
+   *  round to them), and the trigger still refuses across floors, so awareness
+   *  buys pursuit, never impossible shots. */
   protected canSee(world: World, target: Character): boolean {
+    if (target.z !== this.z) return true;
     return this.visibility(world, target) > 0;
   }
 
@@ -386,6 +406,11 @@ export class Robot extends Character {
    * exactly as before.
    */
   protected visibility(world: World, target: Character): number {
+    // Exposure is a same-level quantity: every ray below is cast on OUR z, and
+    // rays mean nothing across a floor. Cross-level PERCEPTION is a different
+    // question and lives in canSee/drawnAcrossFloors — this stays honest and
+    // reports an off-level target as unshootable, which they are (z-bound rounds).
+    if (target.z !== this.z) return 0;
     const budget = this.wallbangBudget;
     let seen = 0;
     for (const pt of targetPoints(target, this.pos)) {

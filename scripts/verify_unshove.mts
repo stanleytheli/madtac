@@ -159,5 +159,103 @@ console.log("...and with the teammate a body-width off the line, it slides past:
   check("and gets past them", b.pos.x > 0, `ended at x = ${b.pos.x.toFixed(0)}`);
 }
 
+console.log("opposing traffic — the head-on slip:");
+{
+  // A mate in contact dead ahead AND walking at us: the plain projection would
+  // remove the whole step of both and the pair would stall forever (each step
+  // is radial, symmetry never breaks). The slip turns the removed part
+  // sideways instead — each bot to its own side, so the pair picks opposite
+  // sides and passes. (These mates are plain Characters, so their `vel` is
+  // their intent; a stalled ORACLE mate publishes `moveIntent` instead — see
+  // the cold-start walk below.)
+  const w = world();
+  const b = bot(vec(0, 0));
+  const m = body(vec(CONTACT - 10, 0), "blue");
+  m.vel = vec(-2.4, 0); // walking at us
+  const ai = ctx(w, [b, m]);
+  const got = push(b, ai, vec(2.4, 0));
+  check("the stalled step is turned sideways, not dropped", len(got) > 1, `|move| = ${len(got).toFixed(2)}`);
+  check("and it is lateral (never presses in)", Math.abs(got.x) < 1e-6 && Math.abs(got.y) > 1,
+    `(${got.x.toFixed(2)}, ${got.y.toFixed(2)})`);
+
+  // The mirrored bot slips to the OTHER side — that is what breaks the symmetry.
+  const b2 = bot(vec(CONTACT - 10, 0));
+  const m2 = body(vec(0, 0), "blue");
+  m2.vel = vec(2.4, 0);
+  const got2 = push(b2, ctx(w, [b2, m2]), vec(-2.4, 0));
+  check("the opposing bot slips to the opposite side", got.y * got2.y < 0,
+    `${got.y.toFixed(2)} vs ${got2.y.toFixed(2)}`);
+
+  // A grazing contact that still has real tangential motion gets NO slip —
+  // it is already sliding past, and extra lateral motion just churns crowds.
+  const graze = push(b, ai, vec(1.0, 2.4)); // mostly tangential
+  check("a sliding contact is left to the plain projection",
+    Math.abs(graze.x) < 1e-6 && Math.abs(graze.y - 2.4) < 1e-6,
+    `(${graze.x.toFixed(2)}, ${graze.y.toFixed(2)})`);
+
+  // A destination basically AT the mate disarms the slip: converging on a
+  // shared spot reads as opposing too, and slipping there is an endless dance.
+  const conv = (b as any).unshove(ai, vec(2.4, 0), CONTACT);
+  check("no slip when the walk goal is not beyond the mate", len(conv) < 1e-6,
+    `|move| = ${len(conv).toFixed(2)}`);
+}
+
+console.log("the approach shell — opposing pairs divert BEFORE touching:");
+{
+  // Acting only inside contact set up a boundary cycle (see probe_churn):
+  // press in at full speed just outside the edge, slip just inside, repeat —
+  // a multi-second grind. In the shell (up to 1.5x contact) an opposing
+  // mate's radial component is diverted sideways so the pair arcs past.
+  const w = world();
+  const b = bot(vec(0, 0));
+  const m = body(vec(CONTACT + 20, 0), "blue"); // NOT touching, in the shell
+  m.vel = vec(-2.4, 0); // walking at us
+  const got = push(b, ctx(w, [b, m]), vec(2.4, 0));
+  check("an opposing mate in the shell diverts the step", Math.abs(got.y) > 1,
+    `(${got.x.toFixed(2)}, ${got.y.toFixed(2)})`);
+  const rest = body(vec(CONTACT + 20, 0), "blue"); // resting in the shell
+  const past = push(b, ctx(w, [b, rest]), vec(2.4, 0));
+  check("a RESTING mate in the shell filters nothing",
+    Math.abs(past.x - 2.4) < 1e-6 && Math.abs(past.y) < 1e-6,
+    `(${past.x.toFixed(2)}, ${past.y.toFixed(2)})`);
+}
+
+console.log("two walkers crossing head-on actually trade places:");
+{
+  const w = world();
+  const a = new TacOracle(vec(0, 0), { team: "blue", z: 0 });
+  const b = new TacOracle(vec(600, 0), { team: "blue", z: 0 });
+  const ai = ctx(w, [a, b]);
+  let doneAt = -1;
+  for (let t = 1; t <= 600 && doneAt < 0; t++) {
+    (ai as any).tick = t; // moveIntent freshness needs a live tick
+    (a as any).stepToward(ai, vec(600, 0));
+    (b as any).stepToward(ai, vec(0, 0));
+    if (dist(a.pos, vec(600, 0)) < 30 && dist(b.pos, vec(0, 0)) < 30) doneAt = t;
+  }
+  // Unobstructed this walk is ~250 ticks; before the slip it never finished.
+  check("both arrive, near unobstructed time", doneAt > 0 && doneAt < 350, `took ${doneAt} ticks`);
+}
+
+console.log("...and from a COLD START, already touching, velocities zero:");
+{
+  // The in-game killer the vel-based test missed: both steps get projected
+  // away, both vels read zero, and a vel-based opposing test never re-arms.
+  // The published moveIntent stays hot while stalled, so the pair still slips.
+  const w = world();
+  const a = new TacOracle(vec(0, 0), { team: "blue", z: 0 });
+  const b = new TacOracle(vec(CONTACT - 6, 0), { team: "blue", z: 0 });
+  const ai = ctx(w, [a, b]);
+  let doneAt = -1;
+  for (let t = 1; t <= 600 && doneAt < 0; t++) {
+    (ai as any).tick = t;
+    (a as any).stepToward(ai, vec(600, 0));
+    (b as any).stepToward(ai, vec(-600 + CONTACT, 0));
+    if (a.pos.x > 300 && b.pos.x < -300) doneAt = t;
+  }
+  check("the stalled pair still passes (intent, not vel)", doneAt > 0 && doneAt < 350,
+    `took ${doneAt < 0 ? ">600" : doneAt} ticks`);
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

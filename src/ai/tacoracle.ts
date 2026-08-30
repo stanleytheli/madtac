@@ -188,6 +188,13 @@ const OUT_OF_RANGE_PENALTY = 1e5;
  *  tick and can't feed back on itself inside one re-evaluation. */
 const TARGET_SHARE_BIG = 400;
 const TARGET_SHARE_FORBID = OUT_OF_RANGE_PENALTY;
+/** No share penalty for an enemy this close on our own level: spreading fire is
+ *  a choice between comparable targets, and someone at point-blank is a
+ *  personal threat, not a choice. Without this, a thrice-covered enemy 100px
+ *  away scored 1e5 and the bot picked a cross-map candidate instead — "only
+ *  when nothing else is visible" stopped existing once cross-z admission made
+ *  everything always visible (measured: scripts/probe_ignore.mts, 10v10 dom). */
+const SHARE_EXEMPT_DIST = 300;
 /** Ticks without sight of anyone before the remembered focus is dropped and
  *  navigation goes back to "whoever is quickest to reach". */
 const FOCUS_MEMORY = 120;
@@ -539,7 +546,7 @@ interface Candidate {
 
 export class TacOracle extends Oracle {
   private readonly lambda: number;
-  private readonly engageRange: number;
+  protected readonly engageRange: number;
   private readonly semiAutoDelay: number;
   private readonly strafeOffsets: number[];
   /** Gun-readiness mode from updateMode (shoot when the burst/reload is ready,
@@ -666,7 +673,7 @@ export class TacOracle extends Oracle {
     }
     // Out of sight, the last engaged enemy stays the concern (cover is scored
     // against them, the chase heads back at them) until memory lapses.
-    const chase = target ?? this.focus ?? this.bestChase(ai);
+    const chase = this.chaseOf(ai, target);
     // Contact metrics, minimised over ALL hostiles. In an active fight (in visual
     // contact with the chased enemy) we're exposed and close, so both are ~0 —
     // skip the full scan; only pay for it when out of contact (approaching /
@@ -714,7 +721,12 @@ export class TacOracle extends Oracle {
       this.holdMove(ai);
     } else if (this.mode === "cover") {
       this.coverMove(ai, chase);
-    } else if (target && dist(this.pos, target.pos) <= this.engageRange) {
+    } else if (target && target.z === this.z && dist(this.pos, target.pos) <= this.engageRange) {
+      // Same level only. strafeMove ranks spots by the lane they give onto the
+      // target, and scoreAt scores zero across levels — so an off-level target
+      // left every candidate tied at nothing, strafeTarget null, and the bot
+      // standing still admiring a floor. It belongs in the approach branch,
+      // which routes over the graph and can actually use the stairs.
       this.strafeMove(ai, target);
     } else {
       // Approach: graph-chase into range (SHOOT out of sight / too far to trade)
@@ -727,8 +739,18 @@ export class TacOracle extends Oracle {
       const blocker = this.blockingMate(ai, chase);
       // Veer around a mate in the lane if there's room; if boxed in, drive
       // straight and let the squishy body collision phase us through.
-      if (!blocker || !this.sidestep(ai, chase, blocker)) this.navChase(ai, chase, target);
+      const engaging = target && target.z === this.z ? target : null;
+      if (!blocker || !this.sidestep(ai, chase, blocker)) this.navChase(ai, chase, engaging);
     }
+  }
+
+  /** What to WALK toward this plan tick: the live target, else the remembered
+   *  focus, else the best blind chase. Split from targeting so a subclass can
+   *  keep shooting an enemy it refuses to walk after — see DominationOracle's
+   *  pursuit leash, which redirects movement to the objective while the gun
+   *  stays on a still-shootable runner. */
+  protected chaseOf(ai: AiContext, target: Character | null): Character | null {
+    return target ?? this.focus ?? this.bestChase(ai);
   }
 
   /** Between plan ticks (stagger): keep the gun's burst/reload/click bookkeeping
@@ -1699,9 +1721,11 @@ export class TacOracle extends Oracle {
       d = dist(a.pos, b.pos); // no graph, or the same cell: the line is the walk
     } else {
       const r = nav.route(na, nb);
-      d = r
-        ? dist(a.pos, nav.nodes[na].pos) + r.dist + dist(nav.nodes[nb].pos, b.pos)
-        : dist(a.pos, b.pos); // disconnected: fall back rather than rank it last
+      // Unreachable ranks LAST, matching bestChase. Falling back to the straight
+      // line here would be the worst possible answer now that off-level hostiles
+      // are candidates: someone on a disconnected floor is metres away by line
+      // and infinitely far on foot, and the line would make them look nearest.
+      d = r ? dist(a.pos, nav.nodes[na].pos) + r.dist + dist(nav.nodes[nb].pos, b.pos) : Infinity;
     }
     walkPut(a, b, ai.tick, d);
     return d;
@@ -1899,6 +1923,7 @@ export class TacOracle extends Oracle {
   private standToShoot(ai: AiContext, target: Character | null): boolean {
     if (
       target === null ||
+      target.z !== this.z || // can't hit them; planting would freeze us facing a floor
       this.mode !== "shoot" ||
       !this.fireOk ||
       this.burstDone ||
@@ -1951,6 +1976,13 @@ export class TacOracle extends Oracle {
    *  trigger finger clicks. */
   protected override shouldFire(ai: AiContext, target: Character | null): boolean {
     if (this.mode !== "shoot" || !this.fireOk || !target) return false;
+    // Rounds are z-bound (updateBullets drops a bullet whose z differs), so a
+    // shot at another floor is thrown away. Nothing else on this path checks:
+    // visibility() rays on OUR z and never compares the target's, so canSee says
+    // yes through a ceiling, and muzzleLineClear casts on our level too. The
+    // candidate filter in selectTarget used to be the only thing standing
+    // between an off-level enemy and an emptied magazine.
+    if (target.z !== this.z) return false;
     if (this.clickIn > 0) return false;
     // Don't spend rounds past the weapon's reach — the bullet would die short.
     if (dist(this.pos, target.pos) > this.gun.feasibleRange) return false;
@@ -1988,11 +2020,13 @@ export class TacOracle extends Oracle {
    *  near-equal targets don't trade the lock every re-evaluation. */
   protected override selectTarget(ai: AiContext): Character | null {
     this.targetEvalIn -= 1;
+    // No z clause: our OWN z flips at a stair midpoint, and requiring a match
+    // dropped the lock every time a bot walked onto a staircase — it then
+    // reselected, usually onto whoever shared the level it had just left. The
+    // enemy we are fighting does not stop being the enemy because we took a step
+    // up. Whether we can SHOOT them is a separate question, asked at the trigger.
     const valid =
-      this.focus !== null &&
-      this.focus.hp > 0 &&
-      this.focus.z === this.z &&
-      this.canSee(ai.world, this.focus);
+      this.focus !== null && this.focus.hp > 0 && this.canSee(ai.world, this.focus);
     if (valid && this.targetEvalIn > 0) return this.focus;
     this.targetEvalIn = TARGET_EVAL_TICKS;
 
@@ -2000,11 +2034,25 @@ export class TacOracle extends Oracle {
     let bestCost = Infinity;
     const range = this.gun.feasibleRange;
     for (const h of this.hostiles(ai)) {
-      if (h.z !== this.z || !this.canSee(ai.world, h)) continue;
+      // Off-level hostiles are candidates now, not exclusions. Nothing special
+      // prices them: scoreAt scores zero for anything off our level, so shootCost
+      // falls through to its "no local lane" sentinel — the same bucket a
+      // same-floor enemy behind a wall lands in — and the walkDist term below
+      // then charges the real distance round to them, up the stairs and all.
+      // A floor is cover you have to walk further around, and that is all.
+      if (!this.canSee(ai.world, h)) continue;
       // Range is ballistic — the bullet flies the straight line, so that is what
-      // gates it. Proximity is a travel question, so that one walks.
+      // gates it. The proximity term is the straight line on our own level —
+      // deliberately the pre-cross-z behaviour, bit for bit: measured on same-z
+      // alone, walking distance changed the pick in only ~8-14% of contested
+      // scans (walk/straight ratio 1.1-2.1x) while costing +9% AI time, so it
+      // buys nothing there. Across floors the line is essentially wrong
+      // (someone directly overhead is "50px away"), so off-level candidates pay
+      // the real walk — which is also what lets a close-downstairs enemy beat a
+      // far same-floor one without any penalty constant.
       const d = dist(this.pos, h.pos);
-      let cost = this.shootCost(ai, h) + BETA_DIST * this.walkDist(ai, this, h);
+      const near = h.z === this.z ? d : this.walkDist(ai, this, h);
+      let cost = this.shootCost(ai, h) + BETA_DIST * near;
       if (d > range) cost += OUT_OF_RANGE_PENALTY; // prefer anyone we can actually reach
       cost += this.targetShareCost(ai, h); // spread fire: shun a mate-crowded target
       if (h === this.focus) cost -= FOCUS_STICKINESS;
@@ -2041,12 +2089,23 @@ export class TacOracle extends Oracle {
    *  near-forbid — see TARGET_SHARE_BIG. Only TacOracle mates carry a focus; a
    *  human or other-AI ally simply doesn't count toward the crowd. */
   private targetShareCost(ai: AiContext, h: Character): number {
+    // Point-blank on our level: always fair game, however crowded (see
+    // SHARE_EXEMPT_DIST).
+    const d = h.z === this.z ? dist(this.pos, h.pos) : Infinity;
+    if (d <= SHARE_EXEMPT_DIST) return 0;
     let k = 0;
     for (const c of ai.characters) {
       if (c === this || c.hp <= 0 || areHostile(this.team, c.team)) continue;
       if (c instanceof TacOracle && c.focus === h) k++;
     }
-    return k <= 1 ? 0 : k === 2 ? TARGET_SHARE_BIG : TARGET_SHARE_FORBID;
+    if (k <= 1) return 0;
+    // Inside trading range crowding NUDGES (redirect if anyone comparable is
+    // free) but never FORBIDS — the forbid was written when admission required
+    // sight, so "picked only when nothing else is visible" was a real
+    // fallback; with cross-z admission something else is ALWAYS visible, and a
+    // forbidden enemy inside our own fight became permanently untouchable.
+    if (k === 2 || d <= this.engageRange) return TARGET_SHARE_BIG;
+    return TARGET_SHARE_FORBID;
   }
 
   /** Blind navigation target: the hostile reachable-and-shootable soonest by
@@ -2439,7 +2498,7 @@ export class TacOracle extends Oracle {
   private stepToward(ai: AiContext, dest: Vec2): void {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const step = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d)));
+    const step = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d)), d);
     this.vel = step;
     this.pos = add(this.pos, step);
   }
