@@ -736,7 +736,14 @@ export class TacOracle extends Oracle {
       // or wedge front-to-front converging on the same spot. General spacing is
       // postMove's job; this is path-specific.
       this.strafeTarget = null;
-      const blocker = this.blockingMate(ai, chase);
+      // Same level only: the "lane" to an off-level chase is a straight line
+      // through the floor — fiction. The walk there goes via stairs (usually
+      // some other direction entirely), and there is no firing lane to keep
+      // clear because the gun can't cross levels anyway. Sidestepping against
+      // that phantom line marched pairs of bots away from their own waypoints
+      // in lockstep at full speed, each "clearing" the other's nonexistent
+      // lane, for hundreds of ticks (traced in scripts/probe_grind.mts).
+      const blocker = chase.z === this.z ? this.blockingMate(ai, chase) : null;
       // Veer around a mate in the lane if there's room; if boxed in, drive
       // straight and let the squishy body collision phase us through.
       const engaging = target && target.z === this.z ? target : null;
@@ -787,8 +794,9 @@ export class TacOracle extends Oracle {
     }
     // Keep clearing a teammate's firing lane between plan ticks too (drive
     // straight if boxed — squishy collision phases through rather than freezing).
+    // Same level only, as in act(): an off-level chase has no lane to clear.
     const chase = target ?? this.focus;
-    const blocker = chase ? this.blockingMate(ai, chase) : null;
+    const blocker = chase && chase.z === this.z ? this.blockingMate(ai, chase) : null;
     if (!chase || !blocker || !this.sidestep(ai, chase, blocker)) this.coastStep(ai);
   }
 
@@ -2335,7 +2343,7 @@ export class TacOracle extends Oracle {
       this.dodgeIn = DODGE_TICKS;
     }
     const side = this.sideAxis(chase);
-    const move = this.unshove(ai, scale(side, this.dodgeDir * this.moveSpeed));
+    const move = scale(side, this.dodgeDir * this.moveSpeed);
     const step = add(this.pos, move);
     if (!walkable(ai.world, this.pos, this.z, step, this.z)) {
       this.dodgeDir = this.dodgeDir === 1 ? -1 : 1;
@@ -2397,11 +2405,7 @@ export class TacOracle extends Oracle {
       openR,
     ];
     for (const d of dirs) {
-      // Body-filter first, then test the spot we'd actually reach: veering out
-      // of one mate's lane used to walk straight into another, since `walkable`
-      // only knows about walls.
-      const move = this.unshove(ai, scale(norm(d), this.moveSpeed));
-      if (Math.hypot(move.x, move.y) < 1e-3) continue; // wholly into a body
+      const move = scale(norm(d), this.moveSpeed);
       const step = add(this.pos, move);
       if (walkable(ai.world, this.pos, this.z, step, this.z)) {
         this.vel = move;
@@ -2490,15 +2494,16 @@ export class TacOracle extends Oracle {
     );
   }
 
-  /** One movement tick toward `dest`, recording the step in `vel`. The step is
-   *  body-filtered on the way out (see Oracle.unshove), so walking to a strafe
-   *  spot, a cover spot or a hold peek can't press into a teammate — those are
-   *  free-space points the graph knows nothing about, so this is the only place
-   *  they can be made body-aware. */
-  private stepToward(ai: AiContext, dest: Vec2): void {
+  /** One movement tick toward `dest`, recording the step in `vel`. Bodies are
+   *  NOT filtered here — walkers push through each other and the squishy
+   *  separation pass eases the overlap (see game.ts separateCharacters). A
+   *  step-level contact projection ("unshove") was tried and reverted: it
+   *  stopped the shoving but cost bots the ability to squeeze past each other,
+   *  which is the worse trade. */
+  private stepToward(_ai: AiContext, dest: Vec2): void {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const step = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d)), d);
+    const step = scale(norm(sub(dest, this.pos)), Math.min(this.moveSpeed, d));
     this.vel = step;
     this.pos = add(this.pos, step);
   }

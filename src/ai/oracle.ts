@@ -17,8 +17,7 @@
  * a stair midpoint (waypoint legs are the only sanctioned level changes).
  */
 import type { Character } from "../entities/actor.ts";
-import { BODY_RADIUS, type Skin } from "../entities/character.ts";
-import { areHostile } from "../entities/team.ts";
+import { type Skin } from "../entities/character.ts";
 import { walkable, zAt, type NavGraph } from "../world/nav.ts";
 import { Robot, type AiContext, type RobotOptions } from "./robot.ts";
 import { add, angleOf, dist, norm, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
@@ -46,32 +45,6 @@ const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a 
  *  landed on the same tick drift apart instead of re-planning together forever. */
 const REPLAN_JITTER = 10;
 const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this much cheaper (px)
-/** Bodies this close are in contact: exactly touching is 2*BODY_RADIUS. Inside
- *  it, `unshove` removes whatever part of a step drives further in. */
-const CONTACT_DIST = BODY_RADIUS * 2;
-/** Projection passes in `unshove`. One pass satisfies one contact exactly, but
- *  with two contacts the second projection can put motion back into the first,
- *  so a second pass runs. It converges fast because the constraints a bot is
- *  actually in at once are few and rarely opposed; more passes measured no
- *  different from two, and a bot wedged between two mates is meant to end up
- *  moving along neither of them. */
-const UNSHOVE_PASSES = 2;
-/** A contact mate WANTING to close on us faster than this (px/tick along the
- *  centre line, measured on its pre-projection intent — see `moveIntent`)
- *  counts as opposing traffic, and `unshove` turns our removed radial step
- *  sideways instead of dropping it. Half a slow walker's step: a mate
- *  drifting or being squished about does not trigger it. */
-const OPPOSE_MIN = 0.5;
-/** Opposing traffic starts side-stepping THIS far out, before bodies touch.
- *  Acting only inside CONTACT_DIST set up a boundary cycle (traced in
- *  scripts/probe_churn.mts): a pair hovers right at the contact edge, pressing
- *  in at full speed on the tick that starts just outside it and slipping on
- *  the tick inside, with the free tick's waypoint-aimed step cancelling the
- *  slip's lateral progress — a multi-second grind at ~40% push-through speed.
- *  Diverting the step in an approach shell turns that into a smooth arc past
- *  each other. Only the opposing-slip acts out here; the plain projection
- *  (stop pressing into ANY mate) stays contact-only. */
-const SLIP_DIST = CONTACT_DIST * 1.5;
 const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
@@ -101,12 +74,6 @@ export class Oracle extends Robot {
    *  -1. Kept so blind facing can look up the hop after the waypoint. */
   private goal = -1;
   private replanIn = 0;
-  /** The raw step handed to `unshove` this tick, BEFORE projection — what this
-   *  bot wants to do, readable by other bots' opposing-traffic test even when
-   *  the projection stalled it and `vel` reads zero. Only meaningful while
-   *  `moveIntentTick` is current (a resting bot stops publishing). */
-  readonly moveIntent: Vec2 = vec(0, 0);
-  moveIntentTick = -1;
 
   constructor(pos: Vec2, options: OracleOptions = {}) {
     super(pos, { skin: ORACLE_SKIN, ...options });
@@ -172,107 +139,11 @@ export class Oracle extends Robot {
     if (direct && chase && dist(this.pos, dest) <= this.standoffFor(chase)) return;
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
-    const move = this.unshove(ai, scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d)), d);
+    const move = scale(norm(sub(dest, this.pos)), Math.min(this.stepSpeed(), d));
     const next = add(this.pos, move);
     if (direct && zAt(ai.world, next, this.z) !== this.z) return; // beeline never flips z
     this.vel = move;
     this.pos = next;
-  }
-
-  /** Take the part of `move` that does not drive into a teammate we are already
-   *  touching, and drop the rest.
-   *
-   *  This is the whole anti-shoving rule, and it lives here because it is the
-   *  only place every kind of movement passes through. Bots collide walking
-   *  BETWEEN destinations far more than at them, and a third of contacts have no
-   *  graph node involved at all (strafe spots and hold peeks are free-space
-   *  points), so nothing that picks destinations — occupancy tests, node
-   *  blocking, spot claims — can reach the problem. Steps can.
-   *
-   *  It is a contact projection, not a dodge. For each mate inside CONTACT_DIST,
-   *  the component of the step along the line to them is removed and the
-   *  tangential part is kept, so a bot walking past a teammate keeps sliding
-   *  past and only the part that presses into them disappears. That is what
-   *  makes it deadlock-free without a timer or a give-way rule: nothing ever
-   *  stops on account of another body, it just stops pushing. It is symmetric
-   *  for free, because both bots run it and neither can close.
-   *
-   *  `separateCharacters` still owns easing an existing overlap apart. Its work
-   *  used to be undone the same tick by movers walking straight back in; this is
-   *  what stops the undoing. Contacts with ENEMIES are left alone — driving into
-   *  someone you are trying to shoot is a fight, not a traffic problem. */
-  protected unshove(ai: AiContext, move: Vec2, destD = Infinity): Vec2 {
-    // Publish the RAW step for other bots' opposing-traffic test below. Their
-    // post-projection `vel` is useless for it: a stalled bot's vel is exactly
-    // what this function zeroed, so two bots meeting head-on both read the
-    // other as "stationary", nobody slips, and the stall never re-arms — the
-    // pair just leans into each other. Intent stays hot while stalled. The
-    // tick stamp keeps it honest: a bot that stops calling unshove (resting at
-    // its spot, planted to shoot) goes stale within a tick and is treated as
-    // stationary again, so nobody dances around a holder.
-    this.moveIntent.x = move.x;
-    this.moveIntent.y = move.y;
-    this.moveIntentTick = ai.tick;
-    let mx = move.x;
-    let my = move.y;
-    for (let pass = 0; pass < UNSHOVE_PASSES; pass++) {
-      let touched = false;
-      for (const c of ai.characters) {
-        if (c === this || c.hp <= 0 || c.vehicle) continue;
-        if (c.z !== this.z || areHostile(this.team, c.team)) continue;
-        const dx = c.pos.x - this.pos.x;
-        const dy = c.pos.y - this.pos.y;
-        const d2 = dx * dx + dy * dy;
-        if (d2 >= SLIP_DIST * SLIP_DIST || d2 < 1e-9) continue;
-        const d = Math.sqrt(d2);
-        const nx = dx / d;
-        const ny = dy / d;
-        const into = mx * nx + my * ny; // how much of the step points at them
-        if (into <= 0) continue; // already moving away: nothing to remove
-        // Head-on traffic: when the mate WANTS to walk into us too AND the
-        // step is mostly at them, the pair would stall — each step is radial,
-        // nothing tangential survives, and the symmetry never breaks. Turn
-        // the radial part sideways, each bot to its own side of the line, so
-        // an opposing pair picks opposite sides and arcs past. This starts in
-        // the approach shell (SLIP_DIST), before bodies touch — see the
-        // boundary-cycle note on that constant. The guards all matter:
-        //  - The mate's INTENT (published at the top of this function), not
-        //    its vel, is what must oppose us — a stalled mate's vel is
-        //    already projected to nothing, and reading it deadlocked real
-        //    matches. A resting mate has a cold intent and gets no slip, so
-        //    walkers still stop pushing holders rather than orbiting them.
-        //  - A step with real tangential motion is already sliding past and
-        //    needs no help.
-        //  - The walk goal must lie BEYOND the mate (`destD` past the far
-        //    side of the contact): two bots converging on a SHARED spot also
-        //    read as opposing, and slipping there is an endless dance around
-        //    a destination neither can stand on (measured: common-dest drift
-        //    doubled in probe_cross without this guard).
-        const wish =
-          c instanceof Oracle && ai.tick - c.moveIntentTick <= 1 ? c.moveIntent : c.vel;
-        const tx = mx - into * nx;
-        const ty = my - into * ny;
-        if (
-          destD > CONTACT_DIST + BODY_RADIUS &&
-          into > Math.hypot(tx, ty) &&
-          wish.x * nx + wish.y * ny < -OPPOSE_MIN
-        ) {
-          mx = tx + into * ny;
-          my = ty - into * nx;
-          touched = true;
-          continue;
-        }
-        // Not opposing traffic: outside contact the step is left alone (the
-        // shell exists only for the slip); inside it the plain projection
-        // stands — stop pressing into the body.
-        if (d2 >= CONTACT_DIST * CONTACT_DIST) continue;
-        mx = tx;
-        my = ty;
-        touched = true;
-      }
-      if (!touched) break; // no contact resolved this pass: nothing left to fix
-    }
-    return vec(mx, my);
   }
 
   /** The Oracle's whole movement policy, reusable by subclasses: walk the
@@ -308,7 +179,7 @@ export class Oracle extends Robot {
     const d = dist(this.pos, dest);
     if (d < 1e-3) return;
     const dir = norm(sub(dest, this.pos));
-    const move = this.unshove(ai, scale(dir, Math.min(this.stepSpeed(), d)), d);
+    const move = scale(dir, Math.min(this.stepSpeed(), d));
     const next = add(this.pos, move);
     // A direct step never crosses a stair midpoint: flipping z would drop the
     // target from sight and re-route — the rapid-flicker failure mode. Hold

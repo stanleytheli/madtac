@@ -67,8 +67,8 @@ for (let i = 0; i < TICKS && traces <= MAX_TRACES; i++) {
     const bearing = deg(Math.atan2(dy, dx));
     console.log(
       `  t=${String(i).padStart(5)} d=${d.toFixed(0).padStart(3)} pairAngle=${String(bearing).padStart(4)} ` +
-        `A:intent=${dirOf(tracked.moveIntent)} vel=${dirOf(tracked.vel)} mode=${tracked.mode} ` +
-        `B:intent=${dirOf(mate.moveIntent)} vel=${dirOf(mate.vel)} mode=${mate.mode} ` +
+        `A:vel=${dirOf(tracked.vel)} mode=${tracked.mode} ` +
+        `B:vel=${dirOf(mate.vel)} mode=${mate.mode} ` +
         `Apos=(${tracked.pos.x.toFixed(0)},${tracked.pos.y.toFixed(0)})`,
     );
     tracing--;

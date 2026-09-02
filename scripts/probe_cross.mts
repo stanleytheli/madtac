@@ -1,12 +1,11 @@
 /**
- * Probes crossing traffic through Oracle.unshove: bots whose paths run against
- * each other (head-on swaps, column crossings) and bots converging on one
- * point. Reproduces the stall the projection causes when two steps are
- * mutually radial (each bot's whole step is removed and nobody picks a side),
- * and gives before/after numbers for any fix.
+ * Probes crossing traffic between AI walkers: head-on swaps, column
+ * crossings, corridor squeezes, and bots converging on one point. This is the
+ * acceptance harness for "can bots get past each other" — the step-level
+ * contact projection ("unshove") was reverted because it failed exactly here.
  *
  * Sim = the game's per-tick movement order for walkers in open space:
- * step toward dest through unshove, apply, then the squishy separation pass
+ * raw step toward dest, wall resolve, then the squishy separation pass
  * (radial only, SQUISH_DELTA capped) from game.ts.
  *
  * Run: node_modules/.bin/esbuild scripts/probe_cross.mts --bundle --platform=node
@@ -56,7 +55,7 @@ const resolveWalls = (p: Vec2): Vec2 => {
   return p;
 };
 
-/** One game tick for the walkers: unshoved step, then squishy separation. */
+/** One game tick for the walkers: raw step, then squishy separation. */
 const tick = (ws: Walker[], ai: AiContext, t: number): void => {
   for (const w of ws) {
     const b = w.bot;
@@ -66,8 +65,7 @@ const tick = (ws: Walker[], ai: AiContext, t: number): void => {
       b.vel = vec(0, 0);
       continue;
     }
-    const step = scale(norm(sub(w.dest, b.pos)), Math.min(SPEED, d));
-    const move = (b as any).unshove(ai, step, d);
+    const move = scale(norm(sub(w.dest, b.pos)), Math.min(SPEED, d));
     b.vel = move;
     b.pos = resolveWalls(add(b.pos, move));
   }
