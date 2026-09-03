@@ -11,6 +11,7 @@ import { armorIcon, assetImage, gunIcon, OUTLINE_PX, outlinedIcon, utilityIcon, 
 import { Minimap, type DeathMark } from "./minimap.ts";
 import type { Vec2 } from "../engine/vec.ts";
 import type { HitMarks } from "../world/world.ts";
+import { settings, type CrosshairStyle } from "../settings.ts";
 
 /** Uniform downscale for the whole screen-space HUD (1 = original size). */
 export const UI_SCALE = 0.8;
@@ -35,100 +36,155 @@ const SPREAD_PX_PER_RAD = 75;
 /** Ceiling on that retreat, so a future spec can't fling the marks off-screen. */
 const MAX_SPREAD_PX = 60;
 
-/** Tick geometry: white over a dark halo 1.25px wider on each side. The ticks
- *  carry the whole pointer now that the OS cursor is hidden under a match
- *  (see syncCursor in main.ts), so they are thicker than they would need to be
- *  as mere decoration around an arrow. */
-const TICK_LEN = 9;
-const TICK_WIDTH = 3;
-const HALO_WIDTH = TICK_WIDTH + 2.5;
-/** Centre dot: white core over its own dark ring, so it survives a pale floor.
- *  This dot IS the mouse pointer — it marks the exact aim point with nothing else
- *  on screen to back it up — so it is sized to be found, not just to be present. */
-const DOT_R = 1.8;
-const DOT_HALO_R = 3.1;
-/**
- * Where the ticks sit with a perfectly steady weapon. Zero spread used to put the
- * tick ENDS at the centre, buried under the dot and its ring, so the first few px
- * of bloom were invisible and every small difference in spread drew the same
- * picture. Standing them off means the readout starts moving the moment the
- * spread does.
- *
- * Sized so the tick's dark outline just kisses the dot's: the tick's round cap
- * reaches HALO_WIDTH/2 back from its endpoint, so that endpoint has to clear the
- * dot's outer ring by exactly that much.
- */
-const REST_GAP = DOT_HALO_R + HALO_WIDTH / 2;
-const XHAIR_INK = "#ffffff";
-const XHAIR_HALO = "rgba(0, 0, 0, 0.55)";
-
-/** Centre coordinate that renders TICK_WIDTH crisply (see drawCrosshair). Halves
- *  for an odd width, whole pixels otherwise; a fractional width can't be crisp
- *  either way, so it takes the whole-pixel case. */
-function snapToPixel(v: number): number {
-  const odd = Number.isInteger(TICK_WIDTH) && TICK_WIDTH % 2 === 1;
+/** Centre coordinate that renders a `width` stroke crisply (see drawCrosshair).
+ *  Halves for an odd width, whole pixels otherwise; a fractional width can't be
+ *  crisp either way, so it takes the whole-pixel case. */
+function snapToPixel(v: number, width: number): number {
+  const odd = Number.isInteger(width) && width % 2 === 1;
   return odd ? Math.round(v - 0.5) + 0.5 : Math.round(v);
 }
 
+/** "#rrggbb" + alpha -> "rgba(r, g, b, a)". */
+function withAlpha(hex: string, alpha: number): string {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 /**
- * The crosshair: four ticks around a centre dot, the ticks standing off from the
- * centre by the aimed weapon's inaccuracy. `spread` is the gun's maximum aim
- * offset in radians (see Gun.maxSpread) — already smoothed by the caller, since
- * the raw value steps every shot. The centre dot stays put as the true aim point.
+ * The crosshair, drawn to the player's style (see CrosshairStyle in settings.ts;
+ * the defaults there are the hand-tuned look this used to hard-code). The marks
+ * stand off from the centre by the aimed weapon's inaccuracy — `spread` is the
+ * gun's maximum aim offset in radians (see Gun.maxSpread), already smoothed by
+ * the caller since the raw value steps every shot — or, in fixed mode, by a
+ * constant the player chose. The centre dot stays put as the true aim point.
  *
- * Everything is drawn twice: a dark halo, then the white on top of it. The map
+ * Everything is drawn twice: a dark border, then the ink on top of it. The map
  * runs from near-black floors to pale concrete, and plain white loses the second
  * one — most of all the centre dot, which is the single mark that matters and was
- * the first thing to disappear. The halo costs one extra stroke and makes the
- * crosshair read the same everywhere.
+ * the first thing to disappear. The border costs one extra stroke and makes the
+ * crosshair read the same everywhere. (The player can turn it off.)
+ *
+ * The ticks carry the whole pointer now that the OS cursor is hidden under a
+ * match (see syncCursor in main.ts), so the default is thicker than it would
+ * need to be as mere decoration around an arrow.
  */
 export function drawCrosshair(
   ctx: CanvasRenderingContext2D,
   cx: number,
   cy: number,
   spread = 0,
+  s: CrosshairStyle = settings.crosshair,
 ): void {
+  const showDot = s.dot && s.dotSize > 0;
+  const haloOn = s.border > 0 && s.borderAlpha > 0;
+  const haloWidth = s.tickWidth + 2 * s.border;
+  const dotHaloR = s.dotSize + s.border;
+  const ink = s.color;
+  const halo = withAlpha(s.borderColor, s.borderAlpha);
+
+  // Where the marks sit with a perfectly steady weapon. Zero used to put the tick
+  // ENDS at the centre, buried under the dot and its ring, so the first few px
+  // of bloom were invisible. Standing them off so the tick's border just kisses
+  // the dot's (the round cap reaches haloWidth/2 back from its endpoint) means
+  // the readout starts moving the moment the spread does.
+  const restGap = showDot ? dotHaloR + haloWidth / 2 : 0;
   // The cap bounds the SPREAD-driven part, not the total: the rest offset is
-  // structural (it keeps the ticks off the dot) and shouldn't be eaten into by a
-  // gun spraying hard enough to hit the ceiling.
-  const gap = REST_GAP + Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
+  // structural and shouldn't be eaten into by a gun spraying hard enough to hit
+  // the ceiling.
+  const gap =
+    s.gapMode === "fixed"
+      ? s.gap
+      : restGap + Math.min(MAX_SPREAD_PX, Math.max(0, spread) * SPREAD_PX_PER_RAD);
   // Snap so the ticks land on pixel boundaries. A stroke straddles its own
   // coordinate, so an EVEN width wants a whole-pixel centre and an ODD width
   // wants a half-pixel one; get it backwards and the line renders as two grey
   // half-covered columns instead of one crisp white one. Derived from the width
   // rather than assumed, so retuning the thickness cannot quietly blur it.
-  const x = snapToPixel(cx);
-  const y = snapToPixel(cy);
+  const x = snapToPixel(cx, s.tickWidth);
+  const y = snapToPixel(cy, s.tickWidth);
+
+  // The marks around the centre, as one path stroked twice — border underneath,
+  // ink over it. Every shape keeps its inner edge at `gap` from the centre, so
+  // spread reads the same way whichever one is on.
+  const marks = new Path2D();
+  let any = false;
+  const sh = s.shape;
+  const ticks = sh === "cross" || sh === "sides" || sh === "circle-cross";
+  if (ticks && s.tickLen > 0) {
+    any = true;
+    marks.moveTo(x - gap, y);
+    marks.lineTo(x - gap - s.tickLen, y);
+    marks.moveTo(x + gap, y);
+    marks.lineTo(x + gap + s.tickLen, y);
+    if (sh !== "sides") {
+      marks.moveTo(x, y - gap);
+      marks.lineTo(x, y - gap - s.tickLen);
+      marks.moveTo(x, y + gap);
+      marks.lineTo(x, y + gap + s.tickLen);
+    }
+  }
+  if (sh === "x" && s.tickLen > 0) {
+    // The cross turned 45°: the same four ticks along the diagonals.
+    any = true;
+    const k = Math.SQRT1_2;
+    for (const [dx, dy] of [[1, 1], [1, -1], [-1, 1], [-1, -1]] as const) {
+      marks.moveTo(x + dx * gap * k, y + dy * gap * k);
+      marks.lineTo(x + dx * (gap + s.tickLen) * k, y + dy * (gap + s.tickLen) * k);
+    }
+  }
+  if (sh === "arcs" && s.tickLen > 0) {
+    // Two brackets, ( ), bulging away from the centre: pieces of the ring a
+    // side tick would sit across, each `2 * tickLen` long (a tick's length
+    // either side of the axis), capped at a half circle each.
+    any = true;
+    const r = gap + s.tickLen / 2;
+    const a = Math.min(Math.PI / 2, s.tickLen / Math.max(r, 1e-3));
+    marks.moveTo(x + r * Math.cos(-a), y + r * Math.sin(-a));
+    marks.arc(x, y, r, -a, a);
+    marks.moveTo(x + r * Math.cos(Math.PI - a), y + r * Math.sin(Math.PI - a));
+    marks.arc(x, y, r, Math.PI - a, Math.PI + a);
+  }
+  if (sh === "circle" && gap > 0) {
+    any = true;
+    marks.moveTo(x + gap, y);
+    marks.arc(x, y, gap, 0, Math.PI * 2);
+  }
+  if (sh === "circle-cross" && s.tickLen > 0) {
+    // The ring runs through the middle of the four ticks (which still start at
+    // the gap, like every other shape), so each tick crosses it.
+    any = true;
+    const r = gap + s.tickLen / 2;
+    marks.moveTo(x + r, y);
+    marks.arc(x, y, r, 0, Math.PI * 2);
+  }
 
   ctx.save();
   ctx.lineCap = "round";
-  // The four ticks, as one path stroked twice — halo underneath, ink over it.
-  const ticks = new Path2D();
-  ticks.moveTo(x, y - gap);
-  ticks.lineTo(x, y - gap - TICK_LEN);
-  ticks.moveTo(x, y + gap);
-  ticks.lineTo(x, y + gap + TICK_LEN);
-  ticks.moveTo(x - gap, y);
-  ticks.lineTo(x - gap - TICK_LEN, y);
-  ticks.moveTo(x + gap, y);
-  ticks.lineTo(x + gap + TICK_LEN, y);
-  ctx.strokeStyle = XHAIR_HALO;
-  ctx.lineWidth = HALO_WIDTH;
-  ctx.stroke(ticks);
-  ctx.strokeStyle = XHAIR_INK;
-  ctx.lineWidth = TICK_WIDTH;
-  ctx.stroke(ticks);
+  if (any) {
+    if (haloOn) {
+      ctx.strokeStyle = halo;
+      ctx.lineWidth = haloWidth;
+      ctx.stroke(marks);
+    }
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = s.tickWidth;
+    ctx.stroke(marks);
+  }
 
-  // Centre dot: with the ticks pushed out by spread, this is what still marks the
+  // Centre dot: with the marks pushed out by spread, this is what still marks the
   // exact point being aimed at — so it gets the same treatment.
-  ctx.fillStyle = XHAIR_HALO;
-  ctx.beginPath();
-  ctx.arc(x, y, DOT_HALO_R, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = XHAIR_INK;
-  ctx.beginPath();
-  ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
-  ctx.fill();
+  if (showDot) {
+    if (haloOn) {
+      ctx.fillStyle = halo;
+      ctx.beginPath();
+      ctx.arc(x, y, dotHaloR, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = ink;
+    ctx.beginPath();
+    ctx.arc(x, y, s.dotSize, 0, Math.PI * 2);
+    ctx.fill();
+  }
   ctx.restore();
 }
 

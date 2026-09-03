@@ -21,7 +21,7 @@ import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCi
 import { KILLFEED_TTL, type GameCtx, type Gamemode, type KillFeedEntry, type PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
-import { isDown, mouse, moveAxis, pointer } from "./engine/input.ts";
+import { isAction, isDown, mouse, moveAxis } from "./engine/input.ts";
 import { ArmorItem, GunItem, separateItems, UtilityItem, type Droppable, type GroundItem } from "./entities/item.ts";
 import {
   ARMOR_SPECS,
@@ -737,7 +737,7 @@ export class Game implements GameCtx {
     // the restart key. (Enter also gets swallowed while playing — harmless.)
     const over = this.gamemode.hud(this)?.over ?? false;
     if (over) {
-      if (isDown("enter")) {
+      if (isDown("Enter")) {
         if (!this.enterDown) this.reset();
         this.enterDown = true;
         return;
@@ -760,21 +760,21 @@ export class Game implements GameCtx {
     }
 
     if (canControl) {
-      if (isDown("1")) this.player.equip("primary");
-      if (isDown("2")) this.player.equip("secondary");
-      if (isDown("3")) this.player.equip("hand");
-      if (isDown("r")) this.player.reload();
+      if (isAction("primary")) this.player.equip("primary");
+      if (isAction("secondary")) this.player.equip("secondary");
+      if (isAction("melee")) this.player.equip("hand");
+      if (isAction("reload")) this.player.reload();
 
       // X: cancel a timed action (a reload — including a per-round auto-cycle — or
       // a utility use), so you can break off and fire/switch.
-      if (isDown("x")) {
+      if (isAction("cancel")) {
         if (!this.xDown) this.player.cancelAction();
         this.xDown = true;
       } else this.xDown = false;
 
       // Slot 4: equip the belt from another slot; press again on it to cycle to
       // the next carried utility (so a player can hold several kinds).
-      if (isDown("4")) {
+      if (isAction("utility")) {
         if (!this.fourDown) {
           if (this.player.equippedSlot === "utility") this.player.cycleUtility();
           else this.player.equipUtility();
@@ -782,12 +782,12 @@ export class Game implements GameCtx {
         this.fourDown = true;
       } else this.fourDown = false;
 
-      if (isDown("e")) {
+      if (isAction("interact")) {
         if (!this.eDown) this.interact();
         this.eDown = true;
       } else this.eDown = false;
 
-      if (isDown("q")) {
+      if (isAction("drop")) {
         if (!this.qDown) {
           // Drop what's in hand: the held utility, or else the equipped weapon.
           if (this.player.holdingUtility) this.dropFromHud("utility");
@@ -796,7 +796,7 @@ export class Game implements GameCtx {
         this.qDown = true;
       } else this.qDown = false;
 
-      if (pointer.rightDown) {
+      if (isAction("dropHud")) {
         if (!this.rmbDown) {
           const kind = hudHitTest(mouse, window.innerWidth, window.innerHeight, this.player);
           if (kind) this.dropFromHud(kind);
@@ -804,11 +804,11 @@ export class Game implements GameCtx {
         this.rmbDown = true;
       } else this.rmbDown = false;
 
-      if (isDown("j")) {
+      if (isDown("KeyJ")) {
         if (!this.jDown) this.player._takeDamage(22);
         this.jDown = true;
       } else this.jDown = false;
-      if (isDown("k")) {
+      if (isDown("KeyK")) {
         if (!this.kDown) this.player._heal(10);
         this.kDown = true;
       } else this.kDown = false;
@@ -876,7 +876,7 @@ export class Game implements GameCtx {
         const tgun = veh.turretGunForSeat(seat);
         const f = this.aimingGun().spec.fire;
         if (f) {
-          const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
+          const wantFire = f.auto ? isAction("fire") : isAction("fire") && !this.prevDown;
           if (wantFire) {
             if (tgun) veh.fireTurret(seat, this.world, this.player);
             else this.player.fire(this.world, this.characters);
@@ -884,16 +884,16 @@ export class Game implements GameCtx {
         }
       } else if (this.player.holdingUtility) {
         // Click begins using the selected healing item (not a punch/shot).
-        if (pointer.down && !this.prevDown) this.player.startUse();
+        if (isAction("fire") && !this.prevDown) this.player.startUse();
       } else {
         const f = this.player.gun.spec.fire;
         if (f) {
-          const wantFire = f.auto ? pointer.down : pointer.down && !this.prevDown;
+          const wantFire = f.auto ? isAction("fire") : isAction("fire") && !this.prevDown;
           if (wantFire) this.player.fire(this.world, this.characters);
         }
       }
     }
-    this.prevDown = pointer.down;
+    this.prevDown = isAction("fire");
 
     profiler.begin("ai");
     const ai: AiContext = {

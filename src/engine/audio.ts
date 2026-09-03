@@ -65,8 +65,8 @@ const PARAM_EVENTS_SOFT = 20;
  *  per-sound gain that distance falloff, coalescing and the MIN_GAIN/MAX_VOICES
  *  culling all read. Turning it down therefore makes the game quieter without
  *  changing WHICH sounds play or how they mix; the whole scheme above is
- *  unaffected. Ships at half: full scale is loud on a laptop, and there is no
- *  in-game slider yet — see setMasterVolume. */
+ *  unaffected. Ships at half: full scale is loud on a laptop. The settings
+ *  menu's volume slider drives it (settings.ts -> setMasterVolume). */
 export const DEFAULT_MASTER_VOLUME = 0.5;
 let masterVolume = DEFAULT_MASTER_VOLUME;
 
@@ -216,8 +216,8 @@ export function masterVolume0to1(): number {
  * one — and remembered either way, so a context built later (first unlock, or a
  * resetAudioContext) comes up at the same level.
  *
- * No UI reaches this yet; it is here so the eventual settings menu has one place
- * to call, and so the console can tune it in the meantime.
+ * Called by applySettings() (settings.ts) at boot and from the settings menu's
+ * volume slider; the console can call it directly too.
  */
 export function setMasterVolume(v: number): void {
   masterVolume = Math.max(0, Math.min(1, v));

@@ -12,7 +12,7 @@ import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
 import { loadLevel, SKINS, type LevelMeta, type TeamConfig } from "./world/level.ts";
 import { LEVELS } from "./world/levels.ts";
-import { initInput, isDown, mouse } from "./engine/input.ts";
+import { initInput, isAction, isDown, keyLabel, mouse } from "./engine/input.ts";
 import {
   audioLatencyMs,
   preload,
@@ -28,6 +28,8 @@ import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
 import { buildRespawnMenu, teardownRespawnMenu } from "./ui/respawn.ts";
+import { buildSettingsMenu, type SettingsMenu } from "./ui/settings.ts";
+import { loadSettings, settings } from "./settings.ts";
 import { domPointStyle, Minimap } from "./ui/minimap.ts";
 import { angleOf, dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { assetImage } from "./entities/item.ts";
@@ -57,6 +59,8 @@ window.addEventListener("resize", resize);
 resize();
 
 initInput(canvas);
+// Stored player settings (volume, crosshair) — applied before the first sound.
+loadSettings();
 
 // The browser keeps audio suspended until a user gesture, so unlock on the first
 // key/click (idempotent thereafter) and warm the default gunshot so shot one isn't
@@ -336,6 +340,35 @@ if (editor) {
     if (e.key === "Escape" && game) stopPlaytest();
   });
 }
+
+// The settings menu (Esc), play mode only: in an editor session Esc already
+// means "stop the playtest" / "cancel", and the editor is a dev tool anyway.
+// The match pauses while it is open — see frame().
+const settingsMenu: SettingsMenu | null = editor ? null : buildSettingsMenu();
+
+// The top-left controls hint, written from the live bindings so it never
+// shows a key the player has moved. Redone whenever the menu closes.
+const hintEl = document.getElementById("hud");
+function renderHint(): void {
+  if (!hintEl) return;
+  const b = settings.binds;
+  const k = keyLabel;
+  const moveKeys = [b.moveUp, b.moveLeft, b.moveDown, b.moveRight].map(k);
+  const move = moveKeys.every((n) => n.length === 1) ? moveKeys.join("") : moveKeys.join(" ");
+  const lines = [
+    `${move} to move · ${k(b.fire)} to shoot · ${k(b.reload)} to reload · ${k(b.drop)}/${k(b.dropHud)} to drop`,
+    `${k(b.primary)} primary / ${k(b.secondary)} secondary / ${k(b.melee)} melee`,
+    "Esc settings",
+    "made by stanley li",
+  ];
+  hintEl.replaceChildren();
+  lines.forEach((text, i) => {
+    if (i > 0) hintEl.append(document.createElement("br"));
+    hintEl.append(document.createTextNode(text));
+  });
+}
+renderHint();
+let settingsWasOpen = false;
 
 const screenCenter = (): Vec2 => vec(window.innerWidth / 2, window.innerHeight / 2);
 
@@ -1162,14 +1195,14 @@ function render(): void {
       spread: game.crosshairSpread,
       interactableLabel: game.interactLabel(),
       gamemode: gh ?? undefined,
-      showScoreboard: isDown("tab"),
+      showScoreboard: isAction("scoreboard"),
       killFeed: game.killFeed,
       minimap: minimap ?? undefined,
       characters,
       deaths: game.minimapDeaths,
     });
     profiler.end("render.hud");
-    updateRespawnMenu?.(gh, isDown("tab"));
+    updateRespawnMenu?.(gh, isAction("scoreboard"));
   }
 
   if (profiler.enabled) drawProfilerOverlay(ctx, window.innerWidth);
@@ -1306,7 +1339,7 @@ function editorGuard(fn: () => void): void {
 
 function frame(now: number): void {
   // P toggles the profiler overlay (and resets the accumulators).
-  if (isDown("p")) {
+  if (isDown("KeyP")) {
     if (!pDown) {
       profiler.enabled = !profiler.enabled;
       profiler.reset();
@@ -1320,6 +1353,12 @@ function frame(now: number): void {
   last = now;
   // Guard against huge jumps (e.g. tab was backgrounded).
   if (accumulator > 250) accumulator = 250;
+  // Settings open: the match is paused. Drop the time rather than bank it, so
+  // closing the menu doesn't replay a burst of catch-up ticks.
+  const settingsOpen = settingsMenu?.isOpen() ?? false;
+  if (settingsOpen) accumulator = 0;
+  if (settingsWasOpen && !settingsOpen) renderHint(); // bindings may have changed
+  settingsWasOpen = settingsOpen;
 
   profiler.begin("update");
   const tUpdate = performance.now();

@@ -168,13 +168,13 @@ export class Editor {
     // Fly (noclip): direct position control, scaled so it feels the same at any zoom.
     const axis = moveAxis();
     if (axis.x !== 0 || axis.y !== 0) {
-      const sp = (isDown("shift") ? 26 : 11) * this.zoom;
+      const sp = ((isDown("ShiftLeft") || isDown("ShiftRight")) ? 26 : 11) * this.zoom;
       this.player.pos = add(this.player.pos, scale(norm(axis), sp));
     }
 
     // z level: [ down, ] up (edge-triggered so one press = one level).
-    const up = isDown("]");
-    const down = isDown("[");
+    const up = isDown("BracketRight");
+    const down = isDown("BracketLeft");
     if (up && !this.prevZUp) this.setZ(this.player.z + 1);
     if (down && !this.prevZDown) this.setZ(this.player.z - 1);
     this.prevZUp = up;
