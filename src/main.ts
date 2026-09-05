@@ -1068,6 +1068,7 @@ function render(): void {
   let sight: Path2D | null = null;
   let unseen: Path2D | null = null;
   let offHalves: Path2D | null = null;
+  const nearHalves = new Map<number, Path2D>();
   if (game && sightMask) {
     // The aimed weapon's vision cone, if it has one (see GunSpec.visionCone).
     const coneDeg = game.aimingGun().spec.visionCone;
@@ -1082,13 +1083,24 @@ function render(): void {
     addPoly(sight, poly);
     unseen = new Path2D(sight);
     unseen.rect(vpX, vpY, vpW, vpH); // with evenodd: the viewport minus the polygon
-    // Flights touching the player's level draw with it (see stairLevel), but
-    // only their near half is on it; the far half is darkened like the level
-    // it leads to.
+    // A flight touching the player's level is half on it and half off it,
+    // whichever level's pass draws it (always its lower end's — moving it up
+    // to the player's pass would paint it over whoever stands on its lower
+    // half). Drawn in the player's pass: darken the far half. Drawn in a lower
+    // level's pass: spare the near half from that level's blanket darkening
+    // and treat it like the player's level instead (dark only outside the
+    // polygon).
     for (const s of world.stairs) {
       if ((s.zAtMin !== player.z && s.zAtMax !== player.z) || !rectInView(s)) continue;
-      offHalves = offHalves ?? new Path2D();
-      addPoly(offHalves, stairOffHalf(s, player.z));
+      const lower = Math.min(s.zAtMin, s.zAtMax);
+      if (lower === player.z) {
+        offHalves = offHalves ?? new Path2D();
+        addPoly(offHalves, stairOffHalf(s, player.z));
+      } else {
+        let near = nearHalves.get(lower);
+        if (!near) nearHalves.set(lower, (near = new Path2D()));
+        addPoly(near, stairOffHalf(s, lower)); // the half NOT on the lower level = the player's
+      }
     }
     // The background is a level too (its infinite floor's): unseen outside the
     // polygon when that is the player's level, unseen entirely otherwise.
@@ -1096,13 +1108,6 @@ function render(): void {
     if (bgFloor && bgFloor.level === player.z) ctx.fill(unseen, "evenodd");
     else ctx.fillRect(vpX, vpY, vpW, vpH);
   }
-  /** Where a staircase draws: with its lower end's level — unless the sight
-   *  mask is on and it touches the player's level, in which case it is part
-   *  of what they can see (the one thing that spans levels) and draws with
-   *  their level, masked by the polygon instead of darkened whole. */
-  const stairLevel = (s: Stairs): number =>
-    sight && (s.zAtMin === player.z || s.zAtMax === player.z) ? player.z : Math.min(s.zAtMin, s.zAtMax);
-
   // Painter's order by level, lowest first: higher floors composite over lower
   // ones, so walking under a balcony puts it over your head for free.
   profiler.begin("render.levels");
@@ -1113,7 +1118,7 @@ function render(): void {
       if (!f.infinite && f.level === z && f.alpha > 0.01 && !f.invisible && rectInView(f)) drawFloor(f);
     }
     for (const s of world.stairs) {
-      if (stairLevel(s) === z && s.alpha > 0.01 && rectInView(s)) drawStairs(s);
+      if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01 && rectInView(s)) drawStairs(s);
     }
     // `live`: the pass that draws everything. The sight mask's other pass draws
     // only what the player could know is there without seeing it — the level
@@ -1296,8 +1301,23 @@ function render(): void {
     // Darken it where it can't be seen — source-atop only touches what it drew.
     ctx.globalCompositeOperation = "source-atop";
     ctx.fillStyle = UNSEEN_TINT;
-    if (z !== player.z) {
+    const near = nearHalves.get(z);
+    if (z !== player.z && !near) {
       ctx.fillRect(vpX, vpY, vpW, vpH);
+    } else if (z !== player.z) {
+      // Another level, but it drew flights whose near half is the player's:
+      // blanket-darken everything except those halves...
+      ctx.save();
+      const rest = new Path2D(near!);
+      rest.rect(vpX, vpY, vpW, vpH);
+      ctx.clip(rest, "evenodd");
+      ctx.fillRect(vpX, vpY, vpW, vpH);
+      ctx.restore();
+      // ...and darken the halves only where the polygon doesn't reach.
+      ctx.save();
+      ctx.clip(near!);
+      ctx.fill(unseen!, "evenodd");
+      ctx.restore();
     } else {
       ctx.fill(unseen!, "evenodd");
       // The off halves of the flights, where they fall INSIDE the polygon (the
