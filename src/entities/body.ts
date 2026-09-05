@@ -4,6 +4,7 @@ import { resolveCircleVsObstacle } from "../engine/collision.ts";
 import { UNARMED } from "./guns.ts";
 import { add, angleOf, fromAngle, perp, scale, type Vec2 } from "../engine/vec.ts";
 import type { Obstacle } from "../world/world.ts";
+import type { TeamId } from "./team.ts";
 
 const LIN_FRICTION = 0.9; // per-tick velocity retention as the corpse slides to rest
 const ANG_FRICTION = 0.92; // ...and for its spin
@@ -55,6 +56,9 @@ export class Body {
   angle: number; // facing, radians
   angularVel: number;
   readonly skin: Skin;
+  /** The side it died on. The sight mask keeps a teammate's corpse visible
+   *  where it hides an enemy's — the same rule as for the living. */
+  readonly team: TeamId;
   /** Ticks this corpse has existed (for timed despawn — see lifetime). */
   age = 0;
   /** Ticks until it despawns, or null to linger forever. Set by the session per
@@ -68,6 +72,7 @@ export class Body {
     vel: Vec2,
     angularVel: number,
     skin: Skin,
+    team: TeamId,
   ) {
     this.pos = pos;
     this.z = z;
@@ -75,6 +80,7 @@ export class Body {
     this.vel = vel;
     this.angularVel = angularVel;
     this.skin = skin;
+    this.team = team;
   }
 
   /** Spawn a body where a character just died, inheriting its position & facing.
@@ -92,6 +98,7 @@ export class Body {
       scale(launchDir, speed),
       spin,
       darkenSkin(c.skin, DARKEN),
+      c.team,
     );
   }
 

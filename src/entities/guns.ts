@@ -221,6 +221,11 @@ export interface GunSpec {
   penetration?: number;
   /** Camera zoom while equipped. Higher = more vision; longer-range weapons see further. */
   zoom: number;
+  /** Under a level's sight mask (meta.visibility): the full angular width, in
+   *  degrees, of the cone the player can see while aiming this. Outside it
+   *  only a small grace circle around the player shows (see world/sight.ts).
+   *  Omitted = all round. Narrower for weapons you look down. */
+  visionCone?: number;
   /** Movement speed multiplier while equipped (CSGO-style: heavier guns are slower). */
   speed: number;
 
@@ -355,6 +360,7 @@ export const M16: GunSpec = {
   armorPen: DEFAULT_AP_MED,
   penetration: 23,
   zoom: 2.3,
+  visionCone: 60,
   speed: 0.85,
   fire: {
     delay: 7,
@@ -418,6 +424,7 @@ export const M4A1S: GunSpec = {
   armorPen: DEFAULT_AP_MED,
   penetration: 23,
   zoom: 2.3,
+  visionCone: 60,
   speed: 0.85,
   fire: {
     delay: 8,
@@ -477,6 +484,7 @@ export const AK47: GunSpec = {
   armorPen: DEFAULT_AP_MHIGH,
   penetration: 30,
   zoom: 2.3,
+  visionCone: 60,
   speed: 0.85,
   fire: {
     delay: 8,
@@ -537,6 +545,7 @@ export const MP5: GunSpec = {
   armorPen: DEFAULT_AP_LOW,
   penetration: 15,
   zoom: 2.1,
+  visionCone: 90,
   speed: 0.90,
   fire: {
     delay: 6,
@@ -599,6 +608,7 @@ export const SCAR17: GunSpec = {
   armorPen: DEFAULT_AP_MHIGH,
   penetration: 30,
   zoom: 2.5,
+  visionCone: 45,
   speed: 0.80,
   fire: {
     delay: 11,
@@ -688,6 +698,7 @@ export const Scout: GunSpec = {
   armorPen: DEFAULT_AP_MHIGH,
   penetration: 40,
   zoom: 2.7,
+  visionCone: 30,
   speed: 0.75,
   stagger: { mul: 0.5, ticks: 30 },
   fire: {
@@ -774,6 +785,7 @@ export const AWM: GunSpec = {
   armorPen: DEFAULT_AP_HIGH,
   penetration: 50,
   zoom: 2.7,
+  visionCone: 30,
   speed: 0.65,
   stagger: { mul: 0.5, ticks: 45 },
   fire: {
@@ -842,6 +854,7 @@ export const MP220: GunSpec = {
   shotgunPellets: 9,
   shotgunSpread: 2.5,
   zoom: 1.9,
+  visionCone: 105,
   speed: 0.925,
   fire: {
     delay: 10,
@@ -919,6 +932,7 @@ export const Mossberg500: GunSpec = {
   shotgunPellets: 9,
   shotgunSpread: 2.25,
   zoom: 1.9,
+  visionCone: 105,
   speed: 0.85,
   fire: {
     delay: 45, // pump action between shots
@@ -997,6 +1011,7 @@ export const M249: GunSpec = {
   armorPen: DEFAULT_AP_MED,
   penetration: 23,
   zoom: 2.3,
+  visionCone: 60,
   speed: 0.75,
   fire: {
     delay: 6,
@@ -1066,6 +1081,7 @@ export const RPG: GunSpec = {
   armorPen: DEFAULT_AP_XHIGH,
   penetration: 0, // unused: launchers spawn a projectile, not a bullet
   zoom: 2.3,
+  visionCone: 60,
   speed: 0.65,
   careful: true, // AI won't loose a rocket into a corner or a squadmate
   stagger: { mul: 0.5, ticks: 60 }, // the blast rattles anyone it catches
@@ -1137,6 +1153,7 @@ export const M79: GunSpec = {
   armorPen: DEFAULT_AP_HIGH,
   penetration: 0, // unused: launchers spawn a projectile, not a bullet
   zoom: 2.1,
+  visionCone: 75,
   speed: 0.80,
   careful: true, // AI won't loose a rocket into a corner or a squadmate
   stagger: { mul: 0.5, ticks: 45 }, // a lighter jolt than the RPG
@@ -1230,6 +1247,7 @@ export const Golden_M249: GunSpec = {
   armorPen: DEFAULT_AP_MED,
   penetration: 23,
   zoom: 2.3,
+  visionCone: 60,
   speed: 0.75,
   fire: {
     delay: 8,
@@ -1289,6 +1307,7 @@ export const M9: GunSpec = {
   armorPen: DEFAULT_AP_LOW,
   penetration: 15,
   zoom: 1.9,
+  visionCone: 105,
   speed: 0.925,
   fire: {
     delay: 8,
@@ -1348,6 +1367,7 @@ export const Skorpion: GunSpec = {
   armorPen: DEFAULT_AP_LOW,
   penetration: 15,
   zoom: 1.9,
+  visionCone: 90,
   speed: 0.925,
   fire: {
     delay: 7,
@@ -1406,6 +1426,7 @@ export const Uzi: GunSpec = {
   armorPen: DEFAULT_AP_LOW,
   penetration: 15,
   zoom: 1.9,
+  visionCone: 90,
   speed: 0.925,
   fire: {
     delay: 7,
@@ -1461,6 +1482,7 @@ export const Colt44: GunSpec = {
   armorPen: DEFAULT_AP_HIGH,
   penetration: 30,
   zoom: 2.3,
+  visionCone: 75,
   speed: 0.85,
   fire: {
     delay: 20,
@@ -1524,6 +1546,7 @@ export const USPS: GunSpec = {
   armorPen: DEFAULT_AP_MLOW,
   penetration: 23,
   zoom: 2.1,
+  visionCone: 90,
   speed: 0.925,
   fire: {
     delay: 8,
@@ -1581,6 +1604,7 @@ export const Deagle: GunSpec = {
   armorPen: DEFAULT_AP_HIGH,
   penetration: 35,
   zoom: 2.1,
+  visionCone: 60,
   speed: 0.85,
   fire: {
     delay: 15,
@@ -1637,6 +1661,7 @@ export const Golden_Deagle: GunSpec = {
   armorPen: DEFAULT_AP_HIGH,
   penetration: 35,
   zoom: 2.2,
+  visionCone: 60,
   speed: 0.8,
   fire: {
     delay: 15,
@@ -1688,6 +1713,7 @@ export const UNARMED: GunSpec = {
   armorPen: DEFAULT_AP_MHIGH,
   penetration: 0, // a fist punches nobody through a wall
   zoom: 1.9,
+  visionCone: 120,
   speed: 1.0,
   fire: {
     delay: 16, // punch cadence (ticks between hits)

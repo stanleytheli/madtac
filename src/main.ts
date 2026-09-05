@@ -31,8 +31,10 @@ import { buildRespawnMenu, teardownRespawnMenu } from "./ui/respawn.ts";
 import { buildSettingsMenu, type SettingsMenu } from "./ui/settings.ts";
 import { loadSettings, settings } from "./settings.ts";
 import { domPointStyle, Minimap } from "./ui/minimap.ts";
-import { angleOf, dist, norm, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { add, angleOf, dist, norm, rotate, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { assetImage } from "./entities/item.ts";
+import { areHostile } from "./entities/team.ts";
+import { VISION_GRACE_R, visibilityPolygon, type SightCone } from "./world/sight.ts";
 import {
   enclosureCap,
   floorVisible,
@@ -45,13 +47,21 @@ import {
 } from "./world/world.ts";
 
 const canvas = document.getElementById("game") as HTMLCanvasElement;
-const ctx = canvas.getContext("2d")!;
+const mainCtx = canvas.getContext("2d")!;
+// The context every draw helper paints to. Normally the screen; the sight mask
+// (see render) points it at an offscreen canvas for one level at a time, so
+// that level can be darkened exactly where it painted before it is composited.
+let ctx: CanvasRenderingContext2D = mainCtx;
+const offCanvas = document.createElement("canvas");
+const offCtx = offCanvas.getContext("2d")!;
 
 let dpr = 1;
 function resize(): void {
   dpr = window.devicePixelRatio || 1;
   canvas.width = Math.floor(window.innerWidth * dpr);
   canvas.height = Math.floor(window.innerHeight * dpr);
+  offCanvas.width = canvas.width;
+  offCanvas.height = canvas.height;
   canvas.style.width = window.innerWidth + "px";
   canvas.style.height = window.innerHeight + "px";
 }
@@ -221,6 +231,14 @@ const armorBar = new HealthBar({ width: 450, height: 20, fillColor: "#33d6e0", r
 // meta or auto-fit. Play mode only — the editor has its own world overview.
 let minimap = game ? new Minimap(world, meta.minimapSize) : null;
 
+/** Whether a match renders with the line-of-sight mask: the level's
+ *  meta.visibility, or a ?visibility=true|false override for trying it out. */
+function sightFlag(m: LevelMeta): boolean {
+  const o = strParam("visibility");
+  return o !== undefined ? o === "true" : !!m.visibility;
+}
+let sightMask = game ? sightFlag(meta) : false;
+
 // The post-death loadout screen (see ui/respawn.ts). Only modes with a
 // customizable respawn (the team modes) build one. Rebound per playtest, so the
 // throwaway match gets its own respawn menu (or none).
@@ -310,6 +328,7 @@ function startPlaytest(): void {
   bodies = g.bodies;
   camera = g.camera;
   minimap = new Minimap(g.world, pmeta.minimapSize);
+  sightMask = sightFlag(pmeta);
   updateRespawnMenu = g.gamemode.setPlayerLoadout ? buildRespawnMenu(g) : null;
   editor.setSuspended(true);
   showPlayChip(true);
@@ -325,6 +344,7 @@ function stopPlaytest(): void {
   bodies = editorBodies;
   camera = { size: editorPlayer!.gun.spec.zoom };
   minimap = null;
+  sightMask = false;
   updateRespawnMenu = null;
   teardownRespawnMenu(); // drop the match's respawn menu if it built one
   showPlayChip(false);
@@ -883,6 +903,23 @@ const MASK_EPS = 1.5;
 // Visible stairs mask generously, covering their edge-mounted railings.
 const STAIR_MASK_PAD = 10;
 
+/** What the sight mask paints over everything the player can't see. */
+const UNSEEN_TINT = "rgba(0, 0, 0, 0.35)";
+
+/** The half of a flight that is NOT on level `z` (see stairZ: the rect splits
+ *  at its midpoint along the climb axis, the min-coordinate half being zAtMin).
+ *  The sight mask darkens this half — a flight is half on your level and half
+ *  off it, and you can't see the off half any more than the level it leads to. */
+function stairOffHalf(s: Stairs, z: number): Poly {
+  const farIsMax = z === s.zAtMin; // standing at the min end: the max half is away
+  const sign = farIsMax ? 1 : -1;
+  const off = s.axis === "x" ? vec((sign * s.w) / 4, 0) : vec(0, (sign * s.h) / 4);
+  const center = add(s.pos, s.angle ? rotate(off, s.angle) : off);
+  return s.axis === "x"
+    ? rectCorners(center, s.w / 2, s.h, s.angle)
+    : rectCorners(center, s.w, s.h / 2, s.angle);
+}
+
 /** Append a convex poly (a surface's — possibly rotated — rect) to a path. */
 function addPoly(path: Path2D, poly: Poly): void {
   path.moveTo(poly[0].x, poly[0].y);
@@ -1023,20 +1060,68 @@ function render(): void {
   // overlay (domination points), the minimap, and the HUD panel.
   const gh: GamemodeHud | null = game ? game.gamemode.hud(game) : null;
 
+  // Sight mask (meta.visibility): the player sees only what a straight line on
+  // their own level reaches. Everything else — their level outside that
+  // polygon, and every other level whole — draws static (no enemies, items or
+  // rounds) and darkened. Each level renders to an offscreen canvas so the
+  // darkening lands exactly on what that level painted, once; see sight.ts.
+  let sight: Path2D | null = null;
+  let unseen: Path2D | null = null;
+  let offHalves: Path2D | null = null;
+  if (game && sightMask) {
+    // The aimed weapon's vision cone, if it has one (see GunSpec.visionCone).
+    const coneDeg = game.aimingGun().spec.visionCone;
+    const cone: SightCone | undefined =
+      coneDeg !== undefined && coneDeg < 360
+        ? { dir: player.forward, halfAngle: (coneDeg * Math.PI) / 360, grace: VISION_GRACE_R }
+        : undefined;
+    const poly = profiler.measure("render.sight", () =>
+      visibilityPolygon(world, player.pos, player.z, { minx: vpX, miny: vpY, maxx: vpX + vpW, maxy: vpY + vpH }, cone),
+    );
+    sight = new Path2D();
+    addPoly(sight, poly);
+    unseen = new Path2D(sight);
+    unseen.rect(vpX, vpY, vpW, vpH); // with evenodd: the viewport minus the polygon
+    // Flights touching the player's level draw with it (see stairLevel), but
+    // only their near half is on it; the far half is darkened like the level
+    // it leads to.
+    for (const s of world.stairs) {
+      if ((s.zAtMin !== player.z && s.zAtMax !== player.z) || !rectInView(s)) continue;
+      offHalves = offHalves ?? new Path2D();
+      addPoly(offHalves, stairOffHalf(s, player.z));
+    }
+    // The background is a level too (its infinite floor's): unseen outside the
+    // polygon when that is the player's level, unseen entirely otherwise.
+    ctx.fillStyle = UNSEEN_TINT;
+    if (bgFloor && bgFloor.level === player.z) ctx.fill(unseen, "evenodd");
+    else ctx.fillRect(vpX, vpY, vpW, vpH);
+  }
+  /** Where a staircase draws: with its lower end's level — unless the sight
+   *  mask is on and it touches the player's level, in which case it is part
+   *  of what they can see (the one thing that spans levels) and draws with
+   *  their level, masked by the polygon instead of darkened whole. */
+  const stairLevel = (s: Stairs): number =>
+    sight && (s.zAtMin === player.z || s.zAtMax === player.z) ? player.z : Math.min(s.zAtMin, s.zAtMax);
+
   // Painter's order by level, lowest first: higher floors composite over lower
   // ones, so walking under a balcony puts it over your head for free.
   profiler.begin("render.levels");
-  for (const z of presentLevels()) {
+  const drawLevel = (z: number): void => {
     // Surfaces draw alpha-eased and unmasked: a fading roof lingers translucent
     // while the objects it hid stay masked sharply below.
     for (const f of world.floors) {
       if (!f.infinite && f.level === z && f.alpha > 0.01 && !f.invisible && rectInView(f)) drawFloor(f);
     }
     for (const s of world.stairs) {
-      if (Math.min(s.zAtMin, s.zAtMax) === z && s.alpha > 0.01 && rectInView(s)) drawStairs(s);
+      if (stairLevel(s) === z && s.alpha > 0.01 && rectInView(s)) drawStairs(s);
     }
-    const drawObjects = (): void =>
+    // `live`: the pass that draws everything. The sight mask's other pass draws
+    // only what the player could know is there without seeing it — the level
+    // itself, vehicles, teammates and their corpses — and no enemies, enemy
+    // corpses, items or rounds.
+    const drawObjectsIn = (live: boolean): void =>
       profiler.measure("render.draw", () => {
+        const showChar = (c: Character): boolean => live || c === player || !areHostile(c.team, player.team);
         // An obstacle's optional visibleFrom/invisible are purely cosmetic
         // (second-story walls hidden from the ground, invisible barriers) — it
         // still collides either way.
@@ -1045,13 +1130,16 @@ function render(): void {
         // that stands on it — corpses included.
         if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomRing(v);
 
-        for (const b of bodies) if (b.z === z && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
+        for (const b of bodies) {
+          if (b.z === z && (live || !areHostile(b.team, player.team)) && pointInView(b.pos, BODY_RADIUS)) b.draw(ctx);
+        }
 
         // Ground items, each highlighting itself when it's the one the player would
         // grab with E (drawn by the item, so the ring sits between its backdrop
         // disc and its sprite).
-        for (const it of world.items)
-          if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
+        if (live)
+          for (const it of world.items)
+            if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
 
         // Rounds sit between the two kinds of obstacle: OVER what they fly
         // through, UNDER what stops them. A fence (permeable) never stops a bullet
@@ -1079,14 +1167,16 @@ function render(): void {
         // behind it, so a tracer crossing them belongs in front. The heads —
         // which are the hitbox — come after, further down this pass.
         for (const c of characters) {
-          if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "limbs");
+          if (c.z === z && showChar(c) && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "limbs");
         }
-        drawBullets(z);
-        drawProjectiles(z);
+        if (live) {
+          drawBullets(z);
+          drawProjectiles(z);
+        }
         drawObstaclesWhere(false);
         // ...and the heads on top of the rounds, since that is what stops them.
         for (const c of characters) {
-          if (c.z === z && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "head");
+          if (c.z === z && showChar(c) && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "head");
         }
 
 
@@ -1099,7 +1189,7 @@ function render(): void {
         }
 
         // Enter-prompt ring on the seat the player would board with E.
-        if (game?.enterable && game.enterable.vehicle.z === z) {
+        if (live && game?.enterable && game.enterable.vehicle.z === z) {
           const sp = game.enterable.vehicle.seatWorld(game.enterable.seat);
           ctx.strokeStyle = "#3ddcff";
           ctx.lineWidth = 4;
@@ -1114,11 +1204,30 @@ function render(): void {
           if (v.z !== z || !aabbInView(v.aabb())) continue;
           for (const pw of v.worldParts()) if (pw.spec.over) drawVehiclePart(pw.box, pw.spec);
         }
-        drawParticles(ctx, world.particles, z);
+        if (live) drawParticles(ctx, world.particles, z);
         // ...and the letters over the top of the whole level, so a body standing
         // on a point never hides which point it is.
         if (gh?.points) for (const v of gh.points) if (v.z === z) drawDomLabel(v);
       });
+    /** One draw of this level's objects, under whatever clip the caller set.
+     *  With the sight mask on, the player's level is drawn live inside the
+     *  polygon and static outside it; any other level is static throughout. */
+    const drawObjects = (): void => {
+      if (!sight) {
+        drawObjectsIn(true);
+      } else if (z !== player.z) {
+        drawObjectsIn(false);
+      } else {
+        ctx.save();
+        ctx.clip(sight);
+        drawObjectsIn(true);
+        ctx.restore();
+        ctx.save();
+        ctx.clip(unseen!, "evenodd");
+        drawObjectsIn(false);
+        ctx.restore();
+      }
+    };
 
     // At and above the enclosure cap the world is hidden, except through the
     // stairwell shafts that pierce it — so from inside a bunker you still see
@@ -1137,7 +1246,7 @@ function render(): void {
         drawObjects();
         ctx.restore();
       }
-      continue;
+      return;
     }
 
     const m = profiler.measure("render.mask", () => levelMasks(z, rectInView));
@@ -1145,7 +1254,7 @@ function render(): void {
     if (m.visibleInf) {
       // A visible infinite floor (the ground) backs the whole level: no masking.
       drawObjects();
-      continue;
+      return;
     }
 
     // Pass A: draw everywhere except hidden-surface regions. An infinite hidden
@@ -1172,6 +1281,41 @@ function render(): void {
       drawObjects();
       ctx.restore();
     }
+  };
+  for (const z of presentLevels()) {
+    if (!sight) {
+      drawLevel(z);
+      continue;
+    }
+    // Paint the level offscreen, same size and camera transform as the screen.
+    ctx = offCtx;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, offCanvas.width, offCanvas.height);
+    ctx.setTransform(mainCtx.getTransform());
+    drawLevel(z);
+    // Darken it where it can't be seen — source-atop only touches what it drew.
+    ctx.globalCompositeOperation = "source-atop";
+    ctx.fillStyle = UNSEEN_TINT;
+    if (z !== player.z) {
+      ctx.fillRect(vpX, vpY, vpW, vpH);
+    } else {
+      ctx.fill(unseen!, "evenodd");
+      // The off halves of the flights, where they fall INSIDE the polygon (the
+      // fill above already took care of the rest, and nothing darkens twice).
+      if (offHalves) {
+        ctx.save();
+        ctx.clip(sight);
+        ctx.fill(offHalves);
+        ctx.restore();
+      }
+    }
+    ctx.globalCompositeOperation = "source-over";
+    // ...and composite it onto the screen.
+    ctx = mainCtx;
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(offCanvas, 0, 0);
+    ctx.restore();
   }
 
   profiler.end("render.levels");

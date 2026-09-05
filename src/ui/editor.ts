@@ -890,6 +890,18 @@ export class Editor {
     mmRow.append(this.mk("span", "opacity:0.8;", "size"), mmIn, this.mk("span", "opacity:0.6;", "world px (blank=auto)"));
     panel.append(mmRow);
 
+    // Visibility: line-of-sight rendering (see LevelMeta.visibility). Level-wide.
+    panel.append(this.header("visibility"));
+    const visRow = this.mk("div", "display:flex;align-items:center;gap:6px;");
+    const visIn = this.mk("input", "");
+    visIn.type = "checkbox";
+    visIn.checked = !!this.state.meta.visibility;
+    visIn.onchange = () => {
+      this.state.meta.visibility = visIn.checked ? true : undefined;
+    };
+    visRow.append(visIn, this.mk("span", "opacity:0.8;", "line-of-sight mask (hide what the player can't see)"));
+    panel.append(visRow);
+
     // Inspector (rebuilt per selection).
     panel.append(this.header("selection"));
     // The infinite background floor has no rect to click in the world, so it
