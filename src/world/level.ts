@@ -323,6 +323,7 @@ const obstacleLook: FieldDef[] = [
   prop("invisible", "checkbox"),
   prop("visibleFrom", "json"),
   shrapnelField,
+  prop("hitSound", "text"),
   thicknessMulField,
   prop("fill", "color"),
   prop("stroke", "color"),

@@ -157,6 +157,7 @@ export class Game implements GameCtx {
     this.world.grid = new ObstacleGrid(this.world.obstacles);
     this.nav = new NavGraph(this.world);
     this.player = this.buildPlayer();
+    this.world.localPlayer = this.player; // hit/hurt feedback sounds (world.ts)
     this.camera = { size: this.player.gun.spec.zoom };
     this.start();
   }

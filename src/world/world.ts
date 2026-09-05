@@ -20,6 +20,7 @@ import type { Vehicle } from "../entities/vehicle.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 import { add, deg2rad, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { playSound } from "../engine/audio.ts";
+import { METAL_HIT_SOUND, OBSTACLE_HIT_SOUND, PLAYER_HIT_SOUND, PLAYER_HURT_SOUND, WOOD_HIT_SOUND } from "./hitsounds.ts";
 
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at
@@ -119,6 +120,11 @@ export interface Obstacle {
    *  like `fill`. Omitted = `particle`, the debris its kind comes with. (The
    *  metal barrel needs no pick — sparks are already its own `particle`.) */
   shrapnel?: string;
+  /** What a bullet sounds like landing on it — a served audio file name (see
+   *  hitsounds.ts). Omitted = a default by kind: metal barrels clang, crates
+   *  and wooden barrels knock, the rest is stone (see obstacleHitSound). The
+   *  editor can set any object's. */
+  hitSound?: string;
 }
 
 /**
@@ -462,6 +468,10 @@ export interface Hittable {
     gun?: GunSpec | null,
     /** Optional so a bare Hittable — a test dummy, a future prop — can ignore it. */
     marks?: HitMarks,
+    /** The attack's own travel direction, when it differs from `dir` — a blast
+     *  knocks you outward from its centre, but the rocket came from somewhere
+     *  else, and that is what the damage indicator should point at. */
+    heading?: Vec2,
   ): void;
   /** Optional: take a movement stagger (a staggering weapon hit). Optional so
    *  non-character Hittables (test dummies, future props) simply ignore it. */
@@ -551,6 +561,32 @@ export interface World {
    *  from the static geometry. Absent in the editor / before it's built — then
    *  losClear falls back to scanning the obstacle array. */
   grid?: ObstacleGrid;
+  /** The local player, for the hit/hurt feedback sounds (see hitFeedback).
+   *  Set by the Game; absent in the editor and in headless scripts. */
+  localPlayer?: Hittable;
+}
+
+/** The sound a round makes landing on `o`: its own, else by kind. */
+function obstacleHitSound(o: Obstacle): string {
+  if (o.hitSound) return o.hitSound;
+  if (o.style === "barrel_metal") return METAL_HIT_SOUND;
+  if (o.style === "barrel_wood" || o.cross) return WOOD_HIT_SOUND; // crates are the cross-planked ones
+  return OBSTACLE_HIT_SOUND;
+}
+
+/** Play an impact at a world point. */
+function playImpact(sound: string, at: Vec2, z: number): void {
+  playSound(sound, { pos: at, z, pitchVar: 0.08 });
+}
+
+/** The local player's hit feedback: a hurt sound when the damage landed on
+ *  THEM, a hit-confirm when it was theirs and landed on someone else. Flat —
+ *  it is feedback in their ears, not a sound in the world. */
+function hitFeedback(w: World, victim: Hittable, attacker: Hittable | null): void {
+  const me = w.localPlayer;
+  if (!me) return;
+  if (victim === me) playSound(PLAYER_HURT_SOUND);
+  else if (attacker === me) playSound(PLAYER_HIT_SOUND);
 }
 
 /**
@@ -1133,6 +1169,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           // round's energy went through the wall rather than into it.
           spawnParticles(w.particles, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT);
           spawnParticles(w.particles, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT);
+          playImpact(obstacleHitSound(struck), pen.entry, b.z);
           // Fly on from the far face: everything nearer than that is the wall it
           // just crossed, and it has already been charged for it.
           skipUntil = Math.max(
@@ -1143,6 +1180,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         }
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
         spawnParticles(w.particles, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit);
+        playImpact(obstacleHitSound(struck), at, b.z);
         consumed = true;
         break;
       }
@@ -1161,6 +1199,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         if (hb) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, hb!));
           spawnParticles(w.particles, at, backDir, impactBurst(WALL_SHRAPNEL), b.z, grit);
+          playImpact(METAL_HIT_SOUND, at, b.z); // a hull is metal
           consumed = true;
           break;
         }
@@ -1176,6 +1215,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
             noscope: b.noscope,
           });
           if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
+          hitFeedback(w, t, b.owner);
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           // Blood scales with the round like everything else, but floored: it is
           // the only sign you connected, so a tracerless punch still shows one.
@@ -1255,6 +1295,7 @@ export function meleeSwing(
     const at = add(struck.pos, scale(dir, -BODY_RADIUS)); // the side it landed on
     struck.registerHit(dir, at, opts.damage, opts.armorPen, owner, opts.gun ?? null);
     if (opts.stagger) struck.applyStagger?.(opts.stagger.mul, opts.stagger.ticks);
+    hitFeedback(w, struck, owner);
     spawnParticles(w.particles, at, scale(dir, -1), BLOOD, owner.z,
       Math.max(BLOOD_MIN_HEFT, opts.heft));
     return true;
@@ -1270,6 +1311,7 @@ export function meleeSwing(
     const back = scale(forward, -1);
     const at = backOut(p, back, (q) => pointInObstacle(q, o));
     spawnParticles(w.particles, at, back, obstacleShrapnel(o), owner.z, opts.heft);
+    playImpact(obstacleHitSound(o), at, owner.z);
     return false;
   }
   return false;
@@ -1362,6 +1404,9 @@ export function explode(
   blast: readonly ParticleStyle[] = STANDARD_EXPLOSION,
   stagger?: StaggerEffect,
   gun: GunSpec | null = null,
+  /** Which way the projectile was travelling — for the victim's damage
+   *  indicator (see Hittable.registerHit). Omitted = point at the blast. */
+  heading?: Vec2,
 ): void {
   // The detonation report, positioned at the blast on its floor. Taken from the
   // launcher's projectile spec so it's edited alongside the rest of the round.
@@ -1392,7 +1437,8 @@ export function explode(
 
     const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
     const dealt = damage * frac * (v / 9); // raw: armour's cut is registerHit's business
-    t.registerHit(dir, t.pos, dealt, armorPen, owner, gun);
+    t.registerHit(dir, t.pos, dealt, armorPen, owner, gun, undefined, heading);
+    hitFeedback(w, t, owner);
     // Blood off the side facing the blast, thrown back toward it — the same way a
     // bullet's sprays back toward the shooter — and sized by what it actually did.
     const toBlast = scale(dir, -1);
@@ -1424,7 +1470,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
   for (const p of w.projectiles) {
     p.life -= 1;
     if (p.life <= 0) {
-      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun); // airburst at max range
+      explode(w, p.pos, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun, norm(p.vel)); // airburst at max range
       continue;
     }
 
@@ -1455,7 +1501,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
         // own cover check would read the struck wall as shielding everything in
         // front of it. (Same back-out updateBullets does for its impact debris.)
         const at = backOut(sample, backDir, (pt) => pointInObstacle(pt, struck!));
-        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun);
+        explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun, norm(p.vel));
         detonated = true;
         break;
       }
@@ -1469,7 +1515,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
           const hb = v.roundPartAt(sample);
           if (hb) {
             const at = backOut(sample, backDir, (pt) => pointInBox(pt, hb));
-            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun);
+            explode(w, at, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun, norm(p.vel));
             detonated = true;
             break;
           }
@@ -1481,7 +1527,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
       for (const t of targets) {
         if (t === p.owner || t.z !== p.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS + p.bodyRadius) {
-          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun);
+          explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun, norm(p.vel));
           detonated = true;
           break;
         }

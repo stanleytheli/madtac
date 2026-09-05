@@ -43,6 +43,7 @@ import { tmpdir } from "node:os";
 import * as Guns from "../src/entities/guns.ts";
 import type { GunSpec } from "../src/entities/guns.ts";
 import { soundFile, type SoundRef } from "../src/engine/audio.ts";
+import { HIT_SOUNDS } from "../src/world/hitsounds.ts";
 
 /** The served filename behind a spec's sound field (undefined stays undefined). */
 function fileOf(s: SoundRef | undefined): string | undefined {
@@ -140,28 +141,28 @@ function fit(key: string, outName: string, targetSec: number, what: string): voi
 /** Plain conversion for fire sounds: raw source → public/audio/<name>, format
  *  change only. A missing raw is fine when the served wav already exists (many
  *  fire sounds predate audio-src/); only a spec pointing at nothing warns. */
-function convert(key: string, outName: string): void {
+function convert(key: string, outName: string, what = "fire"): void {
   if (conflicted.has(outName)) return;
   const base = rawBase(outName);
   const raw = findRaw(base);
   const out = join(OUT_DIR, outName);
   if (!raw) {
     if (!existsSync(out)) {
-      console.warn(`! ${key} (fire): no audio-src/${base}.* and no ${outName} — sound will be silent`);
+      console.warn(`! ${key} (${what}): no audio-src/${base}.* and no ${outName} — sound will be silent`);
     }
     return;
   }
   if (existsSync(out) && statSync(out).mtimeMs >= statSync(raw).mtimeMs) {
     skipped++;
-    console.log(`= ${key} (fire): ${outName} up to date`);
+    console.log(`= ${key} (${what}): ${outName} up to date`);
     return;
   }
   try {
     sh("ffmpeg", ["-y", "-hide_banner", "-loglevel", "error", "-i", raw, out]);
     built++;
-    console.log(`✓ ${key} (fire): ${parse(raw).base} → ${outName}`);
+    console.log(`✓ ${key} (${what}): ${parse(raw).base} → ${outName}`);
   } catch (e) {
-    console.warn(`! ${key} (fire): failed to convert "${outName}" — ${(e as Error).message.split("\n")[0]}`);
+    console.warn(`! ${key} (${what}): failed to convert "${outName}" — ${(e as Error).message.split("\n")[0]}`);
   }
 }
 
@@ -218,5 +219,8 @@ for (const [key, spec] of specs) {
     fit(key, name, ticks / TPS, kind.what);
   }
 }
+
+// Impact sounds (world/hitsounds.ts): converted as-is, like fire sounds.
+for (const name of HIT_SOUNDS) convert("impact", name, "hit");
 
 console.log(`\nfit-audio: ${built} built, ${skipped} up to date.`);

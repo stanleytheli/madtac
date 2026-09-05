@@ -55,7 +55,7 @@
   {"kind":"fence","x":-820,"y":-890,"w":240,"h":20,"z":1,"depth":0,"visibleFrom":{"atLeast":-1},"thicknessMul":1,"fill":"#a9946e","stroke":"#615139","strokeWidth":5},
   {"kind":"fence","x":-930,"y":-660,"w":20,"h":440,"z":1,"depth":0,"visibleFrom":{"atLeast":-1},"thicknessMul":1,"fill":"#a9946e","stroke":"#615139","strokeWidth":5},
   {"kind":"fence","x":-810,"y":-450,"w":220,"h":20,"z":1,"depth":0,"visibleFrom":{"atLeast":-1},"thicknessMul":1,"fill":"#a9946e","stroke":"#615139","strokeWidth":5},
-  {"kind":"barrel_metal","x":-748,"y":-217,"w":100,"h":100,"z":0,"depth":0,"thicknessMul":1,"fill":"#8a929b","stroke":"#3f474d","strokeWidth":5},
+  {"kind":"barrel_metal","x":-748,"y":-217,"w":100,"h":100,"z":0,"depth":0,"thicknessMul":1,"fill":"#8a929b","stroke":"#3f474d","strokeWidth":5,"hitSound":"metal_bullet_hit_01.wav"},
   {"kind":"barrel_wood","x":-652,"y":-262,"w":100,"h":100,"z":0,"depth":0,"thicknessMul":1,"fill":"#9a6a2f","stroke":"#4a300f","strokeWidth":5},
   {"kind":"stairs","x":-500,"y":-800,"w":240,"h":120,"axis":"x","zAtMin":0,"zAtMax":1,"visibleFrom":[0,1],"color":"#7c6034","color2":"#bfa273","steps":6,"depth":0},
   {"kind":"floor","x":0,"y":0,"w":0,"h":0,"level":0,"depth":0,"color":"#ddab64","visibleFrom":{"atLeast":-1},"infinite":true,"grid":true,"gridColor":"#b18d3e","zoom":0,"deltaZoom":0},

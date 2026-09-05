@@ -1105,11 +1105,11 @@ export class TacOracle extends Oracle {
     attacker: Hittable | null = null,
     gun: GunSpec | null = null,
     marks: HitMarks = {},
+    heading: Vec2 = dir,
   ): void {
     // Forward EVERYTHING: this override once passed six of seven arguments and
-    // quietly dropped the wallbang flag for every bot victim in the game. One
-    // `marks` object is now the whole tail, so there is nothing left to lose.
-    super.registerHit(dir, point, damage, armorPen, attacker, gun, marks);
+    // quietly dropped the wallbang flag for every bot victim in the game.
+    super.registerHit(dir, point, damage, armorPen, attacker, gun, marks, heading);
     if (this.mode !== "hold" || damage <= 0) return;
     if (!(attacker instanceof Character) || !areHostile(this.team, attacker.team)) return;
     this.clearHold();

@@ -576,7 +576,9 @@ export class Character {
   /**
    * Take a hit from a bullet travelling in `dir` (unit) at world point `point`,
    * dealing `damage`. (Armor mitigation will hook in here later.) The world
-   * spawns the blood particle for the impact.
+   * spawns the blood particle for the impact. `heading` is where the attack
+   * itself was travelling when that differs from the knockback `dir` (a blast):
+   * the damage indicator points back along it.
    */
   registerHit(
     dir: Vec2,
@@ -586,12 +588,13 @@ export class Character {
     attacker: Hittable | null = null,
     gun: GunSpec | null = null,
     marks: HitMarks = {},
+    heading: Vec2 = dir,
   ): void {
     this.lastHitDir = dir;
     this.lastAttacker = attacker;
     this.lastAttackerGun = gun;
     this.lastAttackerMarks = marks;
-    if (damage > 0) this.noteDamageFrom(angleOf(scale(dir, -1)));
+    if (damage > 0) this.noteDamageFrom(angleOf(scale(heading, -1)));
 
     let toBody = damage;
     const armor = this.armor;
