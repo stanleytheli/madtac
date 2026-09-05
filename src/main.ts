@@ -1070,10 +1070,11 @@ function render(): void {
   let offHalves: Path2D | null = null;
   const nearHalves = new Map<number, Path2D>();
   if (game && sightMask) {
-    // The aimed weapon's vision cone, if it has one (see GunSpec.visionCone).
-    const coneDeg = game.aimingGun().spec.visionCone;
+    // The vision cone, eased toward the aimed weapon's (see Game.visionCone).
+    // Within half a degree of all round it is no cone at all.
+    const coneDeg = game.visionCone;
     const cone: SightCone | undefined =
-      coneDeg !== undefined && coneDeg < 360
+      coneDeg < 359.5
         ? { dir: player.forward, halfAngle: (coneDeg * Math.PI) / 360, grace: VISION_GRACE_R }
         : undefined;
     const poly = profiler.measure("render.sight", () =>

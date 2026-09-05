@@ -48,6 +48,10 @@ const ZOOM_EASE = 0.12;
  *  per tick, like the camera zoom above, so it doesn't snap open on the first
  *  shot of a burst or snap shut the instant recoil resets. */
 const CROSSHAIR_EASE = 1.0;
+/** How fast the sight mask's vision cone (see GunSpec.visionCone) follows the
+ *  aimed weapon's, per tick — a weapon switch closes or opens the cone over
+ *  about a third of a second instead of snapping. Same shape as ZOOM_EASE. */
+const VISION_CONE_EASE = 0.12;
 
 // --- inferred player route (nav congestion) ---------------------------------
 /** How often the player's route is re-inferred (ticks). The inference costs a
@@ -116,6 +120,9 @@ export class Game implements GameCtx {
   /** Smoothed maximum aim spread of the weapon being aimed (radians), for the
    *  HUD crosshair. Eased in update(); the raw value comes from the gun itself. */
   crosshairSpread = 0;
+  /** Smoothed full width, in degrees, of the vision cone the sight mask draws
+   *  (360 = all round). Eased in update() toward the aimed weapon's. */
+  visionCone = 360;
 
   // input edge-detection state (per-tick "was it down last tick?")
   private prevDown = false;
@@ -820,6 +827,8 @@ export class Game implements GameCtx {
     // the player's current speed. Asked of the gun rather than recomputed here.
     const spreadTarget = canControl ? this.aimingGun().maxSpread(this.player.speedRatio) : 0;
     this.crosshairSpread += (spreadTarget - this.crosshairSpread) * CROSSHAIR_EASE;
+    const coneTarget = this.aimingGun().spec.visionCone ?? 360;
+    this.visionCone += (coneTarget - this.visionCone) * VISION_CONE_EASE;
 
     // Refresh every character's staircase state before anyone moves, so the climb
     // slowdown (Character.move / applyStairMove) and the recoil speed both see it.
