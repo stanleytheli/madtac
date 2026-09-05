@@ -3,7 +3,7 @@
  * restored), in CSS pixels around the screen center.
  */
 
-import type { Character } from "../entities/actor.ts";
+import { DAMAGE_MARK_TTL, type Character, type DamageMark } from "../entities/actor.ts";
 import type { Armor } from "../entities/armor.ts";
 import { KILLFEED_TTL, type GamemodeHud, type KillFeedEntry, type PlayerRow } from "../gamemodes/gamemode.ts";
 import type { Gun } from "../entities/gun.ts";
@@ -186,6 +186,39 @@ export function drawCrosshair(
     ctx.fill();
   }
   ctx.restore();
+}
+
+/** Size the damage arc is drawn at, as a multiple of the image's own 100x50. */
+const DAMAGE_ARC_SCALE = 1.0;
+/** Logical px from the player's centre to the arc's bottom edge (the image's
+ *  arc is centred about its bottom-middle, so this is roughly "how far out the
+ *  ring sits" minus its own radius). */
+const DAMAGE_ARC_OFFSET = 75;
+/** Marks hold full opacity for this fraction of their life, then fade out. */
+const DAMAGE_ARC_HOLD = 0.4;
+
+/**
+ * The damage indicator: one arc per recent hit, ringing the player (screen
+ * centre) with its arrow pointing at the bearing the hit came from. The image
+ * has the arrow pointing up, so a mark at bearing `angle` (world = screen
+ * frame; the camera never rotates) is the image turned by angle + 90°.
+ */
+function drawDamageMarks(ctx: CanvasRenderingContext2D, center: Vec2, marks: readonly DamageMark[]): void {
+  const img = assetImage("damage_pointer.png");
+  if (!img) return;
+  const w = img.naturalWidth * DAMAGE_ARC_SCALE;
+  const h = img.naturalHeight * DAMAGE_ARC_SCALE;
+  for (const m of marks) {
+    const life = m.age / DAMAGE_MARK_TTL;
+    const alpha = life < DAMAGE_ARC_HOLD ? 1 : 1 - (life - DAMAGE_ARC_HOLD) / (1 - DAMAGE_ARC_HOLD);
+    if (alpha <= 0) continue;
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.translate(center.x, center.y);
+    ctx.rotate(m.angle + Math.PI / 2);
+    ctx.drawImage(img, -w / 2, -DAMAGE_ARC_OFFSET - h, w, h);
+    ctx.restore();
+  }
 }
 
 export interface ProgressBarStyle {
@@ -393,6 +426,9 @@ export interface HudOptions {
   showScoreboard?: boolean;
   /** The local player's recent-kills feed (newest first), stacked above the ammo. */
   killFeed?: readonly KillFeedEntry[];
+  /** Recent hits on the player, drawn as arcs around them pointing at the
+   *  bearing each came from (see Character.damageMarks). */
+  damageMarks?: readonly DamageMark[];
   /** Bottom-left minimap (built once at load), plus the live roster + recent
    *  friendly deaths it overlays. Undefined in the editor / when unavailable. */
   minimap?: Minimap;
@@ -438,6 +474,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   if (cancelLabel) {
     drawKeyPrompt(ctx, promptX, promptY, "X", cancelLabel);
   }
+
+  // Damage indicators ring the player, under the prompts and the feed.
+  if (o.damageMarks && o.damageMarks.length) drawDamageMarks(ctx, center, o.damageMarks);
 
   // Kill feed: bars centered horizontally, stacked below the interaction prompts
   // and above the bottom-center ammo. Newest on top; older bars sit below it.

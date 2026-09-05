@@ -1341,6 +1341,7 @@ function render(): void {
       gamemode: gh ?? undefined,
       showScoreboard: isAction("scoreboard"),
       killFeed: game.killFeed,
+      damageMarks: player.damageMarks,
       minimap: minimap ?? undefined,
       characters,
       deaths: game.minimapDeaths,

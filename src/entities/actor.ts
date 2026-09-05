@@ -52,6 +52,20 @@ export interface Loadout {
  * A character in the world: position, movement, a 3-slot weapon loadout, and the
  * logic to fire/draw itself. The player and every NPC are instances of this.
  */
+/** One entry of the HUD's damage indicator. See Character.damageMarks. */
+export interface DamageMark {
+  /** Bearing the damage came from, radians, world frame. */
+  angle: number;
+  /** Ticks since the hit. */
+  age: number;
+}
+/** How long a damage mark shows, in ticks (60/s). */
+export const DAMAGE_MARK_TTL = 150;
+/** Hits within this bearing of an existing mark refresh it instead. */
+const DAMAGE_MARK_MERGE = (12 * Math.PI) / 180;
+/** Cap on simultaneous marks; the oldest goes. */
+const DAMAGE_MARK_MAX = 8;
+
 export class Character {
   pos: Vec2;
   vel: Vec2 = vec(0, 0);
@@ -75,6 +89,11 @@ export class Character {
   /** Travel direction (unit) of the most recent bullet to hit this character; the
    *  body launches this way on death. Null if never hit (e.g. test damage). */
   lastHitDir: Vec2 | null = null;
+  /** Recent hits, for the HUD's damage indicator: where each came FROM
+   *  (the reverse of the round's travel — a fixed bearing, not the attacker's
+   *  live position, since the player can't know that) and how long ago. Aged
+   *  in tickStatus, dropped after DAMAGE_MARK_TTL. */
+  damageMarks: DamageMark[] = [];
 
   /** Whoever fired the most recent bullet to hit this character (for kill
    *  attribution — see gamemodes/tdm.ts K/D). Null if never shot. */
@@ -152,6 +171,7 @@ export class Character {
     this.hp = this.maxHp;
     this.lastHitDir = null;
     this.lastAttacker = null;
+    this.damageMarks.length = 0;
     this.armor = null;
     this.vehicle = null;
     this.seatIndex = -1;
@@ -516,6 +536,10 @@ export class Character {
    *  consuming it on completion) and tick down any regen. Runs for every
    *  character each tick, before damage is resolved. */
   tickStatus(): void {
+    if (this.damageMarks.length > 0) {
+      for (const m of this.damageMarks) m.age += 1;
+      this.damageMarks = this.damageMarks.filter((m) => m.age < DAMAGE_MARK_TTL);
+    }
     if (this.useTicks > 0) {
       this.useTicks -= 1;
       if (this.useTicks === 0) this.finishUse();
@@ -567,6 +591,7 @@ export class Character {
     this.lastAttacker = attacker;
     this.lastAttackerGun = gun;
     this.lastAttackerMarks = marks;
+    if (damage > 0) this.noteDamageFrom(angleOf(scale(dir, -1)));
 
     let toBody = damage;
     const armor = this.armor;
@@ -582,6 +607,23 @@ export class Character {
 
   _takeDamage(damage: number): void {
     this.hp = Math.max(0, this.hp - damage);
+  }
+
+  /** Record a hit from bearing `angle` (radians, world). A hit from about the
+   *  same bearing as a recent mark refreshes that mark instead of stacking a
+   *  second arc on top of it — a spray from one shooter is one indicator. */
+  private noteDamageFrom(angle: number): void {
+    for (const m of this.damageMarks) {
+      let d = Math.abs(m.angle - angle) % (Math.PI * 2);
+      if (d > Math.PI) d = Math.PI * 2 - d;
+      if (d < DAMAGE_MARK_MERGE) {
+        m.angle = angle;
+        m.age = 0;
+        return;
+      }
+    }
+    this.damageMarks.push({ angle, age: 0 });
+    if (this.damageMarks.length > DAMAGE_MARK_MAX) this.damageMarks.shift();
   }
   _heal(amount: number): void {
     this.hp = Math.min(this.maxHp, this.hp + amount);
