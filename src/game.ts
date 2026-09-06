@@ -37,7 +37,7 @@ import { Robot, type AiContext } from "./ai/robot.ts";
 import { areHostile, type TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
-import { add, angleOf, dist, fromAngle, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { add, angleOf, dist, dot, fromAngle, len, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
 import { playSound } from "./engine/audio.ts";
 import { FOOTSTEP_LEAD, FOOTSTEP_MIN_SPEED, FOOTSTEP_SOUNDS, FOOTSTEP_TICKS } from "./world/hitsounds.ts";
 import { stairClimbDir, stairZ, updateBullets, updateProjectiles, updateSurfaceAlphas, type World } from "./world/world.ts";
@@ -319,8 +319,22 @@ export class Game implements GameCtx {
    *  nearest feature slides the body along it for free. Body-vs-body is the
    *  separate squishy pass (see separateCharacters). */
   private resolveCollisions(c: Character): void {
+    const before = c.pos;
     c.pos = this.resolveWalls(c.pos, c.z);
     c.pos = this.resolveVehicles(c.pos, c.z);
+    // The push-out moved the body, not its velocity: pressing into a wall left
+    // `vel` at full running speed while the body stood still, so everything
+    // that reads speed (spread, footsteps, the no-scope mark, the player's
+    // inferred route) behaved as if it were sprinting. Cancel the component of
+    // vel that points into the wall (the push direction), keep the rest so a
+    // glancing approach still slides along it at the slide speed.
+    const push = sub(c.pos, before);
+    const pl = len(push);
+    if (pl > 1e-6) {
+      const n = scale(push, 1 / pl);
+      const into = dot(c.vel, n);
+      if (into < 0) c.vel = sub(c.vel, scale(n, into));
+    }
   }
 
   /** Push a body at `pos` out of every vehicle's solid parts on level `z` — a
