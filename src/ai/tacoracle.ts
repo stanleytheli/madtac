@@ -1564,17 +1564,22 @@ export class TacOracle extends Oracle {
    *
    *  Cheap enough per candidate: it only runs for spots that already passed the
    *  visibility filters. */
-  private mateHolding(ai: AiContext, spot: Vec2): boolean {
-    const taken = (p: Vec2 | null): boolean => p !== null && dist(p, spot) < 2 * BODY_RADIUS;
+  protected mateHolding(ai: AiContext, spot: Vec2, z = this.z): boolean {
     for (const c of ai.characters) {
-      if (c === this || c.hp <= 0 || c.z !== this.z || areHostile(this.team, c.team)) continue;
+      if (c === this || c.hp <= 0 || c.z !== z || areHostile(this.team, c.team)) continue;
       if (dist(c.pos, spot) < 2 * BODY_RADIUS) return true; // standing on it
-      // `private` is class-scoped in TS, so a TacOracle may read another's plan.
-      if (c instanceof TacOracle && c.mode === "hold" && (taken(c.holdCover) || taken(c.holdPeek))) {
-        return true; // claimed by a mate already on their way
-      }
+      if (c instanceof TacOracle && c.holdClaims(spot, z)) return true; // claimed by a mate already on their way
     }
     return false;
+  }
+
+  /** Does this bot's standing hold plan reserve `spot` — its cover or its peek
+   *  within a body's reach? Public because teammates ask it of each other (the
+   *  objective AI's nodeTaken asks it of any TacOracle, not just its own class). */
+  holdClaims(spot: Vec2, z: number): boolean {
+    if (this.mode !== "hold" || this.z !== z) return false;
+    const taken = (p: Vec2 | null): boolean => p !== null && dist(p, spot) < 2 * BODY_RADIUS;
+    return taken(this.holdCover) || taken(this.holdPeek);
   }
 
   /** Slide from full cover toward `toward` in small steps and stop where we can

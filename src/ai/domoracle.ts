@@ -27,6 +27,7 @@ import { Character } from "../entities/actor.ts";
 import { BODY_RADIUS } from "../entities/character.ts";
 import { Gun } from "../entities/gun.ts";
 import { UNARMED } from "../entities/guns.ts";
+import { areHostile } from "../entities/team.ts";
 import { TacOracle } from "./tacoracle.ts";
 import type { AiContext, ObjectivePoint } from "./robot.ts";
 import { dist, vec, type Vec2 } from "../engine/vec.ts";
@@ -96,6 +97,10 @@ export class DominationOracle extends TacOracle {
   /** A throwaway waypoint (never in the world/roster) parked on the target
    *  objective, so the base's navChase can steer toward a position. */
   private objMarker: Character | null = null;
+  /** The ring node the marker is parked on — this bot's CLAIM on it, read by
+   *  teammates' captureSpot so they pick a different one (see nodeTaken). Set
+   *  whenever the chase is the marker, cleared whenever it is anything else. */
+  private captureGoal: { pos: Vec2; z: number } | null = null;
 
   /** The site this bot committed to holding (position + level, since the
    *  gamemode rebuilds the ObjectivePoint objects every tick). Latched on
@@ -214,8 +219,9 @@ export class DominationOracle extends TacOracle {
    *  falls to `target ?? focus`, which is the runner, and the leash would stop
    *  nothing. */
   protected override chaseOf(ai: AiContext, target: Character | null): Character | null {
-    if (this.leashed) return this.bestChase(ai);
-    return super.chaseOf(ai, target);
+    const chase = this.leashed ? this.bestChase(ai) : super.chaseOf(ai, target);
+    if (chase !== this.objMarker) this.captureGoal = null; // walking after something else: no claim
+    return chase;
   }
 
   /** Is `e` on or contesting any capture point — within a ring plus the contest
@@ -327,13 +333,16 @@ export class DominationOracle extends TacOracle {
   /** Never take cover that isn't on the point: a covered spot outside the ring
    *  stops the capture, which is the entire reason we're standing here. Once the
    *  point is ours AND fully reinforced there's no progress left to lose, so real
-   *  cover anywhere is fair game. */
+   *  cover anywhere is fair game. Same when every ring node is already taken by
+   *  a teammate: the capture is covered, one more body on the ring only shoves,
+   *  so this bot is freed to dig in outside and guard the approach. */
   protected override holdSpotOk(ai: AiContext, pos: Vec2, z: number): boolean {
     // The latched site, not "whatever ring I happen to stand in" — otherwise the
     // constraint evaporates the moment the walk to cover crosses the ring edge.
     const pt = (this.holdSite ? this.siteAt(ai, this.holdSite) : null) ?? this.pointUnderfoot(ai);
     if (!pt) return super.holdSpotOk(ai, pos, z);
     if (pt.owner === this.team && pt.progress >= 2) return true;
+    if (this.freeRingNode(ai, pt) < 0) return true;
     return z === pt.z && dist(pos, pt.pos) <= pt.radius;
   }
 
@@ -370,7 +379,10 @@ export class DominationOracle extends TacOracle {
       this.siteWasOurs = best ? best.owner === this.team : false;
       this.siteCommitIn = SITE_COMMIT_TICKS;
     }
-    if (!best) return super.bestChase(ai); // we own it all — go hunt/defend
+    if (!best) {
+      this.captureGoal = null;
+      return super.bestChase(ai); // we own it all — go hunt/defend
+    }
 
     // Enemies on (or right around) that point contest the capture: hunt the
     // nearest one down like a normal TacOracle rather than crowding onto a point
@@ -387,7 +399,10 @@ export class DominationOracle extends TacOracle {
         contester = h;
       }
     }
-    if (contester) return contester;
+    if (contester) {
+      this.captureGoal = null;
+      return contester;
+    }
 
     // Clear point: walk onto it. The marker steers navChase to a spot, but the
     // base navigates by routing to the nearest graph node that can SEE the goal —
@@ -396,6 +411,7 @@ export class DominationOracle extends TacOracle {
     // point's level instead: standing there is inside the radius (so it captures)
     // and a real graph node always has a route.
     const spot = this.captureSpot(ai, best);
+    this.captureGoal = { pos: vec(spot.x, spot.y), z: best.z };
     const m = (this.objMarker ??= new Character(vec(0, 0), this.skin, { hand: new Gun(UNARMED) }));
     m.pos = vec(spot.x, spot.y);
     m.z = best.z;
@@ -552,11 +568,95 @@ export class DominationOracle extends TacOracle {
     return bestId;
   }
 
-  /** Where to stand to work `pt`: the nearest nav node on its level (navigation
-   *  needs a real graph node as its goal), falling back to the centre only if the
+  /** Where to stand to work `pt`: a nav node inside its ring (navigation needs a
+   *  real graph node as its goal, and any node inside the radius captures) that
+   *  no teammate is standing on or heading for. Every bot used to aim at the ONE
+   *  node nearest the centre, so a whole team arrived on the same spot and spent
+   *  the capture shoving each other off it. Now the goal is the nearest free ring
+   *  node, and it sticks: a goal we already hold is kept while no mate CLAIMS it
+   *  (a mate merely walking across it doesn't re-route us), so the pick doesn't
+   *  chatter as people move. With the ring full we still walk onto the nearest
+   *  ring node — being inside the ring is what starts a hold — and holdSpotOk
+   *  then lets the hold dig in outside it. Falls back to the centre only if the
    *  graph has no node on that level. */
   private captureSpot(ai: AiContext, pt: ObjectivePoint): Vec2 {
-    const id = this.siteNode(ai, pt);
-    return id >= 0 && ai.nav ? ai.nav.nodes[id].pos : pt.pos;
+    const nav = ai.nav;
+    if (!nav) return pt.pos;
+    const ring = this.ringNodes(ai, pt);
+    if (ring.length === 0) return pt.pos;
+    const cur = this.captureGoal;
+    if (
+      cur &&
+      cur.z === pt.z &&
+      ring.some((id) => dist(nav.nodes[id].pos, cur.pos) < 1) &&
+      !this.nodeTaken(ai, cur.pos, cur.z, false)
+    ) {
+      return cur.pos;
+    }
+    const free = this.freeRingNode(ai, pt);
+    if (free >= 0) return nav.nodes[free].pos;
+    let best = ring[0];
+    let bestD = Infinity;
+    for (const id of ring) {
+      const d = dist(this.pos, nav.nodes[id].pos);
+      if (d < bestD) {
+        bestD = d;
+        best = id;
+      }
+    }
+    return nav.nodes[best].pos;
+  }
+
+  /** The nav nodes inside `pt`'s ring on its level — the spots standing on which
+   *  captures it. If the graph puts none inside the radius, the single nearest
+   *  node stands in (the old behaviour, and the best there is). */
+  private ringNodes(ai: AiContext, pt: ObjectivePoint): number[] {
+    const out: number[] = [];
+    for (const n of ai.nav?.nodes ?? []) {
+      if (n.z === pt.z && dist(n.pos, pt.pos) <= pt.radius) out.push(n.id);
+    }
+    if (out.length === 0) {
+      const id = this.siteNode(ai, pt);
+      if (id >= 0) out.push(id);
+    }
+    return out;
+  }
+
+  /** The ring node of `pt` nearest this bot that no teammate stands on or has
+   *  claimed, or -1 when the ring is full. */
+  private freeRingNode(ai: AiContext, pt: ObjectivePoint): number {
+    const nav = ai.nav;
+    if (!nav) return -1;
+    let best = -1;
+    let bestD = Infinity;
+    for (const id of this.ringNodes(ai, pt)) {
+      const p = nav.nodes[id].pos;
+      if (this.nodeTaken(ai, p, pt.z, true)) continue;
+      const d = dist(this.pos, p);
+      if (d < bestD) {
+        bestD = d;
+        best = id;
+      }
+    }
+    return best;
+  }
+
+  /** Is `pos` on level `z` taken by a teammate: claimed as their capture goal
+   *  (a bot on its way there), reserved by their hold plan (cover or peek), or —
+   *  when `standing` — simply stood on right now? A holder's capture goal is
+   *  ignored: its hold plan is the claim that counts, and the goal it walked in
+   *  on may be a node it has since left. */
+  private nodeTaken(ai: AiContext, pos: Vec2, z: number, standing: boolean): boolean {
+    for (const c of ai.characters) {
+      if (c === this || c.hp <= 0 || areHostile(this.team, c.team)) continue;
+      if (standing && c.z === z && dist(c.pos, pos) < 2 * BODY_RADIUS) return true;
+      if (!(c instanceof TacOracle)) continue;
+      if (c.holdClaims(pos, z)) return true;
+      if (c instanceof DominationOracle && c.mode !== "hold" && c.captureGoal) {
+        const g = c.captureGoal;
+        if (g.z === z && dist(g.pos, pos) < 2 * BODY_RADIUS) return true;
+      }
+    }
+    return false;
   }
 }
