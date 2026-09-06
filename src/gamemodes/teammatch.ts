@@ -88,7 +88,7 @@ const NAMES = [
   "Sierra", "Foxtrot", "Victor", "Yankee", "Romeo" , "Hotel", "Bravo", "Charlie", "Lima", "Oscar", "Xray",
   "Blackout", "Eagle", "Vulture", "Quickscope", "Overclock", "Church", "Camper", "Dark", "Bucky",
   "Birdshot", "Ruckus", "Oldie", "Queen", "Snake", "Breacher", "Ash", "Cloud", "Sleepy", 
-  "Kidd", "Trooper", "Recruit", "Buzzkill", "Digger", "Graves", "Zombie", "Knob", "Shepherd",
+  "Kidd", "Trooper", "Recruit", "Buzzkill", "Shovel", "Graves", "Zombie", "Knob", "Shepherd",
   "Ironsight", "Softie", "Cipher", "Cryptic", "Scramble", "Brainy", "Deadeye", "Daisy", "Wick",
   "Candles", "Skateboard", "Dixie", "Soda", "Window", "Icon", "Idol", "Tomboy", "Miles", "Dreamer",
   "Electro", "Renegade", "Ego", "Harry", "Mountain", "Fireman", "Chef", "Weatherman", "Rabbit",
