@@ -170,7 +170,9 @@ export class DominationOracle extends TacOracle {
   protected override selectTarget(ai: AiContext): Character | null {
     const t = super.selectTarget(ai);
     this.leashed = false;
-    if (this.pursueCooldown > 0) this.pursueCooldown -= 1;
+    // This runs on plan ticks only, so the clocks advance by the stagger (like
+    // seenFor) to keep PURSUE_MAX / PURSUE_COOLDOWN in real ticks.
+    if (this.pursueCooldown > 0) this.pursueCooldown -= this.stagger;
     if (t === null) {
       this.pursueTicks = 0;
       return null;
@@ -180,9 +182,21 @@ export class DominationOracle extends TacOracle {
       this.pursueTicks = 0;
       return t;
     }
+    // An enemy on another level and off every site is nothing but a movement
+    // goal — the gun can't reach across floors — and the objective already IS
+    // the movement goal. No budget, no chase: with cross-level sight there is
+    // nearly always one of these somewhere, and chasing each for a few seconds
+    // kept a whole team milling around its own site instead of attacking (a red
+    // team committed to A spent half its ticks doing this on dust2-a-3p-dom).
+    if (t.z !== this.z) {
+      this.pursueTicks = 0;
+      this.leashed = true;
+      this.focus = null;
+      return null;
+    }
     // An off-site runner beyond trading range: chase on a budget.
     if (this.pursueCooldown <= 0) {
-      this.pursueTicks += 1;
+      this.pursueTicks += this.stagger;
       if (this.pursueTicks < PURSUE_MAX) return t;
       this.pursueTicks = 0;
       this.pursueCooldown = PURSUE_COOLDOWN;
