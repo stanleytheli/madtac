@@ -38,6 +38,8 @@ import { areHostile, type TeamId } from "./entities/team.ts";
 import { hudHitTest, type SlotKind } from "./ui/ui.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
 import { add, angleOf, dist, fromAngle, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
+import { playSound } from "./engine/audio.ts";
+import { FOOTSTEP_LEAD, FOOTSTEP_MIN_SPEED, FOOTSTEP_SOUNDS, FOOTSTEP_TICKS } from "./world/hitsounds.ts";
 import { stairClimbDir, stairZ, updateBullets, updateProjectiles, updateSurfaceAlphas, type World } from "./world/world.ts";
 import { Vehicle, type VehicleSpec } from "./entities/vehicle.ts";
 
@@ -917,6 +919,23 @@ export class Game implements GameCtx {
       if (c instanceof Robot && c.hp > 0) c.think(ai);
     }
     profiler.end("ai");
+
+    // Footsteps, everyone's: on foot and moving, one every FOOTSTEP_TICKS,
+    // clips cycled. Positional at the walker's feet — the player's own sit in
+    // the same mix as the world's, and an unseen bot's carry through walls.
+    // After the AI phase so a bot's step this tick is in its vel.
+    for (const c of this.characters) {
+      if (c.hp > 0 && !c.vehicle && Math.hypot(c.vel.x, c.vel.y) >= FOOTSTEP_MIN_SPEED) {
+        c.stepTicks += 1;
+        if (c.stepTicks >= FOOTSTEP_TICKS) {
+          c.stepTicks = 0;
+          playSound(FOOTSTEP_SOUNDS[c.stepIndex], { pos: c.pos, z: c.z, pitchVar: 0.06 });
+          c.stepIndex = (c.stepIndex + 1) % FOOTSTEP_SOUNDS.length;
+        }
+      } else {
+        c.stepTicks = FOOTSTEP_TICKS - FOOTSTEP_LEAD;
+      }
+    }
 
     profiler.begin("collide");
     for (const c of this.characters) {

@@ -7,6 +7,7 @@ import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.
 import { gunIcon, utilityIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, mid, perp, scale, scaleAlong, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { playSound } from "../engine/audio.ts";
+import { FOOTSTEP_LEAD, FOOTSTEP_TICKS } from "../world/hitsounds.ts";
 import type { HitMarks, Hittable, World } from "../world/world.ts";
 import type { Vehicle } from "./vehicle.ts";
 
@@ -94,6 +95,10 @@ export class Character {
    *  live position, since the player can't know that) and how long ago. Aged
    *  in tickStatus, dropped after DAMAGE_MARK_TTL. */
   damageMarks: DamageMark[] = [];
+  /** Footstep timing (see Game.update): ticks into the current stride, and
+   *  which clip is next. Starts partway in so the first step comes soon. */
+  stepTicks = FOOTSTEP_TICKS - FOOTSTEP_LEAD;
+  stepIndex = 0;
 
   /** Whoever fired the most recent bullet to hit this character (for kill
    *  attribution — see gamemodes/tdm.ts K/D). Null if never shot. */

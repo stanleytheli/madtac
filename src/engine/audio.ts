@@ -46,10 +46,10 @@ const PAN_PX = 18 * PX_PER_METER;
 const OFFLEVEL_GAIN = 0.3;
 /** Ceiling on voices PLAYING at once; above it the quietest is faded out, and
  *  only if the newcomer is louder — close sounds always win. */
-const MAX_VOICES = 32;
+const MAX_VOICES = 48;
 /** Pool size — larger than MAX_VOICES so voices mid-fade still have a slot
  *  while the newcomer takes a fresh one. */
-const POOL_VOICES = 48;
+const POOL_VOICES = 64;
 /** Same-file plays landing within this window merge into the playing voice. */
 const COALESCE_S = 0.04;
 /** Time constant for gain glides (setTargetAtTime) — coalesce bumps + steals. */

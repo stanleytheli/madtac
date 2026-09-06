@@ -220,7 +220,7 @@ for (const [key, spec] of specs) {
   }
 }
 
-// Impact sounds (world/hitsounds.ts): converted as-is, like fire sounds.
+// Impact + footstep sounds (world/hitsounds.ts): converted as-is, like fire sounds.
 for (const name of HIT_SOUNDS) convert("impact", name, "hit");
 
 console.log(`\nfit-audio: ${built} built, ${skipped} up to date.`);
