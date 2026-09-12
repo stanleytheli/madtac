@@ -2299,9 +2299,11 @@ export class TacOracle extends Oracle {
     if (len < 1e-3) return [];
     const dir = vec(to.x / len, to.y / len);
     const out: Candidate[] = [];
+    const zLocked = this.zLocked(ai);
     for (const off of this.strafeOffsets) {
       const point = add(this.pos, scale(dir, Math.min(off, len)));
       const cz = zAt(ai.world, point, this.z);
+      if (zLocked && cz !== this.z) continue; // unreachable during the re-cross cooldown
       if (!walkable(ai.world, this.pos, this.z, point, cz)) continue;
       out.push(this.scoreAt(ai, point, off, opponent, cz));
     }
@@ -2437,11 +2439,16 @@ export class TacOracle extends Oracle {
       }
       // Forward/back spots along the opponent line — may cross a stair and drop
       // z, giving cover that breaks line of sight. Each resolves its own level.
+      // Not while the re-cross cooldown runs (Robot.zLocked): a spot over the
+      // midpoint can't be reached then, and offering it parked the bot at the
+      // line instead of taking cover on its own floor.
+      const zLocked = this.zLocked(ai);
       const toOpp = dist(this.pos, opponent.pos) > 1e-3 ? norm(sub(opponent.pos, this.pos)) : vec(1, 0);
       for (const off of AXIAL_OFFSETS) {
         for (const s of [-1, 1]) {
           const point = add(this.pos, scale(toOpp, off * s));
           const cz = zAt(ai.world, point, this.z);
+          if (zLocked && cz !== this.z) continue;
           if (!walkable(ai.world, this.pos, this.z, point, cz)) continue;
           out.push(this.scoreAt(ai, point, off * s, opponent, cz));
         }

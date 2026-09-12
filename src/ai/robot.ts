@@ -2,11 +2,17 @@ import { Character } from "../entities/actor.ts";
 import { BODY_RADIUS, type Skin } from "../entities/character.ts";
 import { EnemyGun, Gun } from "../entities/gun.ts";
 import { M16, UNARMED, type GunSpec } from "../entities/guns.ts";
-import type { NavGraph } from "../world/nav.ts";
+import { zAt, type NavGraph } from "../world/nav.ts";
 import { profiler } from "../engine/profiler.ts";
 import { areHostile, type TeamId } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, fromAngle, len, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, shotCost, wallbangDamageFor, wallbangSightBudget, type World } from "../world/world.ts";
+
+/** Ticks after a level change during which a bot may not change level again
+ *  (see Robot.zLocked). Caps stair flicker at one crossing per ~0.4s: long
+ *  enough that a bot can't blink between floors faster than a player can react,
+ *  short enough not to stall a bot that actually needs the stairs. */
+export const STAIR_RECROSS_TICKS = 25;
 
 /** A gamemode objective an AI can be steered toward (a domination capture point):
  *  its location + who controls it ("gray" = neutral) so AIs prefer un-held ones. */
@@ -149,6 +155,10 @@ const ROBOT_DEFAULTS: Required<RobotOptions> = {
  * guns/etc.), and subclassed for mobile AIs (see oracle.ts) via the `act` hook.
  */
 export class Robot extends Character {
+  /** Level last seen by think() and the tick it changed, for zLocked. */
+  private lastZ = NaN;
+  private zChangedAt = -Infinity;
+
   /** Monotonic source of round-robin plan-tick phases (see thinkPhase). */
   private static nextPhase = 0;
   /** Actual heading (radians), eased toward `aimAngle` every tick in think(). */
@@ -206,6 +216,13 @@ export class Robot extends Character {
 
   /** Per-tick AI. Call after `tickWeapon()` so the fire cooldown is up to date. */
   think(ai: AiContext): void {
+    // The session flips z when a body crosses a stair midpoint; notice it here
+    // so the re-cross cooldown (see zLocked) starts from the change.
+    if (this.z !== this.lastZ) {
+      this.lastZ = this.z;
+      this.zChangedAt = ai.tick;
+    }
+    const before = this.pos;
     // Expensive planning (target scan + movement decision) runs only on this
     // AI's plan ticks; between them it coasts (cheap continuation). Aiming and
     // firing below run every tick regardless, so DPS and tracking stay smooth.
@@ -213,6 +230,17 @@ export class Robot extends Character {
       this.decide(ai);
     } else {
       this.coast(ai);
+    }
+    // Re-cross cooldown: a step that would change level again too soon is
+    // cancelled and the bot waits at the midpoint. Without it a bot fighting on
+    // a staircase flickered between floors — cover one step over the midpoint
+    // (another level is perfect cover), the burst walking back over, the coast
+    // between plans crossing again — five level changes in fifty ticks, and
+    // each one drops it out of the player's sight. The rule lives here, after
+    // every movement branch, so no branch can slip past it.
+    if (this.zLocked(ai) && zAt(ai.world, this.pos, this.z) !== this.z) {
+      this.pos = before;
+      this.vel = vec(0, 0);
     }
 
     // Continuous steering applied every tick on top of the planned move (e.g.
@@ -302,6 +330,14 @@ export class Robot extends Character {
   /** Between plan ticks: cheap continuation of the last plan. The base Robot is
    *  stationary so there's nothing to do; movers override this to keep walking. */
   protected coast(_ai: AiContext): void {}
+
+  /** Is this bot still inside the re-cross cooldown after its last level change?
+   *  While true, think() refuses any step that would change level again, and
+   *  the tactical planner drops cross-level cover spots so it picks cover on its
+   *  own floor instead of standing at the line (see TacOracle.candidates). */
+  protected zLocked(ai: AiContext): boolean {
+    return ai.tick - this.zChangedAt < STAIR_RECROSS_TICKS;
+  }
 
   /** Called every tick after act/coast, before aiming — for continuous steering
    *  applied on top of the planned move (crowd separation, etc.). No-op by default. */
