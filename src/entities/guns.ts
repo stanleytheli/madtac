@@ -364,8 +364,8 @@ export const M16: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 7,
-    bulletSpeed: 60,
-    bulletLife: 70,
+    bulletSpeed: 90,
+    bulletLife: 50,
     auto: true,
     spread: 0.02,
     magSize: 30,
@@ -373,7 +373,7 @@ export const M16: GunSpec = {
     reloadTime: 150,
     drawTime: 40,
     tracerWidth: 4.0,
-    tracerLength: 200,
+    tracerLength: 300,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 8,
@@ -428,8 +428,8 @@ export const M4A1S: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 8,
-    bulletSpeed: 60,
-    bulletLife: 70,
+    bulletSpeed: 90,
+    bulletLife: 50,
     auto: true,
     spread: 0.02,
     magSize: 25,
@@ -437,7 +437,7 @@ export const M4A1S: GunSpec = {
     reloadTime: 150,
     drawTime: 50,
     tracerWidth: 4.0,
-    tracerLength: 200,
+    tracerLength: 300,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 8,
@@ -488,8 +488,8 @@ export const AK47: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 8,
-    bulletSpeed: 60,
-    bulletLife: 70,
+    bulletSpeed: 90,
+    bulletLife: 50,
     auto: true,
     spread: 0.025,
     magSize: 30,
@@ -497,7 +497,7 @@ export const AK47: GunSpec = {
     reloadTime: 150,
     drawTime: 40,
     tracerWidth: 5.0,
-    tracerLength: 170,
+    tracerLength: 300,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 10,
@@ -549,8 +549,8 @@ export const MP5: GunSpec = {
   speed: 0.90,
   fire: {
     delay: 6,
-    bulletSpeed: 50,
-    bulletLife: 50,
+    bulletSpeed: 75,
+    bulletLife: 35,
     auto: true,
     spread: 0.05,
     magSize: 30,
@@ -558,7 +558,7 @@ export const MP5: GunSpec = {
     reloadTime: 120,
     drawTime: 30,
     tracerWidth: 3.0,
-    tracerLength: 130,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 6,
@@ -612,8 +612,8 @@ export const SCAR17: GunSpec = {
   speed: 0.80,
   fire: {
     delay: 11,
-    bulletSpeed: 80,
-    bulletLife: 60,
+    bulletSpeed: 90,
+    bulletLife: 40,
     auto: false,
     spread: 0.005,
     magSize: 20,
@@ -621,7 +621,7 @@ export const SCAR17: GunSpec = {
     reloadTime: 180,
     drawTime: 75,
     tracerWidth: 5.0,
-    tracerLength: 170,
+    tracerLength: 300,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 12,
@@ -712,7 +712,7 @@ export const Scout: GunSpec = {
     reloadTime: 175,
     drawTime: 60,
     tracerWidth: 7.0,
-    tracerLength: 180,
+    tracerLength: 400,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 16,
@@ -799,7 +799,7 @@ export const AWM: GunSpec = {
     reloadTime: 185,
     drawTime: 70,
     tracerWidth: 9.0,
-    tracerLength: 200,
+    tracerLength: 350,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 18,
@@ -858,8 +858,8 @@ export const MP220: GunSpec = {
   speed: 0.925,
   fire: {
     delay: 10,
-    bulletSpeed: 50,
-    bulletLife: 20,
+    bulletSpeed: 75,
+    bulletLife: 15,
     auto: false,
     spread: 0.025,
     magSize: 2,
@@ -867,7 +867,7 @@ export const MP220: GunSpec = {
     reloadTime: 150,
     drawTime: 40,
     tracerWidth: 3.0,
-    tracerLength: 150,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 14,
@@ -936,8 +936,8 @@ export const Mossberg500: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 45, // pump action between shots
-    bulletSpeed: 50,
-    bulletLife: 25,
+    bulletSpeed: 75,
+    bulletLife: 15,
     auto: false,
     spread: 0.03,
     magSize: 6, // tube capacity
@@ -946,7 +946,7 @@ export const Mossberg500: GunSpec = {
     perBullet: true,
     drawTime: 45,
     tracerWidth: 3.0,
-    tracerLength: 150,
+    tracerLength: 200,
     tracerColor: "#ffe26b",
   },
   visualRecoil: 16,
@@ -1015,8 +1015,8 @@ export const M249: GunSpec = {
   speed: 0.75,
   fire: {
     delay: 6,
-    bulletSpeed: 60,
-    bulletLife: 70,
+    bulletSpeed: 90,
+    bulletLife: 50,
     auto: true,
     spread: 0.04,
     magSize: 100,
@@ -1024,7 +1024,7 @@ export const M249: GunSpec = {
     reloadTime: 360,
     drawTime: 75,
     tracerWidth: 4.0,
-    tracerLength: 200,
+    tracerLength: 300,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 7,
@@ -1251,7 +1251,7 @@ export const Golden_M249: GunSpec = {
   speed: 0.75,
   fire: {
     delay: 8,
-    bulletSpeed: 60,
+    bulletSpeed: 90,
     bulletLife: 70,
     auto: true,
     spread: 0.04,
@@ -1260,7 +1260,7 @@ export const Golden_M249: GunSpec = {
     reloadTime: 360,
     drawTime: 75,
     tracerWidth: 4.0,
-    tracerLength: 200,
+    tracerLength: 300,
     tracerColor: "#ae9131"
   },
   visualRecoil: 7,
@@ -1311,7 +1311,7 @@ export const M9: GunSpec = {
   speed: 0.925,
   fire: {
     delay: 8,
-    bulletSpeed: 50,
+    bulletSpeed: 75,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
@@ -1320,7 +1320,7 @@ export const M9: GunSpec = {
     reloadTime: 70,
     drawTime: 30,
     tracerWidth: 3.0,
-    tracerLength: 130,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 12,
@@ -1371,7 +1371,7 @@ export const Skorpion: GunSpec = {
   speed: 0.925,
   fire: {
     delay: 7,
-    bulletSpeed: 50,
+    bulletSpeed: 75,
     bulletLife: 60,
     auto: true,
     spread: 0.10,
@@ -1380,7 +1380,7 @@ export const Skorpion: GunSpec = {
     reloadTime: 90,
     drawTime: 45,
     tracerWidth: 3.0,
-    tracerLength: 130,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 10,
@@ -1430,7 +1430,7 @@ export const Uzi: GunSpec = {
   speed: 0.925,
   fire: {
     delay: 7,
-    bulletSpeed: 50,
+    bulletSpeed: 75,
     bulletLife: 60,
     auto: true,
     spread: 0.08,
@@ -1439,7 +1439,7 @@ export const Uzi: GunSpec = {
     reloadTime: 90,
     drawTime: 45,
     tracerWidth: 3.0,
-    tracerLength: 130,
+    tracerLength: 200,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 8,
@@ -1486,7 +1486,7 @@ export const Colt44: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 20,
-    bulletSpeed: 70,
+    bulletSpeed: 105,
     bulletLife: 60,
     auto: false,
     spread: 0.005,
@@ -1496,7 +1496,7 @@ export const Colt44: GunSpec = {
     reloadTime: 45,
     drawTime: 30,
     tracerWidth: 5.0,
-    tracerLength: 150,
+    tracerLength: 250,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 13,
@@ -1550,7 +1550,7 @@ export const USPS: GunSpec = {
   speed: 0.925,
   fire: {
     delay: 8,
-    bulletSpeed: 50,
+    bulletSpeed: 75,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
@@ -1559,7 +1559,7 @@ export const USPS: GunSpec = {
     reloadTime: 90,
     drawTime: 45,
     tracerWidth: 4.0,
-    tracerLength: 130,
+    tracerLength: 250,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 12,
@@ -1608,7 +1608,7 @@ export const Deagle: GunSpec = {
   speed: 0.85,
   fire: {
     delay: 15,
-    bulletSpeed: 60,
+    bulletSpeed: 90,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
@@ -1617,7 +1617,7 @@ export const Deagle: GunSpec = {
     reloadTime: 90,
     drawTime: 40,
     tracerWidth: 5.0,
-    tracerLength: 175,
+    tracerLength: 300,
     tracerColor: "#ffe26b"
   },
   visualRecoil: 17,
@@ -1665,7 +1665,7 @@ export const Golden_Deagle: GunSpec = {
   speed: 0.8,
   fire: {
     delay: 15,
-    bulletSpeed: 60,
+    bulletSpeed: 90,
     bulletLife: 60,
     auto: false,
     spread: 0.01,
@@ -1674,7 +1674,7 @@ export const Golden_Deagle: GunSpec = {
     reloadTime: 90,
     drawTime: 50,
     tracerWidth: 5.0,
-    tracerLength: 140,
+    tracerLength: 300,
     tracerColor: "#ae9131", // gold
   },
   visualRecoil: 19,
