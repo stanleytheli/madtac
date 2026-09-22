@@ -321,7 +321,7 @@ ducking (below).
 TacOracle.act(ai, target):
   vel = 0
   drop stale focus (dead, or unseen for > FOCUS_MEMORY)
-  chase = target ?? focus ?? bestChase(ai)          ← seen enemy, else remembered, else cheapest-to-reach
+  chase = target ?? focus ?? bestChase(ai)          ← target, else remembered focus, else the ranking's winner (3f)
   contact metrics:
      if in contact with chase (see it AND within our range, same z):  visDist=enemyVisDist=0
      elif chase:  contactScan (cached CONTACT_EVAL_TICKS)             ← nav-scan-heavy; only when out of contact
@@ -341,7 +341,7 @@ TacOracle.act(ai, target):
   if mode==heal:  healMove(ai, chase)                ← back off / hold cover, keep healing
   elif mode==hold: holdMove(ai, nearestHostile)      ← dig in on the pre-aimed angle (3d-hold)
   elif mode==cover: coverMove(ai, chase)             ← least-exposure spot, or dodge
-  elif target and dist<=engageRange: strafeMove(ai,target)  ← in-range fight: hold / slide to a lane
+  elif target and same z and not preAim and dist<=engageRange: strafeMove(ai,target)  ← in-range fight: hold / slide to a lane
   else:                                              ← approach
         clear a teammate's lane first (blockingMate/sidestep), else navChase
 ```
@@ -555,39 +555,75 @@ So: gun bookkeeping and posture are **per-tick**; target choice, candidate
 scoring, and path queries are **per-plan-tick**. If a bot reacts to its own mag
 running dry instantly but takes ~5 ticks to notice you moved, that split is why.
 
-### 3f. Target selection — cost, not distance (`selectTarget`)
+### 3f. Target selection — one cost for everyone (`selectTarget` / `rankHostiles`)
 
-Among visible hostiles, lock the one that can be **shot soonest**, not the nearest:
+**Every** hostile is ranked by ONE cost, and the winner plays two roles — it is
+always what the bot *walks after* (`bestChase` shares the ranking), and it is the
+*aim target* only if it can be shot now or is about to be:
 
 ```
+rankHostiles(ai):
+  for each hostile h:
+      shootable = h on my z AND visibility(h) > 0
+      if shootable:  cost = shootCost(ai, h) + BETA_DIST · dist(h)            ← lane + straight range
+      else:          cost = NO_LANE_COST     + BETA_DIST · walkDist(h)        ← hidden on my z, OR another floor
+      if that range/walk > feasibleRange: cost += OUT_OF_RANGE_PENALTY        ← anyone reachable outranks anyone not
+      if shootable: cost += targetShareCost(ai, h)                            ← spread FIRE (a shooting concern only)
+      if h == focus: cost -= FOCUS_STICKINESS
+  → the min, and whether it was shootable
+
 selectTarget(ai):
   keep the current focus if still valid and the TARGET_EVAL_TICKS timer hasn't fired
-  for each visible hostile h on my z:
-      cost = shootCost(ai, h) + BETA_DIST · dist(h)          ← time-to-first-shot, nudged toward closer
-      if dist(h) > feasibleRange: cost += OUT_OF_RANGE_PENALTY   ← anyone reachable outranks anyone not
-      cost += targetShareCost(ai, h)                        ← spread fire: shun a mate-crowded target
-      if h == focus: cost -= FOCUS_STICKINESS               ← don't flip-flop between near-equal targets
-  pick the min; remember it as focus (kept while briefly blind)
+  { best, shootable } = rankHostiles(ai);  chaseCache = best   ← bestChase reads this
+  if shootable, or preAimable(best):  focus = best; return best     ← the TARGET
+  else: return null                                                 ← chase-only
 ```
+
+The principle is **a floor is cover you walk around, and so is a wall.** Anyone
+the gun can't reach right now — round a corner on our level or a storey away —
+pays the same no-lane sentinel plus the real walk to them, so neither kind is
+excluded and neither is privileged. The sentinel is the *entire* preference for
+someone in view: with `NO_LANE_COST` 400 and `BETA_DIST` 0.75, an unshootable
+enemy wins only when it is ~530 px nearer **on foot** than the best visible one.
+Someone right below the stairs wins; someone far away never beats anyone in
+sight.
+
+It used to exclude hidden same-level hostiles while admitting off-level ones.
+On a map where one team spawns a floor below the other that meant a bot ALWAYS
+had a far off-level "target" and never once weighed the enemy round the next
+corner — dust2-a-3p-tdm's red team walked mid after A-site bots a floor down
+(2500 px by foot) while the player stood hidden in long doors 800 px away.
+Measured with the player pinned there: red entries into long doors went from 12
+to 40–95 per 6000 ticks, and "ignoring a close visible enemy" episodes on
+tdm-arena-big fell from 20% to 7% of exposed ticks (`scripts/probe_ignore.mts`).
+
+**Pre-aim** (`preAimable`, `PREAIM_SIGHT_DIST` 400 px of travel): the winner is
+still made the target when either side is within that much walking of a sight
+line on the other (`reachTo` both ways — the same cached `routeUntilSight`
+contactScan fills, so it's usually free), even across a floor. The muzzle goes
+up on the corner or stair they're about to come round, the aim-hold clock treats
+them as aimable (`Robot.aimable`, which TacOracle widens for a pre-aimed focus),
+and the reaction clock runs — but **no round is fired until they are actually
+exposed** (`shouldFire`/`standToShoot` check `visibility` live while `preAim` is
+set, so the first shot goes the tick they step out), and the engaged-fight
+branch (`strafeMove`) waits for a real lane; a pre-aiming bot keeps approaching.
+Measured on tdm-arena-big / dust2-a-3p-tdm: bots pre-aim on 19–26% of ticks,
+episodes average ~0.7 s and about half end in a real target, 3–5% of pre-aim
+ticks are stationary (no freezing on a wall), zero blind shots.
 
 `shootCost(ai, h)` = the *repositioning* distance to the nearest local movement
 point (here or a strafe candidate) whose lane onto `h` is clear of friends, plus
 `LOW_VIS_PENALTY` if that lane is poor (≤ `LOW_VISIBILITY` points visible). No
-lane anywhere → a flat `NO_LANE_COST`, so anyone shootable-in-place beats anyone
-who isn't. It is deliberately *not* distance-scaled: range enters the cost only
-through the single `BETA_DIST · dist(h)` term above, applied uniformly to
-lane-blocked and shootable hostiles alike. (Folding raw distance into the no-lane
-branch too used to double-weight it, letting a clear far enemy outrank a merely
-teammate-blocked near one — the bot would aim across the map instead of at the
-enemy right in front.)
+lane anywhere → the same flat `NO_LANE_COST`, so a friend-blocked hostile lands
+in the unshootable bucket too. It is deliberately *not* distance-scaled: range
+enters the cost only through the single `BETA_DIST` term above. (Folding raw
+distance into the no-lane branch too used to double-weight it, letting a clear
+far enemy outrank a merely teammate-blocked near one — the bot would aim across
+the map instead of at the enemy right in front.)
 
-Because `BETA_DIST` is `0.75` and `NO_LANE_COST` is `400`, the practical trade is:
-**a shootable hostile beats a lane-blocked one even when it's ~300–530 px further
-away** (the span is how much strafing the shootable one costs, 0–180). Raise
-`BETA_DIST` and bots fixate on whoever's closest even
-through a teammate; lower it and they'll turn to snipe someone far away because
-the lane happens to be cleaner. The stale `0.35` in `shootCost`'s comment is the
-old value, not the live one.
+Raise `BETA_DIST` and bots fixate on whoever's closest even through a teammate;
+lower it and they'll turn to snipe someone far away because the lane happens to
+be cleaner.
 
 **Target splitting** (`targetShareCost`) keeps a squad from dogpiling one enemy: a
 stepped surcharge by how many *other* live teammates already hold `h` as their

@@ -36,7 +36,7 @@ function world(): World {
     vehicles: [],
     bullets: [],
     projectiles: [],
-    particles: [],
+    particles: [], decals: [],
   };
 }
 

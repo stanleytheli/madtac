@@ -100,6 +100,20 @@ export function boxSurfaceNormal(pos: Vec2, o: Box): { n: Vec2; dist: number } {
   return { n: o.angle ? rotate(ln, o.angle) : ln, dist: 0 };
 }
 
+/** Outward unit normal from the nearest surface of an obstacle (box or barrel)
+ *  toward `pos`, plus the signed distance from `pos` to that surface (negative
+ *  when `pos` is inside a barrel; 0 inside a box — see boxSurfaceNormal). So
+ *  `pos - n*dist` is the surface point nearest `pos`, for anything that wants
+ *  to sit exactly on the face a round struck. */
+export function obstacleSurfaceNormal(pos: Vec2, o: Obstacle): { n: Vec2; dist: number } {
+  if (!o.round) return boxSurfaceNormal(pos, o);
+  const dx = pos.x - o.pos.x;
+  const dy = pos.y - o.pos.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 1e-9) return { n: vec(1, 0), dist: -obstacleRadius(o) }; // dead centre: any way out
+  return { n: vec(dx / d, dy / d), dist: d - obstacleRadius(o) };
+}
+
 /** Push a circle out of another circle if overlapping. Returns the corrected center. */
 export function resolveCircleVsCircle(pos: Vec2, r: number, other: Vec2, otherR: number): Vec2 {
   const dx = pos.x - other.x;

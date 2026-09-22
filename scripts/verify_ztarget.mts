@@ -5,8 +5,16 @@
  * consideration outright. On a staircase that reads badly: stairZ is sharp, so a
  * bot flips its own z at the stair midpoint, and an enemy standing right there
  * would blink in and out of the candidate set while the bot reached past it for
- * whoever shared its level. Off-level hostiles are now COSTED (OFF_LEVEL_PENALTY)
- * rather than excluded — chased, never shot at.
+ * whoever shared its level. Off-level hostiles are now COSTED rather than
+ * excluded — chased, never shot at.
+ *
+ * Since 2026-09-21 ONE ranking covers every hostile (TacOracle.rankHostiles):
+ * shootable = lane + straight range; not shootable right now — behind a wall on
+ * our level OR on another floor — = the no-lane sentinel + the WALK. The winner
+ * is the aim TARGET only when shootable or about to be (pre-aim: within
+ * PREAIM_SIGHT_DIST of travel from a sight line, either direction); otherwise it
+ * is chase-only, reached through bestChase. A pre-aimed enemy gets the muzzle
+ * but never a round until actually exposed.
  *
  * Run: node_modules/.bin/esbuild scripts/verify_ztarget.mts --bundle --platform=node
  *   --format=esm --banner:js='globalThis.window={innerWidth:1920,innerHeight:1080};'
@@ -18,7 +26,7 @@ import { DEFAULT_SKIN } from "../src/entities/character.ts";
 import { Gun } from "../src/entities/gun.ts";
 import { AK47, UNARMED } from "../src/entities/guns.ts";
 import { ObstacleGrid } from "../src/engine/collision.ts";
-import type { World } from "../src/world/world.ts";
+import { makeWall, type World } from "../src/world/world.ts";
 import type { AiContext } from "../src/ai/robot.ts";
 import { norm, sub, vec } from "../src/engine/vec.ts";
 
@@ -29,12 +37,12 @@ const check = (name: string, ok: boolean, detail = ""): void => {
   ok ? passed++ : failed++;
 };
 
-const world = (): World => {
+const world = (obstacles: any[] = []): World => {
   const w: World = {
-    obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [],
+    obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
+    bullets: [], projectiles: [], particles: [], decals: [],
   } as unknown as World;
-  (w as any).grid = new ObstacleGrid([]);
+  (w as any).grid = new ObstacleGrid(obstacles);
   return w;
 };
 const ctx = (w: World, chars: Character[]): AiContext =>
@@ -55,6 +63,7 @@ const foe = (x: number, y: number, z: number): Character => {
   return c;
 };
 const pick = (b: TacOracle, ai: AiContext): Character | null => (b as any).selectTarget(ai);
+const chase = (b: TacOracle, ai: AiContext): Character | null => (b as any).bestChase(ai);
 /** Put `b` in the state a bot is in when the trigger is genuinely live, aimed at
  *  `t` — otherwise "holds fire" passes for reasons that have nothing to do with z. */
 function armForFiring(b: TacOracle, t: Character): void {
@@ -82,11 +91,18 @@ console.log("who a bot picks when the floors differ:");
   check("a shootable target on THIS floor wins, even against a nearer one above",
     pick(b, ctx(w, [b, here, upstairs])) === here);
 
-  // Nothing on this floor: the one upstairs is picked rather than ignored.
+  // Nothing on this floor: the one upstairs is not ignored. Right by us (within
+  // pre-aim reach) it is the target itself; further off it is chase-only — the
+  // walk goes after it while the gun stays free.
   const b2 = bot();
   const only = foe(200, 0, 1);
-  check("with nobody on this floor, one above is still worth going after",
+  check("with nobody on this floor, one right above is pre-aimed (a target)",
     pick(b2, ctx(w, [b2, only])) === only);
+  const b2f = bot();
+  const far = foe(900, 0, 1);
+  const aiFar = ctx(w, [b2f, far]);
+  check("...one further above is not a target (nothing to aim at yet)", pick(b2f, aiFar) === null);
+  check("...but it IS what the bot walks after", chase(b2f, aiFar) === far);
 
   // Out of the gun's reach on this floor vs close by on another: prefer the one
   // that can actually be reached on foot.
@@ -95,6 +111,36 @@ console.log("who a bot picks when the floors differ:");
   const nearAbove = foe(150, 0, 1);
   check(`an unreachable enemy on this floor (${Math.round(REACH)}px gun) loses to a close one above`,
     pick(b3, ctx(w, [b3, faraway, nearAbove])) === nearAbove);
+}
+
+// ---------------------------------------------------- hidden, same level -------
+// A wall is cover you walk around, exactly as a floor is: a hostile behind one on
+// OUR level competes on the same walk-costed terms as one on another floor.
+console.log("a hidden enemy on this floor competes like an off-level one:");
+{
+  // A thick wall between us and x>500; no nav graph, so the walk is the line.
+  const w = world([makeWall(vec(400, 0), 200, 600, 0)]);
+  const b = bot();
+  const hidden = foe(700, 0, 0);
+  const above = foe(1500, 0, 1);
+  const ai = ctx(w, [b, hidden, above]);
+  check("neither is a target (nothing shootable, nobody about to be)", pick(b, ai) === null);
+  check("the nearer one by foot is chased, even though it is behind a wall on our level",
+    chase(b, ai) === hidden);
+
+  // Pre-aim: the same wall, the enemy just the other side of it.
+  const b2 = bot();
+  const near = foe(380, 0, 0);
+  const w2 = world([makeWall(vec(200, 0), 200, 600, 0)]);
+  const ai2 = ctx(w2, [b2, near]);
+  check("an enemy within pre-aim reach behind the wall IS the target", pick(b2, ai2) === near);
+  armForFiring(b2, near);
+  check("...held in the sights but NOT fired at through the wall", !wouldFire(b2, ai2, near));
+  check("...nor is a heavy gun planted on it", !(b2 as any).standToShoot(ai2, near));
+  // They step out on our side of the wall: same focus, now a real shot.
+  near.pos = vec(80, 0);
+  armForFiring(b2, near);
+  check("...and the tick they step out, it fires", pick(b2, ai2) === near && wouldFire(b2, ai2, near));
 }
 
 // ---------------------------------------------------------------- firing ------

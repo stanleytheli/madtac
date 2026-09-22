@@ -56,7 +56,7 @@ function emptyWorld(obstacles: any[] = [], vehicles: Vehicle[] = []): World {
     vehicles,
     bullets: [],
     projectiles: [],
-    particles: [],
+    particles: [], decals: [],
   };
   w.grid = new ObstacleGrid(obstacles);
   return w;
@@ -221,7 +221,7 @@ function navWorld(vehicles: Vehicle[]): { world: World; nav: NavGraph } {
   const nodes = [makeNode(vec(-150, 0), 0), makeNode(vec(150, 0), 0), makeNode(vec(0, -280), 0)];
   const world: World = {
     obstacles: [], floors: [], stairs: [], nodes, items: [], vehicles: [...vehicles],
-    bullets: [], projectiles: [], particles: [],
+    bullets: [], projectiles: [], particles: [], decals: [],
   };
   world.grid = new ObstacleGrid([]);
   const nav = new NavGraph(world);

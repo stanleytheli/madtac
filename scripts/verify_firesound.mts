@@ -35,7 +35,7 @@ const played = (globalThis as any).__played as string[];
 function world(): World {
   const w = {
     obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [],
+    bullets: [], projectiles: [], particles: [], decals: [],
   } as unknown as World;
   (w as any).grid = new ObstacleGrid([]);
   return w;

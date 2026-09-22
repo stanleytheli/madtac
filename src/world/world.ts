@@ -19,6 +19,7 @@ import type { GroundItem } from "../entities/item.ts";
 import type { Vehicle } from "../entities/vehicle.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 import { add, deg2rad, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
+import { stampBulletHole, updateDecals, type Decal } from "../engine/decal.ts";
 import { playSound } from "../engine/audio.ts";
 import { METAL_HIT_SOUND, OBSTACLE_HIT_SOUND, PLAYER_HIT_SOUND, PLAYER_HURT_SOUND, WOOD_HIT_SOUND } from "./hitsounds.ts";
 
@@ -557,6 +558,8 @@ export interface World {
   bullets: Bullet[];
   projectiles: Projectile[]; // AoE rounds in flight (rockets etc.)
   particles: Particle[];
+  /** Bullet holes stamped on obstacle faces (see engine/decal.ts). Cosmetic. */
+  decals: Decal[];
   /** Spatial index over sight-blocking obstacles (see ObstacleGrid), built once
    *  from the static geometry. Absent in the editor / before it's built — then
    *  losClear falls back to scanning the obstacle array. */
@@ -917,7 +920,7 @@ export function createWorld(): World {
     N(-220, 480), N(120, 480, -1), N(280, 480, -1),
   ];
 
-  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [] };
+  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [] };
   sortRenderDepth(world); // bake the render order once (all default depths here)
   return world;
 }
@@ -1003,6 +1006,10 @@ export function blastBloodHeft(rawDamage: number): number {
 /** Entry and exit debris come off at this fraction of the round's usual heft —
  *  a wallbang scatters less than a round that spent everything stopping. */
 const WALLBANG_HEFT = 0.5;
+/** How far past a crossing's face to look for the obstacle that owns it (world
+ *  px): the face point itself sits on the boundary, where a point test is a
+ *  coin flip. */
+const FACE_NUDGE = 0.5;
 
 /** The solid (non-permeable) obstacle at `p` on level `z`, or null. Uses the
  *  spatial index when there is one, and scans otherwise (editor / bare worlds). */
@@ -1169,6 +1176,12 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           // round's energy went through the wall rather than into it.
           spawnParticles(w.particles, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT);
           spawnParticles(w.particles, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT);
+          // A hole on each face it crossed: the entry face belongs to whatever
+          // owns the material just past it (touching material is one run, so
+          // that need not be `struck`); the exit face is exitOf's by definition.
+          const entryOf = solidAt(w, add(pen.entry, scale(fwd, FACE_NUDGE)), b.z) ?? struck;
+          stampBulletHole(w.decals, add(pen.entry, backDir), entryOf, b.z, grit);
+          stampBulletHole(w.decals, add(pen.exit, fwd), pen.exitOf, b.z, grit);
           playImpact(obstacleHitSound(struck), pen.entry, b.z);
           // Fly on from the far face: everything nearer than that is the wall it
           // just crossed, and it has already been charged for it.
@@ -1180,6 +1193,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         }
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
         spawnParticles(w.particles, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit);
+        stampBulletHole(w.decals, at, struck, b.z, grit);
         playImpact(obstacleHitSound(struck), at, b.z);
         consumed = true;
         break;
@@ -1240,6 +1254,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
   w.bullets = alive;
 
   w.particles = updateParticles(w.particles);
+  w.decals = updateDecals(w.decals);
 }
 
 /**

@@ -30,7 +30,7 @@ const near = (a: number, b: number, eps = 1e-6): boolean => Math.abs(a - b) <= e
 function world(obstacles: Obstacle[] = []): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [],
+    bullets: [], projectiles: [], particles: [], decals: [],
   } as unknown as World;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;

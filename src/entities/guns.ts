@@ -491,7 +491,7 @@ export const AK47: GunSpec = {
     bulletSpeed: 90,
     bulletLife: 50,
     auto: true,
-    spread: 0.025,
+    spread: 0.0225,
     magSize: 30,
     reserveMags: 3,
     reloadTime: 150,
@@ -719,7 +719,7 @@ export const Scout: GunSpec = {
   recoilRecovery: 1,
   recoilCoef: 0.25,
   recoilGain: 5.5,
-  recoilDelay: 45,
+  recoilDelay: 80,
   movePenalty: 3.5,
   movingFirstShotRecoilMin: 20,
   movingFirstShotRecoilMax: 28,
@@ -774,7 +774,7 @@ export const AWM: GunSpec = {
                       { f: 50, l: 15}, // 75
                       { f: 40, l: 0}, // 90
                       ],
-    rightTimes: [0, 20, 25, 30, 40, 50, 60, 65, 70, 75, 90]
+    rightTimes: [0, 30, 35, 40, 50, 60, 70, 75, 80, 85, 100]
   },
 
   muzzle: { f: 120, l: 0 },
@@ -789,7 +789,7 @@ export const AWM: GunSpec = {
   speed: 0.65,
   stagger: { mul: 0.5, ticks: 45 },
   fire: {
-    delay: 90,
+    delay: 100,
     bulletSpeed: 75,
     bulletLife: 70,
     auto: false,
@@ -806,7 +806,7 @@ export const AWM: GunSpec = {
   recoilRecovery: 1,
   recoilCoef: 0.275,
   recoilGain: 5.5,
-  recoilDelay: 45,
+  recoilDelay: 100,
   movePenalty: 3.5,
   movingFirstShotRecoilMin: 20,
   movingFirstShotRecoilMax: 28,

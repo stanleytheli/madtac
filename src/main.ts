@@ -24,6 +24,7 @@ import {
 import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
 import { ALL_GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
+import { drawDecals } from "./engine/decal.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
@@ -1180,6 +1181,14 @@ function render(): void {
           drawProjectiles(z);
         }
         drawObstaclesWhere(false);
+        // Bullet holes on the walls just drawn. In BOTH passes, like the walls
+        // they're on: a hole bites into the wall's footprint, which the sight
+        // polygon stops at, so a live-only draw would clip it to nothing.
+        const holeImg = world.decals.length ? assetImage("bullethole.png") : null;
+        if (holeImg) {
+          drawDecals(ctx, world.decals.filter((d) =>
+            (!d.on.visibleFrom || zsetHas(d.on.visibleFrom, player.z)) && rectInView(d.on)), holeImg, z);
+        }
         // ...and the heads on top of the rounds, since that is what stops them.
         for (const c of characters) {
           if (c.z === z && showChar(c) && pointInView(c.pos, BODY_RADIUS)) c.draw(ctx, "head");

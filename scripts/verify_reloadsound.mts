@@ -189,7 +189,7 @@ console.log("the bolt cycle is cut short too — but never the shot:");
   const world = (): World => {
     const w = {
       obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-      bullets: [], projectiles: [], particles: [],
+      bullets: [], projectiles: [], particles: [], decals: [],
     } as unknown as World;
     (w as any).grid = new ObstacleGrid([]);
     return w;

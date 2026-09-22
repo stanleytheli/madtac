@@ -200,6 +200,14 @@ const SHARE_EXEMPT_DIST = 300;
 const FOCUS_MEMORY = 120;
 /** Re-run the blind-chase pick this often (matches the Oracle's replan beat). */
 const CHASE_EVAL_TICKS = 30;
+/** Pre-aim. The hostile that wins the ranking (selectTarget) but can't be shot
+ *  yet — round a corner on our level, or a floor away — still drives the gun
+ *  when either side is within this much TRAVEL of a line on the other
+ *  (routeUntilSight, both directions): they are about to step out / come up
+ *  the stairs, and a soldier expecting that has the muzzle up before it
+ *  happens. Same scale as HEAL_ALARM_DISTANCE — an enemy who could get eyes on
+ *  us within it is imminent. Walking distance, never straight line. */
+const PREAIM_SIGHT_DIST = 400;
 /** How wide a berth a firing lane gives teammates. Twice the body: bursts
  *  spray several degrees off the aim line, so grazing a friend's silhouette
  *  with the center line isn't good enough. */
@@ -632,6 +640,10 @@ export class TacOracle extends Oracle {
    *  see FOCUS_MEMORY), and the reselection timer. */
   protected focus: Character | null = null;
   private targetEvalIn = 0;
+  /** The focus is a PRE-AIM (see PREAIM_SIGHT_DIST): held in the sights but not
+   *  shootable yet, so the trigger and the stand-to-shoot plant check exposure
+   *  live, and the engaged-fight branches (strafe) wait for a real lane. */
+  private preAim = false;
   /** Cached route-nearest hostile for blind navigation (see bestChase). */
   private chaseCache: Character | null = null;
   private chaseEvalIn = 0;
@@ -721,7 +733,12 @@ export class TacOracle extends Oracle {
       this.holdMove(ai);
     } else if (this.mode === "cover") {
       this.coverMove(ai, chase);
-    } else if (target && target.z === this.z && dist(this.pos, target.pos) <= this.engageRange) {
+    } else if (
+      target &&
+      target.z === this.z &&
+      !this.preAim && // a pre-aim has no lane yet: keep approaching (below), gun up
+      dist(this.pos, target.pos) <= this.engageRange
+    ) {
       // Same level only. strafeMove ranks spots by the lane they give onto the
       // target, and scoreAt scores zero across levels — so an off-level target
       // left every candidate tied at nothing, strafeTarget null, and the bot
@@ -1937,6 +1954,7 @@ export class TacOracle extends Oracle {
     if (
       target === null ||
       target.z !== this.z || // can't hit them; planting would freeze us facing a floor
+      (this.preAim && this.visibility(ai.world, target) === 0) || // ...or a wall they're behind
       this.mode !== "shoot" ||
       !this.fireOk ||
       this.burstDone ||
@@ -1996,6 +2014,10 @@ export class TacOracle extends Oracle {
     // candidate filter in selectTarget used to be the only thing standing
     // between an off-level enemy and an emptied magazine.
     if (target.z !== this.z) return false;
+    // A pre-aimed target is held in the sights before it can be shot; the round
+    // waits for real exposure — checked live, so the first shot goes the tick
+    // they step out rather than on the next plan tick.
+    if (this.preAim && this.visibility(ai.world, target) === 0) return false;
     if (this.clickIn > 0) return false;
     // Don't spend rounds past the weapon's reach — the bullet would die short.
     if (dist(this.pos, target.pos) > this.gun.feasibleRange) return false;
@@ -2031,6 +2053,27 @@ export class TacOracle extends Oracle {
    *  each visible hostile is costed by the walk to the nearest of its strafe
    *  points with a shootable lane (see shootCost), with hysteresis so two
    *  near-equal targets don't trade the lock every re-evaluation. */
+  /** Pick who to FIGHT — and, as a by-product bestChase shares, who to walk
+   *  after. ONE cost ranks EVERY hostile (rankHostiles): a shootable one pays
+   *  its firing-lane cost plus straight range; anyone we can't put a round on
+   *  right now — behind a wall on our level, or on another floor — pays the
+   *  no-lane sentinel plus the WALK to them. A floor is cover you walk around,
+   *  and so is a wall. The sentinel is the entire preference for someone in
+   *  view: an unshootable enemy wins only when it is ~NO_LANE_COST/BETA_DIST
+   *  (~530px) nearer on foot than the best visible one.
+   *
+   *  The winner is the TARGET (aimed at, reaction-gated, fought) only if it is
+   *  shootable now, or about to be (pre-aim: PREAIM_SIGHT_DIST of travel from a
+   *  sight line, either direction). Otherwise it is chase-only: this returns
+   *  null, bestChase hands the winner to the walk, and the gun stays free for
+   *  the blind corner lookahead.
+   *
+   *  Why the uniform set: hidden same-level hostiles used to be excluded outright
+   *  while off-level ones were admitted. On a map where one team spawns a floor
+   *  below the other, a bot then ALWAYS had a far off-level "target" and never
+   *  once weighed the enemy round the next corner — dust2-a-3p-tdm's red team
+   *  walked mid after A-site bots a floor down (2500px by foot) while the player
+   *  stood hidden in long doors 800px away. */
   protected override selectTarget(ai: AiContext): Character | null {
     this.targetEvalIn -= 1;
     // No z clause: our OWN z flips at a stair midpoint, and requiring a match
@@ -2040,42 +2083,97 @@ export class TacOracle extends Oracle {
     // up. Whether we can SHOOT them is a separate question, asked at the trigger.
     const valid =
       this.focus !== null && this.focus.hp > 0 && this.canSee(ai.world, this.focus);
-    if (valid && this.targetEvalIn > 0) return this.focus;
+    if (valid && this.targetEvalIn > 0) {
+      // Same-level canSee is real exposure: a pre-aim that has stepped into
+      // view is a plain target from here on (off-level canSee is awareness only).
+      if (this.focus!.z === this.z) this.preAim = false;
+      return this.focus;
+    }
     this.targetEvalIn = TARGET_EVAL_TICKS;
 
+    const { best, shootable } = this.rankHostiles(ai);
+    // The same ranking IS the blind chase; don't pay for it twice.
+    this.chaseCache = best ?? this.nearestHostile(ai);
+    this.chaseEvalIn = CHASE_EVAL_TICKS;
+    if (best && (shootable || this.preAimable(ai, best))) {
+      this.preAim = !shootable;
+      this.focus = best;
+      return best;
+    }
+    this.preAim = false;
+    // Chase-only winner (or nobody). A same-level focus is kept as memory (the
+    // enemy we just lost sight of stays the concern until FOCUS_MEMORY lapses,
+    // and it re-enters the ranking with its stickiness each time). An off-level
+    // one can't be: cross-level canSee is always true, so it would pass `valid`
+    // above and come back as a target on the next plan tick regardless of the
+    // ranking that just rejected it.
+    if (this.focus && this.focus.z !== this.z) this.focus = null;
+    return null;
+  }
+
+  /** The one ranking behind selectTarget and bestChase — see selectTarget. */
+  private rankHostiles(ai: AiContext): { best: Character | null; shootable: boolean } {
     let best: Character | null = null;
     let bestCost = Infinity;
+    let bestShootable = false;
     const range = this.gun.feasibleRange;
     for (const h of this.hostiles(ai)) {
-      // Off-level hostiles are candidates now, not exclusions. Nothing special
-      // prices them: scoreAt scores zero for anything off our level, so shootCost
-      // falls through to its "no local lane" sentinel — the same bucket a
-      // same-floor enemy behind a wall lands in — and the walkDist term below
-      // then charges the real distance round to them, up the stairs and all.
-      // A floor is cover you have to walk further around, and that is all.
-      if (!this.canSee(ai.world, h)) continue;
-      // Range is ballistic — the bullet flies the straight line, so that is what
-      // gates it. The proximity term is the straight line on our own level —
-      // deliberately the pre-cross-z behaviour, bit for bit: measured on same-z
-      // alone, walking distance changed the pick in only ~8-14% of contested
-      // scans (walk/straight ratio 1.1-2.1x) while costing +9% AI time, so it
-      // buys nothing there. Across floors the line is essentially wrong
-      // (someone directly overhead is "50px away"), so off-level candidates pay
-      // the real walk — which is also what lets a close-downstairs enemy beat a
-      // far same-floor one without any penalty constant.
-      const d = dist(this.pos, h.pos);
-      const near = h.z === this.z ? d : this.walkDist(ai, this, h);
-      let cost = this.shootCost(ai, h) + BETA_DIST * near;
-      if (d > range) cost += OUT_OF_RANGE_PENALTY; // prefer anyone we can actually reach
-      cost += this.targetShareCost(ai, h); // spread fire: shun a mate-crowded target
+      // Exposure, not awareness: canSee says yes through a ceiling (a deliberate
+      // bot advantage, see verify_zsight) but the gun only reaches our own level.
+      const shootable = h.z === this.z && this.canSee(ai.world, h);
+      let near: number;
+      let cost: number;
+      if (shootable) {
+        // Range is ballistic — the bullet flies the straight line. The proximity
+        // term is the straight line on our own level — deliberately the
+        // pre-cross-z behaviour, bit for bit: measured on same-z alone, walking
+        // distance changed the pick in only ~8-14% of contested scans
+        // (walk/straight ratio 1.1-2.1x) while costing +9% AI time.
+        near = dist(this.pos, h.pos);
+        cost = this.shootCost(ai, h) + BETA_DIST * near;
+      } else {
+        // No shot from anywhere local, so this is the flat sentinel shootCost
+        // would fall through to anyway — every candidate scores nothing against
+        // a hidden or off-level body, so skip the rays — plus the real WALK.
+        // Across floors the straight line is essentially wrong (someone overhead
+        // is "50px away"); on our own level it is what makes a wall cost what a
+        // floor does. Unreachable is Infinity and ranks last.
+        near = this.walkDist(ai, this, h);
+        cost = NO_LANE_COST + BETA_DIST * near;
+      }
+      if (near > range) cost += OUT_OF_RANGE_PENALTY; // prefer anyone we can actually reach
+      // Spread FIRE: shun a mate-crowded target — a shooting concern, so only a
+      // shootable candidate pays it. Charging the walk too let the forbid tier
+      // (3+ mates on them, once "picked only when nothing else is visible")
+      // price the one enemy round the corner off the board for the whole squad:
+      // the pre-aimers hold them as focus, and everyone else walked off after
+      // someone a floor away. The blind chase never carried this term.
+      if (shootable) cost += this.targetShareCost(ai, h);
       if (h === this.focus) cost -= FOCUS_STICKINESS;
       if (cost < bestCost) {
         best = h;
         bestCost = cost;
+        bestShootable = shootable;
       }
     }
-    if (best) this.focus = best; // keep remembering the old focus while blind
-    return best;
+    return { best, shootable: bestShootable };
+  }
+
+  /** About to be in a fight with `h`: either of us is within PREAIM_SIGHT_DIST
+   *  of travel from a line on the other. Both directions go through the shared
+   *  reachTo cache contactScan fills, so this is usually free. */
+  private preAimable(ai: AiContext, h: Character): boolean {
+    return (
+      this.reachTo(ai, this, h) <= PREAIM_SIGHT_DIST ||
+      this.reachTo(ai, h, this) <= PREAIM_SIGHT_DIST
+    );
+  }
+
+  /** A pre-aimed focus drives the gun even across a floor (Robot.think aims only
+   *  at what this admits): the muzzle goes up on the corner / stair they are
+   *  about to come round. The trigger still waits for exposure (shouldFire). */
+  protected override aimable(target: Character): boolean {
+    return target.z === this.z || (this.preAim && target === this.focus);
   }
 
   /** How quickly `h` could be shot from here, as a *repositioning* distance: the
@@ -2121,10 +2219,6 @@ export class TacOracle extends Oracle {
     return TARGET_SHARE_FORBID;
   }
 
-  /** Blind navigation target: the hostile reachable-and-shootable soonest by
-   *  the graph — route distance to the node that sees them — instead of raw
-   *  straight-line distance (which happily picks someone behind a wall on
-   *  another floor). Cached: routes are table lookups but nearestInSight isn't. */
   /** Are we in visual contact with `chase` (an enemy) AND within our weapon's
    *  reach of it right now — i.e. actually able to trade, so the contact metrics
    *  are ~0 and the expensive scan can be skipped? A target seen but beyond
@@ -2182,34 +2276,17 @@ export class TacOracle extends Oracle {
     return best;
   }
 
+  /** Blind navigation target: who to walk after when nothing is targetable —
+   *  the winner of the one hostile ranking (rankHostiles: walk-costed, so it
+   *  never picks someone behind a wall or on another floor over a nearer route). */
   protected bestChase(ai: AiContext): Character | null {
     this.chaseEvalIn -= 1;
     if (this.chaseCache && this.chaseCache.hp > 0 && this.chaseEvalIn > 0) return this.chaseCache;
     this.chaseEvalIn = CHASE_EVAL_TICKS;
-
-    const nav = ai.nav;
-    const curr = nav && nav.nodes.length > 0 ? nav.nearestWalkable(ai.world, this.pos, this.z) : -1;
-    let best: Character | null = null;
-    let bestCost = Infinity;
-    for (const h of this.hostiles(ai)) {
-      let cost: number;
-      if (h.z === this.z && this.canSee(ai.world, h)) {
-        cost = dist(this.pos, h.pos); // already in sight: cost is just range
-      } else if (nav && curr >= 0) {
-        const goal = nav.nearestInSight(ai.world, h.pos, h.z);
-        const step = goal >= 0 ? nav.route(curr, goal) : null;
-        cost = step
-          ? dist(this.pos, nav.nodes[curr].pos) + step.dist + dist(nav.nodes[goal].pos, h.pos)
-          : Infinity;
-      } else {
-        cost = dist(this.pos, h.pos); // no graph: straight line is all there is
-      }
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = h;
-      }
-    }
-    this.chaseCache = best ?? this.nearestHostile(ai); // everyone unreachable: walk at the closest
+    // Same ranking as selectTarget (which refreshes this cache whenever it
+    // ranks, so this only runs when targeting has been coasting on a valid
+    // focus). Everyone unreachable (Infinity walk): walk at the closest by line.
+    this.chaseCache = this.rankHostiles(ai).best ?? this.nearestHostile(ai);
     return this.chaseCache;
   }
 

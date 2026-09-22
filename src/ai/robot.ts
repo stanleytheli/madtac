@@ -260,12 +260,13 @@ export class Robot extends Character {
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     // Aim at the (jittered) point, not the exact target — aimError is a per-plan
     // Gaussian offset in world units, so the miss is bigger up close than far.
-    // Only a target on OUR level drives the gun. An off-level target is pursued,
-    // not aimed at — tracking someone through the floor while crossing the map
-    // reads psychic and points the muzzle at nothing shootable (z-bound rounds).
-    // Facing while walking belongs to navChase's travel/lookahead logic, which
-    // takes over once the aim-hold below expires.
-    if (target && target.z === this.z) {
+    // Only an aimable target drives the gun (base rule: on OUR level). An
+    // off-level target is pursued, not aimed at — tracking someone through the
+    // floor while crossing the map reads psychic and points the muzzle at
+    // nothing shootable (z-bound rounds). Facing while walking belongs to
+    // navChase's travel/lookahead logic, which takes over once the aim-hold
+    // below expires.
+    if (target && this.aimable(target)) {
       this.aimAngle = angleOf(sub(add(target.pos, this.aimError), this.pos));
     }
     this.angle = turnToward(this.angle, this.aimAngle);
@@ -307,7 +308,7 @@ export class Robot extends Character {
       // an off-level target is chased but not aimed at, so it must NOT pin this
       // to 0 — that would freeze the gun on a stale angle forever (navChase's
       // travel-facing waits for AIM_HOLD_TICKS to pass before it takes over).
-      if (target.z === this.z) this.ticksSinceTarget = 0;
+      if (this.aimable(target)) this.ticksSinceTarget = 0;
     } else if (!this.alerted && this.speed < 1e-3) {
       // Never spotted anyone and standing still: idly turn to a new random
       // heading now and then. (While walking, movement owns the facing — see
@@ -321,7 +322,7 @@ export class Robot extends Character {
     }
     // else: has seen a target but lost sight -> hold aimAngle, "on alert".
 
-    if (!target || target.z !== this.z) this.ticksSinceTarget += gain; // Infinity stays Infinity
+    if (!target || !this.aimable(target)) this.ticksSinceTarget += gain; // Infinity stays Infinity
 
     profiler.measure("ai.act", () => this.act(ai, target));
     this.lastTarget = target;
@@ -417,6 +418,14 @@ export class Robot extends Character {
    *  off-level enemy is priced like one behind cover (no lane + the real walk
    *  round to them), and the trigger still refuses across floors, so awareness
    *  buys pursuit, never impossible shots. */
+  /** Does `target` drive the gun (aim tracking, the aim-hold clock)? Base rule:
+   *  only someone on our own level — rounds are z-bound, and tracking a body
+   *  through the floor reads psychic. A subclass may widen it: TacOracle pre-aims
+   *  an enemy about to come into view, which can be up a staircase. */
+  protected aimable(target: Character): boolean {
+    return target.z === this.z;
+  }
+
   protected canSee(world: World, target: Character): boolean {
     if (target.z !== this.z) return true;
     return this.visibility(world, target) > 0;
