@@ -1,10 +1,17 @@
 /**
  * The play session: everything the fixed-timestep simulation owns and mutates —
- * the world, the live character roster, corpses, the player, the active
- * gamemode, and the camera — plus the per-tick `update()` that drives them. The
- * page shell (canvas, rendering, the RAF loop, input wiring) lives in main.ts
- * and reads this object; the level editor is a separate path that never builds a
- * Game.
+ * the world, the live character roster, corpses, the player, and the active
+ * gamemode — plus the per-tick `update()` that drives them. The page shell
+ * (canvas, rendering, the RAF loop, input wiring) lives in main.ts and reads
+ * this object; the level editor is a separate path that never builds a Game.
+ *
+ * The sim is PURE: it reads nothing but the PlayerInput it is handed (see
+ * engine/command.ts), touches no DOM, plays no sound, and draws nothing. What
+ * it wants the outside to hear or see goes out as World.events (see
+ * engine/events.ts); what the client needs to smooth for the eye — the camera
+ * zoom, the crosshair, the vision cone, floor fades — it asks for as targets
+ * (zoomTarget, aimingGun) and eases itself (see ui/view.ts). That is what lets
+ * the same class run headless in a script today and on a server later.
  *
  * Extracted from main.ts so a match can be *reset in place* (respawns, and the
  * "press Enter to restart" flow) without reloading the page — `reset()` rebuilds
@@ -21,7 +28,6 @@ import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCi
 import { KILLFEED_TTL, type GameCtx, type Gamemode, type KillFeedEntry, type PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
-import { isAction, isDown, mouse, moveAxis } from "./engine/input.ts";
 import { ArmorItem, GunItem, separateItems, UtilityItem, type Droppable, type GroundItem } from "./entities/item.ts";
 import {
   ARMOR_SPECS,
@@ -35,25 +41,17 @@ import { NavGraph } from "./world/nav.ts";
 import { profiler } from "./engine/profiler.ts";
 import { Robot, type AiContext } from "./ai/robot.ts";
 import { areHostile, type TeamId } from "./entities/team.ts";
-import { hudHitTest, type SlotKind } from "./ui/ui.ts";
+import type { SlotKind } from "./ui/ui.ts";
+import { idleInput, type PlayerInput } from "./engine/command.ts";
+import { emitSound } from "./engine/events.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
 import { add, angleOf, dist, dot, fromAngle, len, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
-import { playSound } from "./engine/audio.ts";
 import { FOOTSTEP_LEAD, FOOTSTEP_MIN_SPEED, FOOTSTEP_SOUNDS, FOOTSTEP_TICKS } from "./world/hitsounds.ts";
-import { stairClimbDir, stairZ, updateBullets, updateProjectiles, updateSurfaceAlphas, type World } from "./world/world.ts";
+import { stairClimbDir, stairZ, updateBullets, updateProjectiles, type World } from "./world/world.ts";
 import { Vehicle, type VehicleSpec } from "./entities/vehicle.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
 const ENTER_RANGE = 160; // world px to a seat the player can board it from (hulls are big)
-const ZOOM_EASE = 0.12;
-/** How fast the crosshair's displayed spread chases the gun's real spread. Eased
- *  per tick, like the camera zoom above, so it doesn't snap open on the first
- *  shot of a burst or snap shut the instant recoil resets. */
-const CROSSHAIR_EASE = 1.0;
-/** How fast the sight mask's vision cone (see GunSpec.visionCone) follows the
- *  aimed weapon's, per tick — a weapon switch closes or opens the cone over
- *  about a third of a second instead of snapping. Same shape as ZOOM_EASE. */
-const VISION_CONE_EASE = 0.12;
 
 // --- inferred player route (nav congestion) ---------------------------------
 /** How often the player's route is re-inferred (ticks). The inference costs a
@@ -91,8 +89,10 @@ export class Game implements GameCtx {
   readonly characters: Character[] = [];
   readonly bodies: Body[] = [];
   readonly player: Character;
-  readonly camera: { size: number };
   tick = 0;
+  /** Whether the player's input drove them last tick: alive, and the match
+   *  not yet decided. What the HUD's crosshair reads to know when to close. */
+  controllable = true;
 
   /** Nearest reachable ground item this tick (for the HUD prompt + E). */
   interactable: GroundItem | null = null;
@@ -119,24 +119,6 @@ export class Game implements GameCtx {
    *  and kept OUT of the nav baseline (see the constructor). */
   private readonly initialVehicles: readonly { spec: VehicleSpec; pos: Vec2; angle: number; z: number }[];
 
-  /** Smoothed maximum aim spread of the weapon being aimed (radians), for the
-   *  HUD crosshair. Eased in update(); the raw value comes from the gun itself. */
-  crosshairSpread = 0;
-  /** Smoothed full width, in degrees, of the vision cone the sight mask draws
-   *  (360 = all round). Eased in update() toward the aimed weapon's. */
-  visionCone = 360;
-
-  // input edge-detection state (per-tick "was it down last tick?")
-  private prevDown = false;
-  private rmbDown = false;
-  private eDown = false;
-  private xDown = false;
-  private qDown = false;
-  private fourDown = false;
-  private jDown = false;
-  private kDown = false;
-  private enterDown = false;
-
   constructor(
     readonly level: LevelState,
     readonly gamemode: Gamemode,
@@ -159,8 +141,6 @@ export class Game implements GameCtx {
     this.world.grid = new ObstacleGrid(this.world.obstacles);
     this.nav = new NavGraph(this.world);
     this.player = this.buildPlayer();
-    this.world.localPlayer = this.player; // hit/hurt feedback sounds (world.ts)
-    this.camera = { size: this.player.gun.spec.zoom };
     this.start();
   }
 
@@ -174,6 +154,7 @@ export class Game implements GameCtx {
     );
     player.z = spawn?.z ?? 0;
     player.team = "player";
+    player.events = this.world.events;
     return player;
   }
 
@@ -199,6 +180,7 @@ export class Game implements GameCtx {
     this.world.bullets.length = 0;
     this.world.particles.length = 0;
     this.world.decals.length = 0;
+    this.world.events.length = 0;
     this.world.items.length = 0;
     this.world.items.push(...this.initialItems);
     this.minimapDeaths.length = 0;
@@ -223,7 +205,6 @@ export class Game implements GameCtx {
     this.characters.push(this.player);
 
     this.gamemode.init(this);
-    updateSurfaceAlphas(this.world, this.player.z, this.player.pos, true);
   }
 
   reset(): void {
@@ -233,6 +214,7 @@ export class Game implements GameCtx {
   // --- GameCtx helpers ---------------------------------------------------------
 
   addCharacter(c: Character): void {
+    c.events = this.world.events; // its sounds go where everyone else's do
     this.characters.push(c);
   }
 
@@ -288,20 +270,11 @@ export class Game implements GameCtx {
 
   // --- simulation --------------------------------------------------------------
 
-  private screenCenter(): Vec2 {
-    return vec(window.innerWidth / 2, window.innerHeight / 2);
-  }
-
-  /** Aim direction from the mouse (screen-space; scale/translation invariant). */
-  private aimForward(): Vec2 {
-    const t = sub(mouse, this.screenCenter());
-    return t.x === 0 && t.y === 0 ? vec(0, -1) : norm(t);
-  }
-
   /** The camera's zoom target: the equipped gun's zoom bent by the floor
    *  underfoot. Only ONE floor's deltaZoom applies at a time — overlapping
-   *  lookout floors don't stack; the last (topmost, by render order) wins. */
-  private zoomTarget(): number {
+   *  lookout floors don't stack; the last (topmost, by render order) wins.
+   *  A target only: the client eases its camera toward it (see ui/view.ts). */
+  zoomTarget(): number {
     let abs: number | null = null;
     let delta = 0;
     for (const f of this.world.floors) {
@@ -554,17 +527,16 @@ export class Game implements GameCtx {
   /** Route the player's WASD to the driven vehicle — throttle forward/back, steer
    *  left/right, RELATIVE to the hull's facing — and aim its turret at the mouse.
    *  A passenger seat has no driving controls (it only aims a turret if it owns one). */
-  private driveInput(): void {
+  private driveInput(input: PlayerInput): void {
     const v = this.player.vehicle!;
     const seat = this.player.seatIndex;
     const spec = v.seats[seat]?.spec;
     if (!spec) return;
     if (spec.role === "driver") {
-      const axis = moveAxis();
-      v.throttle = -axis.y; // W (screen-up = -y) drives forward along the hull
-      v.steer = axis.x; // D (+x) steers right
+      v.throttle = -input.move.y; // W (screen-up = -y) drives forward along the hull
+      v.steer = input.move.x; // D (+x) steers right
     }
-    if (spec.turret !== undefined) v.aimTurret(seat, angleOf(this.aimForward()));
+    if (spec.turret !== undefined) v.aimTurret(seat, angleOf(input.aim));
   }
 
   /** The interaction prompt text for the HUD: "Exit" while seated, else "Enter
@@ -755,22 +727,23 @@ export class Game implements GameCtx {
     }
   }
 
-  update(): void {
+  /** One tick. `input` is the human player's intent for it (see
+   *  engine/command.ts); omitted = an idle player, which is what a headless
+   *  script's is. Last tick's events are dropped first — read them in between. */
+  update(input: PlayerInput = idleInput()): void {
     this.tick += 1;
+    this.world.events.length = 0;
 
     // Match decided: freeze the player, let the scene keep breathing, and take
-    // the restart key. (Enter also gets swallowed while playing — harmless.)
+    // the restart key.
     const over = this.gamemode.hud(this)?.over ?? false;
-    if (over) {
-      if (isDown("Enter")) {
-        if (!this.enterDown) this.reset();
-        this.enterDown = true;
-        return;
-      }
-      this.enterDown = false;
+    if (over && input.restart) {
+      this.reset();
+      return;
     }
 
     const canControl = this.player.hp > 0 && !over;
+    this.controllable = canControl;
     // Item pickup and vehicle boarding are on-foot actions; while seated E exits.
     const onFoot = !this.player.vehicle;
     this.interactable = canControl && onFoot ? this.findInteractable() : null;
@@ -785,79 +758,39 @@ export class Game implements GameCtx {
     }
 
     if (canControl) {
-      if (isAction("primary")) this.player.equip("primary");
-      if (isAction("secondary")) this.player.equip("secondary");
-      if (isAction("melee")) this.player.equip("hand");
-      if (isAction("reload")) this.player.reload();
-
+      // Slot keys: switch; the belt key while already on the belt cycles to the
+      // next carried utility (so a player can hold several kinds).
+      if (input.equip === "utility") {
+        if (this.player.equippedSlot === "utility") this.player.cycleUtility();
+        else this.player.equipUtility();
+      } else if (input.equip) {
+        this.player.equip(input.equip);
+      }
+      if (input.reload) this.player.reload();
       // X: cancel a timed action (a reload — including a per-round auto-cycle — or
       // a utility use), so you can break off and fire/switch.
-      if (isAction("cancel")) {
-        if (!this.xDown) this.player.cancelAction();
-        this.xDown = true;
-      } else this.xDown = false;
-
-      // Slot 4: equip the belt from another slot; press again on it to cycle to
-      // the next carried utility (so a player can hold several kinds).
-      if (isAction("utility")) {
-        if (!this.fourDown) {
-          if (this.player.equippedSlot === "utility") this.player.cycleUtility();
-          else this.player.equipUtility();
-        }
-        this.fourDown = true;
-      } else this.fourDown = false;
-
-      if (isAction("interact")) {
-        if (!this.eDown) this.interact();
-        this.eDown = true;
-      } else this.eDown = false;
-
-      if (isAction("drop")) {
-        if (!this.qDown) {
-          // Drop what's in hand: the held utility, or else the equipped weapon.
-          if (this.player.holdingUtility) this.dropFromHud("utility");
-          else this.dropEquippedWeapon();
-        }
-        this.qDown = true;
-      } else this.qDown = false;
-
-      if (isAction("dropHud")) {
-        if (!this.rmbDown) {
-          const kind = hudHitTest(mouse, window.innerWidth, window.innerHeight, this.player);
-          if (kind) this.dropFromHud(kind);
-        }
-        this.rmbDown = true;
-      } else this.rmbDown = false;
-
-      if (isDown("KeyJ")) {
-        if (!this.jDown) this.player._takeDamage(22);
-        this.jDown = true;
-      } else this.jDown = false;
-      if (isDown("KeyK")) {
-        if (!this.kDown) this.player._heal(10);
-        this.kDown = true;
-      } else this.kDown = false;
+      if (input.cancel) this.player.cancelAction();
+      if (input.interact) this.interact();
+      if (input.drop) {
+        // Drop what's in hand: the held utility, or else the equipped weapon.
+        if (this.player.holdingUtility) this.dropFromHud("utility");
+        else this.dropEquippedWeapon();
+      }
+      if (input.dropHud) this.dropFromHud(input.dropHud);
+      if (input.debugDamage) this.player._takeDamage(22);
+      if (input.debugHeal) this.player._heal(10);
     }
-
-    this.camera.size += (this.zoomTarget() - this.camera.size) * ZOOM_EASE;
-
-    // Crosshair spread, eased toward whatever the aimed gun says it would do at
-    // the player's current speed. Asked of the gun rather than recomputed here.
-    const spreadTarget = canControl ? this.aimingGun().maxSpread(this.player.speedRatio) : 0;
-    this.crosshairSpread += (spreadTarget - this.crosshairSpread) * CROSSHAIR_EASE;
-    const coneTarget = this.aimingGun().spec.visionCone ?? 360;
-    this.visionCone += (coneTarget - this.visionCone) * VISION_CONE_EASE;
 
     // Refresh every character's staircase state before anyone moves, so the climb
     // slowdown (Character.move / applyStairMove) and the recoil speed both see it.
     for (const c of this.characters) c.onStairs = this.stairDirAt(c);
 
     if (canControl) {
-      this.player.forward = this.aimForward();
+      this.player.forward = input.aim;
       if (this.player.vehicle) {
-        this.driveInput(); // WASD -> vehicle (relative to its facing); aim its turret
+        this.driveInput(input); // WASD -> vehicle (relative to its facing); aim its turret
       } else {
-        this.player.move(moveAxis()); // speed factors live on the Character now
+        this.player.move(input.move); // speed factors live on the Character now
         this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
         this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
       }
@@ -885,10 +818,6 @@ export class Game implements GameCtx {
       }
     }
 
-    profiler.begin("surfaces");
-    updateSurfaceAlphas(this.world, this.player.z, this.player.pos);
-    profiler.end("surfaces");
-
     for (const c of this.characters) c.tickWeapon();
     // Belt/status upkeep (heal-use timer, regen). Runs before bullets resolve, so
     // a regen tick can't revive someone the same tick a lethal shot lands.
@@ -903,7 +832,7 @@ export class Game implements GameCtx {
         const tgun = veh.turretGunForSeat(seat);
         const f = this.aimingGun().spec.fire;
         if (f) {
-          const wantFire = f.auto ? isAction("fire") : isAction("fire") && !this.prevDown;
+          const wantFire = f.auto ? input.fire : input.firePressed;
           if (wantFire) {
             if (tgun) veh.fireTurret(seat, this.world, this.player);
             else this.player.fire(this.world, this.characters);
@@ -911,16 +840,15 @@ export class Game implements GameCtx {
         }
       } else if (this.player.holdingUtility) {
         // Click begins using the selected healing item (not a punch/shot).
-        if (isAction("fire") && !this.prevDown) this.player.startUse();
+        if (input.firePressed) this.player.startUse();
       } else {
         const f = this.player.gun.spec.fire;
         if (f) {
-          const wantFire = f.auto ? isAction("fire") : isAction("fire") && !this.prevDown;
+          const wantFire = f.auto ? input.fire : input.firePressed;
           if (wantFire) this.player.fire(this.world, this.characters);
         }
       }
     }
-    this.prevDown = isAction("fire");
 
     profiler.begin("ai");
     const ai: AiContext = {
@@ -944,7 +872,7 @@ export class Game implements GameCtx {
         c.stepTicks += 1;
         if (c.stepTicks >= FOOTSTEP_TICKS) {
           c.stepTicks = 0;
-          playSound(FOOTSTEP_SOUNDS[c.stepIndex], { pos: c.pos, z: c.z, pitchVar: 0.06 });
+          emitSound(this.world.events, FOOTSTEP_SOUNDS[c.stepIndex], { pos: c.pos, z: c.z, pitchVar: 0.06 });
           c.stepIndex = (c.stepIndex + 1) % FOOTSTEP_SOUNDS.length;
         }
       } else {

@@ -10,18 +10,19 @@ import {
   SHRAPNEL_TRACER_WIDTH,
   STANDARD_EXPLOSION,
   WALL_SHRAPNEL,
-  spawnParticles,
-  updateParticles,
   type Particle,
+  type ParticleBurst,
   type ParticleStyle,
 } from "../engine/particle.ts";
 import type { GroundItem } from "../entities/item.ts";
 import type { Vehicle } from "../entities/vehicle.ts";
+import { nextEntityId } from "../engine/ids.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 import { add, deg2rad, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { stampBulletHole, updateDecals, type Decal } from "../engine/decal.ts";
-import { playSound } from "../engine/audio.ts";
-import { METAL_HIT_SOUND, OBSTACLE_HIT_SOUND, PLAYER_HIT_SOUND, PLAYER_HURT_SOUND, WOOD_HIT_SOUND } from "./hitsounds.ts";
+import type { Decal } from "../engine/decal.ts";
+import { emitSound, type GameEvent } from "../engine/events.ts";
+import type { SoundRef } from "../engine/audio.ts";
+import { METAL_HIT_SOUND, OBSTACLE_HIT_SOUND, WOOD_HIT_SOUND } from "./hitsounds.ts";
 
 // --- verticality ------------------------------------------------------------
 // Everything in the world (characters, obstacles, items, bullets, ...) lives at
@@ -458,6 +459,9 @@ export interface HitMarks {
 }
 
 export interface Hittable {
+  /** Entity id (see engine/ids.ts) — how a hit event names who was struck and
+   *  by whom, so nothing downstream needs the object itself. */
+  readonly id: number;
   pos: Vec2;
   z: number;
   registerHit(
@@ -487,6 +491,7 @@ export interface StaggerEffect {
 }
 
 export interface Bullet {
+  id: number;
   pos: Vec2;
   prev: Vec2; // position last tick (for tracer drawing)
   vel: Vec2;
@@ -526,6 +531,7 @@ export interface Bullet {
  * (non-owner) body, or when its `life` runs out mid-air, it calls `explode`.
  */
 export interface Projectile {
+  id: number;
   pos: Vec2;
   prev: Vec2; // position last tick (for trail drawing)
   vel: Vec2; // constant; rockets don't arc
@@ -557,16 +563,18 @@ export interface World {
   vehicles: Vehicle[]; // drivable multi-part rigid bodies (see entities/vehicle.ts)
   bullets: Bullet[];
   projectiles: Projectile[]; // AoE rounds in flight (rockets etc.)
+  /** Debris in flight and bullet holes on the walls. COSMETIC and client-owned:
+   *  the sim never writes these — it emits `events`, and the client turns them
+   *  into particles and decals (see engine/effects.ts). Empty on a server. */
   particles: Particle[];
-  /** Bullet holes stamped on obstacle faces (see engine/decal.ts). Cosmetic. */
   decals: Decal[];
+  /** What happened this tick, for whoever runs the sim to react to: sounds,
+   *  impacts, hits. Cleared at the start of every Game.update (see engine/events.ts). */
+  events: GameEvent[];
   /** Spatial index over sight-blocking obstacles (see ObstacleGrid), built once
    *  from the static geometry. Absent in the editor / before it's built — then
    *  losClear falls back to scanning the obstacle array. */
   grid?: ObstacleGrid;
-  /** The local player, for the hit/hurt feedback sounds (see hitFeedback).
-   *  Set by the Game; absent in the editor and in headless scripts. */
-  localPlayer?: Hittable;
 }
 
 /** The sound a round makes landing on `o`: its own, else by kind. */
@@ -577,19 +585,27 @@ function obstacleHitSound(o: Obstacle): string {
   return OBSTACLE_HIT_SOUND;
 }
 
-/** Play an impact at a world point. */
-function playImpact(sound: string, at: Vec2, z: number): void {
-  playSound(sound, { pos: at, z, pitchVar: 0.08 });
+/** An impact sound at a world point, as an event. */
+function playImpact(w: World, sound: SoundRef, at: Vec2, z: number): void {
+  emitSound(w.events, sound, { pos: at, z, pitchVar: 0.08 });
 }
 
-/** The local player's hit feedback: a hurt sound when the damage landed on
- *  THEM, a hit-confirm when it was theirs and landed on someone else. Flat —
- *  it is feedback in their ears, not a sound in the world. */
+/** Debris thrown from `pos` along `dir`, as an event (the client spawns the
+ *  particles — see spawnParticles for the arguments' meaning). */
+function emitParticles(w: World, pos: Vec2, dir: Vec2, burst: ParticleBurst, z = 0, heft = 1): void {
+  w.events.push({ kind: "particles", pos, dir, burst, z, heft });
+}
+
+/** A bullet hole on `on` for a round that reached `near`, as an event (the
+ *  client stamps the decal — see stampBulletHole). */
+function emitDecal(w: World, near: Vec2, on: Obstacle, z: number, heft = 1): void {
+  w.events.push({ kind: "decal", near, on, z, heft });
+}
+
+/** Damage landed: say who was hit and by whom. The client turns this into its
+ *  own player's hurt sound or hit-confirm — the sim doesn't know who that is. */
 function hitFeedback(w: World, victim: Hittable, attacker: Hittable | null): void {
-  const me = w.localPlayer;
-  if (!me) return;
-  if (victim === me) playSound(PLAYER_HURT_SOUND);
-  else if (attacker === me) playSound(PLAYER_HIT_SOUND);
+  w.events.push({ kind: "hit", victim: victim.id, attacker: attacker ? attacker.id : null });
 }
 
 /**
@@ -920,7 +936,7 @@ export function createWorld(): World {
     N(-220, 480), N(120, 480, -1), N(280, 480, -1),
   ];
 
-  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [] };
+  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], events: [] };
   sortRenderDepth(world); // bake the render order once (all default depths here)
   return world;
 }
@@ -1174,15 +1190,15 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           b.penUsed = (b.penUsed || 0) + pen.cost;
           // Debris off both faces, at half a normal impact's heft: some of the
           // round's energy went through the wall rather than into it.
-          spawnParticles(w.particles, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT);
-          spawnParticles(w.particles, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT);
+          emitParticles(w, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT);
+          emitParticles(w, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT);
           // A hole on each face it crossed: the entry face belongs to whatever
           // owns the material just past it (touching material is one run, so
           // that need not be `struck`); the exit face is exitOf's by definition.
           const entryOf = solidAt(w, add(pen.entry, scale(fwd, FACE_NUDGE)), b.z) ?? struck;
-          stampBulletHole(w.decals, add(pen.entry, backDir), entryOf, b.z, grit);
-          stampBulletHole(w.decals, add(pen.exit, fwd), pen.exitOf, b.z, grit);
-          playImpact(obstacleHitSound(struck), pen.entry, b.z);
+          emitDecal(w, add(pen.entry, backDir), entryOf, b.z, grit);
+          emitDecal(w, add(pen.exit, fwd), pen.exitOf, b.z, grit);
+          playImpact(w, obstacleHitSound(struck), pen.entry, b.z);
           // Fly on from the far face: everything nearer than that is the wall it
           // just crossed, and it has already been charged for it.
           skipUntil = Math.max(
@@ -1192,9 +1208,9 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           continue;
         }
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
-        spawnParticles(w.particles, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit);
-        stampBulletHole(w.decals, at, struck, b.z, grit);
-        playImpact(obstacleHitSound(struck), at, b.z);
+        emitParticles(w, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit);
+        emitDecal(w, at, struck, b.z, grit);
+        playImpact(w, obstacleHitSound(struck), at, b.z);
         consumed = true;
         break;
       }
@@ -1212,8 +1228,8 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         }
         if (hb) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, hb!));
-          spawnParticles(w.particles, at, backDir, impactBurst(WALL_SHRAPNEL), b.z, grit);
-          playImpact(METAL_HIT_SOUND, at, b.z); // a hull is metal
+          emitParticles(w, at, backDir, impactBurst(WALL_SHRAPNEL), b.z, grit);
+          playImpact(w, METAL_HIT_SOUND, at, b.z); // a hull is metal
           consumed = true;
           break;
         }
@@ -1233,7 +1249,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
           // Blood scales with the round like everything else, but floored: it is
           // the only sign you connected, so a tracerless punch still shows one.
-          spawnParticles(w.particles, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit));
+          emitParticles(w, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit));
           consumed = true;
           break;
         }
@@ -1252,9 +1268,6 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     alive.push(b);
   }
   w.bullets = alive;
-
-  w.particles = updateParticles(w.particles);
-  w.decals = updateDecals(w.decals);
 }
 
 /**
@@ -1311,7 +1324,7 @@ export function meleeSwing(
     struck.registerHit(dir, at, opts.damage, opts.armorPen, owner, opts.gun ?? null);
     if (opts.stagger) struck.applyStagger?.(opts.stagger.mul, opts.stagger.ticks);
     hitFeedback(w, struck, owner);
-    spawnParticles(w.particles, at, scale(dir, -1), BLOOD, owner.z,
+    emitParticles(w, at, scale(dir, -1), BLOOD, owner.z,
       Math.max(BLOOD_MIN_HEFT, opts.heft));
     return true;
   }
@@ -1325,8 +1338,8 @@ export function meleeSwing(
     if (!o) continue;
     const back = scale(forward, -1);
     const at = backOut(p, back, (q) => pointInObstacle(q, o));
-    spawnParticles(w.particles, at, back, obstacleShrapnel(o), owner.z, opts.heft);
-    playImpact(obstacleHitSound(o), at, owner.z);
+    emitParticles(w, at, back, obstacleShrapnel(o), owner.z, opts.heft);
+    playImpact(w, obstacleHitSound(o), at, owner.z);
     return false;
   }
   return false;
@@ -1358,6 +1371,7 @@ export function spawnBullet(
   noscope = false,
 ): void {
   w.bullets.push({
+    id: nextEntityId(),
     pos: origin,
     prev: origin,
     vel: scale(dir, speed),
@@ -1426,7 +1440,7 @@ export function explode(
   // The detonation report, positioned at the blast on its floor. Taken from the
   // launcher's projectile spec so it's edited alongside the rest of the round.
   const boom = gun?.projectile?.explosionSound;
-  if (boom) playSound(boom, { pos: at, z, pitchVar: 0.08 });
+  if (boom) emitSound(w.events, boom, { pos: at, z, pitchVar: 0.08 });
 
   // A ray from the blast to `p` is clear unless a wall or a solid vehicle hull
   // stands in it (grid.blocked / hasLineOfSight both skip permeable fences).
@@ -1457,8 +1471,8 @@ export function explode(
     // Blood off the side facing the blast, thrown back toward it — the same way a
     // bullet's sprays back toward the shooter — and sized by what it actually did.
     const toBlast = scale(dir, -1);
-    spawnParticles(
-      w.particles,
+    emitParticles(
+      w,
       add(t.pos, scale(toBlast, BODY_RADIUS)),
       toBlast,
       BLOOD,
@@ -1471,7 +1485,7 @@ export function explode(
   }
   // Detonation visuals: each burst in the round's blast preset (see ProjectileSpec
   // .explosion). spread is a full circle, so the ejection direction is irrelevant.
-  spawnParticles(w.particles, at, vec(1, 0), blast, z);
+  emitParticles(w, at, vec(1, 0), blast, z);
 }
 
 /**
@@ -1586,6 +1600,7 @@ export function spawnProjectile(
   gun: GunSpec | null = null,
 ): void {
   w.projectiles.push({
+    id: nextEntityId(),
     pos: origin,
     prev: origin,
     vel: scale(dir, speed),

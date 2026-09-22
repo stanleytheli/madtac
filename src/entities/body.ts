@@ -1,3 +1,4 @@
+import { nextEntityId } from "../engine/ids.ts";
 import type { Character } from "./actor.ts";
 import { BODY_RADIUS, drawCharacter, type Skin } from "./character.ts";
 import { resolveCircleVsObstacle } from "../engine/collision.ts";
@@ -50,6 +51,8 @@ function darkenSkin(skin: Skin, f: number): Skin {
  * because bodies are never added to the bullet target list.
  */
 export class Body {
+  /** Entity id (see engine/ids.ts). */
+  readonly id = nextEntityId();
   pos: Vec2;
   vel: Vec2;
   readonly z: number; // level the character died on (corpses don't ride stairs)

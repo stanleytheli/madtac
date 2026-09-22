@@ -106,7 +106,7 @@ console.log("perBullet: cancel mid-top-off keeps the rounds already chambered:")
 // ------------------------------------------ perBullet: click-to-fire cancels ---
 console.log("perBullet: firing mid-top-off cancels the reload (mag not empty):");
 {
-  const world = { bullets: [] as any[] } as any;
+  const world = { bullets: [] as any[], events: [] as any[] } as any;
   const owner = { z: 0, pos: vec(0, 0) } as any;
   const g = new Gun(Mossberg500);
   g.mag = 2; // partway topped off
@@ -124,7 +124,7 @@ console.log("perBullet: firing mid-top-off cancels the reload (mag not empty):")
 
 console.log("perBullet: an EMPTY mag can't fire-cancel (reload commits):");
 {
-  const world = { bullets: [] as any[] } as any;
+  const world = { bullets: [] as any[], events: [] as any[] } as any;
   const owner = { z: 0, pos: vec(0, 0) } as any;
   const g = new Gun(Mossberg500);
   g.mag = 0; // nothing chambered
@@ -139,7 +139,7 @@ console.log("perBullet: an EMPTY mag can't fire-cancel (reload commits):");
 
 console.log("normal gun: firing does NOT interrupt its reload:");
 {
-  const world = { bullets: [] as any[] } as any;
+  const world = { bullets: [] as any[], events: [] as any[] } as any;
   const owner = { z: 0, pos: vec(0, 0) } as any;
   const g = new Gun(AK47);
   g.mag = 10; // has rounds, but mid whole-mag reload

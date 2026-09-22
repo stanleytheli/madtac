@@ -4,7 +4,7 @@
  *     the advertised bound, and the bound not absurdly loose.
  *   - it responds to the things it should (recoil accumulating, movement) and is 0
  *     for a gun that cannot fire.
- *   - Game.crosshairSpread tracks the aimed gun and is SMOOTHED: it converges on
+ *   - ClientView.crosshairSpread tracks the aimed gun and is SMOOTHED: it converges on
  *     the truth while holding fire, but never jumps the way the raw value does.
  *
  * Run: node_modules/.bin/esbuild scripts/verify_crosshair.mts --bundle --platform=node
@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { loadLevel } from "../src/world/level.ts";
 import { DEFAULT_MODE, GAMEMODES } from "../src/gamemodes/gamemode.ts";
 import { Game } from "../src/game.ts";
+import { ClientView } from "../src/ui/view.ts";
 import { Gun, EnemyGun } from "../src/entities/gun.ts";
 import { GUN_SPECS } from "../src/entities/specs.ts";
 import { UNARMED } from "../src/entities/guns.ts";
@@ -117,24 +118,26 @@ for (let i = 0; i < 500; i++) if (Math.abs(eg.shoot(0)) > eg.maxSpread(0) + 1e-9
 check("EnemyGun's flat spread is bounded too", egBreach === 0, `breaches=${egBreach}`);
 
 // ---- the HUD value is smoothed ----------------------------------------------
-console.log("\n--- Game.crosshairSpread is smoothed ---");
+console.log("\n--- ClientView.crosshairSpread is smoothed ---");
 const loaded = loadLevel(readFileSync("src/world/levels/tdm-arena-big.json", "utf8"));
 const mode = loaded.meta?.mode ?? DEFAULT_MODE;
 const game = new Game(loaded, GAMEMODES[mode]({ ...loaded.meta, mode }));
+const view = new ClientView(game.player.gun.spec.zoom, game); // the client's eased HUD state
 let biggestJump = 0;
 let ticks = 0;
-let prev = game.crosshairSpread;
+let prev = view.crosshairSpread;
 for (let i = 0; i < 600; i++) {
   game.update();
-  const jump = Math.abs(game.crosshairSpread - prev);
+  view.update(game);
+  const jump = Math.abs(view.crosshairSpread - prev);
   if (i > 5) biggestJump = Math.max(biggestJump, jump);
-  prev = game.crosshairSpread;
+  prev = view.crosshairSpread;
   ticks++;
 }
 const truth = game.aimingGun().maxSpread(game.player.speedRatio);
 check("converges on the gun's own answer while idle",
-  Math.abs(game.crosshairSpread - truth) < 1e-3,
-  `hud=${game.crosshairSpread.toFixed(5)} gun=${truth.toFixed(5)}`);
+  Math.abs(view.crosshairSpread - truth) < 1e-3,
+  `hud=${view.crosshairSpread.toFixed(5)} gun=${truth.toFixed(5)}`);
 // Easing at 0.2 can move at most 20% of the remaining gap in a tick; the largest
 // plausible gap is the widest gun spread, so a per-tick jump near that means the
 // value is being assigned raw rather than eased.
@@ -143,11 +146,12 @@ check("never steps more than the easing allows", biggestJump < 0.3 * 0.25,
 
 // The point of the smoothing: slam the gun's real spread wide open and the HUD
 // value must walk there over several ticks, not arrive next frame.
-const settled = game.crosshairSpread;
+const settled = view.crosshairSpread;
 game.player.gun.currentRecoil = 40; // as if mid-burst
 const raw = game.aimingGun().maxSpread(game.player.speedRatio);
 game.update();
-const afterOne = game.crosshairSpread;
+view.update(game);
+const afterOne = view.crosshairSpread;
 check("a sudden real change is not applied in one tick",
   afterOne < settled + (raw - settled) * 0.9,
   `raw jumped to ${raw.toFixed(4)}, hud moved ${settled.toFixed(4)} -> ${afterOne.toFixed(4)}`);
@@ -155,13 +159,14 @@ check("a sudden real change is not applied in one tick",
 let steps = 1;
 while (
   steps < 400 &&
-  Math.abs(game.crosshairSpread - game.aimingGun().maxSpread(game.player.speedRatio)) > 1e-4
+  Math.abs(view.crosshairSpread - game.aimingGun().maxSpread(game.player.speedRatio)) > 1e-4
 ) {
   game.update();
+  view.update(game);
   steps += 1;
 }
 check("but it does converge on the gun once left alone", steps < 400,
-  `tracked back to ${game.crosshairSpread.toFixed(5)} in ${steps} ticks`);
+  `tracked back to ${view.crosshairSpread.toFixed(5)} in ${steps} ticks`);
 
 // ---- the drawn geometry -------------------------------------------------------
 // The ticks used to start AT the centre, under the dot and its ring, so the first

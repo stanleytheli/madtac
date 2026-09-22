@@ -8,6 +8,7 @@
  * Run: node_modules/.bin/esbuild scripts/verify_shrapnel.mts --bundle --platform=node
  *   --format=esm --outfile=<tmp>/vsh.mjs && node <tmp>/vsh.mjs
  */
+import { spawnEffects, stepEffects } from "../src/engine/effects.ts";
 import {
   BLOOD,
   BLOOD_MIN_HEFT,
@@ -157,16 +158,19 @@ console.log("\nshooting one: a real bullet into a wall set to `sparks`:");
 function shootInto(o: Obstacle, tracerWidth = SHRAPNEL_TRACER_WIDTH): Particle[] {
   const w: World = {
     obstacles: [o], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [],
+    bullets: [], projectiles: [], particles: [], decals: [], events: [],
   } as unknown as World;
   (w as any).grid = new ObstacleGrid(w.obstacles);
   const pen = { l1: 1, l2: 1, l3: 1, l4: 1 };
   spawnBullet(w, vec(-200, 0), vec(1, 0), 60, 30, 0, null, 10, tracerWidth, 20, "#fff", pen, 0);
-  for (let i = 0; i < 6 && w.particles.length === 0; i++) updateBullets(w, []);
+  for (let i = 0; i < 6 && w.particles.length === 0; i++) {
+    updateBullets(w, []);
+    stepEffects(w); // throw what the sim asked for, then age it one tick, as the client does
+  }
   return w.particles;
 }
 {
-  // updateBullets ticks the particles at the end of the same call, so what comes
+  // stepEffects ages the particles right after throwing them, so what comes
   // back is the burst plus the afterimage each spark has already stamped behind it.
   const ps = shootInto(metalWall);
   const sparks = ps.filter((p) => p.trail !== undefined);
@@ -363,12 +367,15 @@ console.log("\nblood scales with the round, but never to nothing:");
   const shootAt = (tracerWidth: number): Particle[] => {
     const w: World = {
       obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-      bullets: [], projectiles: [], particles: [], decals: [],
+      bullets: [], projectiles: [], particles: [], decals: [], events: [],
     } as unknown as World;
     const target = dummy(vec(0, 0));
     const pen = { l1: 1, l2: 1, l3: 1, l4: 1 };
     spawnBullet(w, vec(-200, 0), vec(1, 0), 60, 30, 0, null, 10, tracerWidth, 20, "#fff", pen, 0);
-    for (let i = 0; i < 6 && w.particles.length === 0; i++) updateBullets(w, [target]);
+    for (let i = 0; i < 6 && w.particles.length === 0; i++) {
+      updateBullets(w, [target]);
+      stepEffects(w);
+    }
     return w.particles;
   };
   const ref = shootAt(SHRAPNEL_TRACER_WIDTH);
@@ -455,7 +462,7 @@ console.log("\nexplosions draw blood, sized by what they did:");
   const hurt = (at: Vec2, damage: number, radius = 250) => {
     const w: World = {
       obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-      bullets: [], projectiles: [], particles: [], decals: [],
+      bullets: [], projectiles: [], particles: [], decals: [], events: [],
     } as unknown as World;
     const took: number[] = [];
     const victim = {
@@ -463,6 +470,7 @@ console.log("\nexplosions draw blood, sized by what they did:");
       registerHit: (_d: any, _p: any, dmg: number) => took.push(dmg),
     } as any;
     explode(w, at, 0, damage, radius, { l1: 1, l2: 1, l3: 1, l4: 1 }, null, [victim]);
+    spawnEffects(w); // the blast's blood, as the client would throw it
     const blood = w.particles.filter((p) => p.color === BLOOD.color && !p.noFade);
     return { took: took[0] ?? 0, blood };
   };

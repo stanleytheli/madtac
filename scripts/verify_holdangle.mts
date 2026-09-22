@@ -34,7 +34,7 @@ const check = (name: string, cond: boolean, extra = ""): void => {
 const world = (obstacles: any[] = []): World => {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [],
-    items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [],
+    items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], events: [],
   };
   w.grid = new ObstacleGrid(obstacles);
   return w;

@@ -10,6 +10,7 @@
  * Run: node_modules/.bin/esbuild scripts/verify_melee.mts --bundle --platform=node
  *   --format=esm --outfile=<tmp>/vm.mjs && node <tmp>/vm.mjs
  */
+import { spawnEffects } from "../src/engine/effects.ts";
 import { makeWall, type Obstacle, type World } from "../src/world/world.ts";
 import { ObstacleGrid } from "../src/engine/collision.ts";
 import { SHRAPNEL_TRACER_WIDTH, BLOOD, BLOOD_MIN_HEFT } from "../src/engine/particle.ts";
@@ -30,7 +31,7 @@ const near = (a: number, b: number, eps = 1e-6): boolean => Math.abs(a - b) <= e
 function world(obstacles: Obstacle[] = []): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [],
+    bullets: [], projectiles: [], particles: [], decals: [], events: [],
   } as unknown as World;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;
@@ -56,6 +57,7 @@ function punch(opts: {
   const target = opts.targetAt ? body(opts.targetAt, "red") : null;
   const before = target ? target.hp : 0;
   const fired = attacker.fire(w, target ? [attacker, target] : [attacker]);
+  spawnEffects(w); // the swing's blood / chips, as the client would throw them
   return {
     fired,
     hurt: target ? before - target.hp : 0,

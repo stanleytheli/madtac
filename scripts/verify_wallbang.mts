@@ -12,6 +12,7 @@
  * Run: node_modules/.bin/esbuild scripts/verify_wallbang.mts --bundle --platform=node
  *   --format=esm --outfile=<tmp>/vwb.mjs && node <tmp>/vwb.mjs
  */
+import { stepEffects } from "../src/engine/effects.ts";
 import {
   WALLBANG_AI_MIN_DAMAGE,
   WALLBANG_MAX_DAMAGE,
@@ -55,7 +56,7 @@ const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 function world(obstacles: Obstacle[]): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [],
+    bullets: [], projectiles: [], particles: [], decals: [], events: [],
   } as unknown as World;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;
@@ -87,7 +88,10 @@ function fire(
   spawnBullet(w, vec(-300, 0), vec(1, 0), speed, 40, 0, null, damage, 4, 20, "#fff", AP, 0,
     undefined, null, penetration);
   const b = w.bullets[0];
-  for (let i = 0; i < 40 && w.bullets.length; i++) updateBullets(w, t ? [t] : []);
+  for (let i = 0; i < 40 && w.bullets.length; i++) {
+    updateBullets(w, t ? [t] : []);
+    stepEffects(w); // the debris the sim asked for, as the client would throw it
+  }
   return { took: t && (t as any).hits.length ? (t as any).hits[0] : null, bullet: b, particles: w.particles.length };
 }
 
@@ -257,6 +261,7 @@ console.log("\ntwo walls crossed inside one tick:");
   spawnBullet(w, vec(-30, 0), vec(1, 0), 200, 40, 0, null, 100, 4, 20, "#fff", AP, 0, undefined, null, 100);
   (t as any).pos = vec(150, 0); // inside this single tick's 200px of travel
   updateBullets(w, [t]); // ONE tick: -30 -> 170, across both walls and into the body
+  stepEffects(w);
   check("one tick can carry a round through two walls and into a body",
     (t as any).hits.length === 1, `hits=${(t as any).hits.length}`);
   check("...with both crossings charged in that tick",
@@ -271,14 +276,20 @@ console.log("\ndebris comes off both faces, at half heft:");
   const w = world([wallAt(0, 40)]);
   const t = dummy(vec(300, 0));
   spawnBullet(w, vec(-300, 0), vec(1, 0), 60, 40, 0, null, 100, 4, 20, "#fff", AP, 0, undefined, null, 200);
-  while (w.bullets.length && !w.particles.length) updateBullets(w, [t]);
+  while (w.bullets.length && !w.particles.length) {
+    updateBullets(w, [t]);
+    stepEffects(w);
+  }
   const xs = w.particles.map((p) => p.pos.x);
   check("debris on the entry face (x ~ -20)", xs.some((x) => x < -15 && x > -30), `${xs.map((x) => x.toFixed(0))}`);
   check("debris on the exit face (x ~ +20)", xs.some((x) => x > 15 && x < 30));
   // Half heft = half size, against a full-power impact on the same wall.
   const solid = world([wallAt(0, 40)]);
   spawnBullet(solid, vec(-300, 0), vec(1, 0), 60, 40, 0, null, 100, 4, 20, "#fff", AP, 0, undefined, null, 0);
-  while (solid.bullets.length && !solid.particles.length) updateBullets(solid, []);
+  while (solid.bullets.length && !solid.particles.length) {
+    updateBullets(solid, []);
+    stepEffects(solid);
+  }
   const banged = Math.max(...w.particles.map((p) => p.size));
   const stopped = Math.max(...solid.particles.map((p) => p.size));
   check("a wallbang scatters half of what a stopped round does",

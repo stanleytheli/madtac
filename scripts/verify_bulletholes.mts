@@ -9,6 +9,7 @@
  * Run: node_modules/.bin/esbuild scripts/verify_bulletholes.mts --bundle --platform=node
  *   --format=esm --outfile=<tmp>/vbh.mjs && node <tmp>/vbh.mjs
  */
+import { stepEffects } from "../src/engine/effects.ts";
 import {
   makeBarrelMetal,
   makeWall,
@@ -32,7 +33,7 @@ const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 function world(obstacles: Obstacle[]): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [],
+    bullets: [], projectiles: [], particles: [], decals: [], events: [],
   } as unknown as World;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;
@@ -42,7 +43,10 @@ function world(obstacles: Obstacle[]): World {
 function fire(obstacles: Obstacle[], from: Vec2, dir: Vec2, penetration = 0, tracer = 4): World {
   const w = world(obstacles);
   spawnBullet(w, from, dir, 60, 40, 0, null, 100, tracer, 20, "#fff", AP, 0, undefined, null, penetration);
-  for (let i = 0; i < 40 && w.bullets.length; i++) updateBullets(w, []);
+  for (let i = 0; i < 40 && w.bullets.length; i++) {
+    updateBullets(w, []);
+    stepEffects(w); // stamp the holes the sim asked for, as the client would
+  }
   return w;
 }
 
@@ -161,7 +165,10 @@ console.log("\na round landing on an existing hole restarts its clock and leaves
   for (let i = 0; i < 10; i++) {
     spawnBullet(w, vec(-300, 2 * (i % 3)), vec(1, 0), 60, 40, 0, null, 100, 4, 20, "#fff", AP, 0, undefined, null, 0);
   }
-  for (let i = 0; i < 40 && w.bullets.length; i++) updateBullets(w, []);
+  for (let i = 0; i < 40 && w.bullets.length; i++) {
+    updateBullets(w, []);
+    stepEffects(w);
+  }
   check("a 10-round burst into one patch leaves one hole", w.decals.length === 1, `n=${w.decals.length}`);
 }
 

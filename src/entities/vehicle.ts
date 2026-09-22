@@ -23,6 +23,7 @@
  * The spec/instance split mirrors gun.ts/guns.ts: immutable `VehicleSpec` data
  * lives in vehicles.ts; this file is the live class.
  */
+import { nextEntityId } from "../engine/ids.ts";
 import { circleIntersectsBox, pointInBox, resolveCircleVsBox, resolveCircleVsObstacle, segmentIntersectsBox, worldAabb, type AABB, type Box } from "../engine/collision.ts";
 import { add, dot, fromAngle, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { Gun } from "./gun.ts";
@@ -102,6 +103,8 @@ export interface PartWorld {
 const isSolid = (p: VehiclePartSpec): boolean => p.solid ?? true;
 
 export class Vehicle {
+  /** Entity id (see engine/ids.ts). */
+  readonly id = nextEntityId();
   pos: Vec2;
   angle: number;
   z: number;

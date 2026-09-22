@@ -25,6 +25,9 @@ import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
 import { ALL_GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
 import { drawDecals } from "./engine/decal.ts";
+import { SoundPlayer, spawnEffects, tickCosmetics } from "./engine/effects.ts";
+import { ClientView } from "./ui/view.ts";
+import { LocalControls } from "./ui/controls.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
@@ -223,7 +226,13 @@ let world = game ? game.world : loaded.world;
 let player = game ? game.player : editorPlayer!;
 let characters = game ? game.characters : [editorPlayer!];
 let bodies = game ? game.bodies : editorBodies;
-let camera = game ? game.camera : { size: editorPlayer!.gun.spec.zoom };
+// The client's eased view of the match (camera zoom, crosshair, vision cone,
+// floor fades) — see ui/view.ts. The editor has its own wheel zoom instead.
+let view = new ClientView(player.gun.spec.zoom, game ?? undefined);
+// The human's keyboard/mouse -> the sim's PlayerInput, once per tick.
+const controls = new LocalControls();
+// The sim's sound events -> the audio engine (see engine/effects.ts).
+const sounds = new SoundPlayer();
 
 const healthBar = new HealthBar({ width: 450, height: 35 });
 // Slightly shorter cyan bar for armor, stacked above the health bar.
@@ -327,7 +336,7 @@ function startPlaytest(): void {
   player = g.player;
   characters = g.characters;
   bodies = g.bodies;
-  camera = g.camera;
+  view = new ClientView(g.player.gun.spec.zoom, g);
   minimap = new Minimap(g.world, pmeta.minimapSize);
   sightMask = sightFlag(pmeta);
   updateRespawnMenu = g.gamemode.setPlayerLoadout ? buildRespawnMenu(g) : null;
@@ -343,7 +352,7 @@ function stopPlaytest(): void {
   player = editorPlayer!;
   characters = [editorPlayer!];
   bodies = editorBodies;
-  camera = { size: editorPlayer!.gun.spec.zoom };
+  view = new ClientView(editorPlayer!.gun.spec.zoom);
   minimap = null;
   sightMask = false;
   updateRespawnMenu = null;
@@ -999,7 +1008,7 @@ function render(): void {
   // A match (booted-in OR a playtest) drives the gun/floor zoom; a bare editor
   // session uses its own free wheel-zoom. `game` is the "a match is live"
   // discriminator everywhere below — during a playtest both game and editor exist.
-  const zoom = game ? camera.size : editor!.zoom;
+  const zoom = game ? view.zoom : editor!.zoom;
   const camPos = player.pos; // camera centers on the player
   setListener(camPos, player.z); // positional audio hears from where the camera sits
 
@@ -1073,7 +1082,7 @@ function render(): void {
   if (game && sightMask) {
     // The vision cone, eased toward the aimed weapon's (see Game.visionCone).
     // Within half a degree of all round it is no cone at all.
-    const coneDeg = game.visionCone;
+    const coneDeg = view.visionCone;
     const cone: SightCone | undefined =
       coneDeg < 359.5
         ? { dir: player.forward, halfAngle: (coneDeg * Math.PI) / 360, grace: VISION_GRACE_R }
@@ -1366,7 +1375,7 @@ function render(): void {
       healthBar,
       armorBar,
       mouse,
-      spread: game.crosshairSpread,
+      spread: view.crosshairSpread,
       interactableLabel: game.interactLabel(),
       gamemode: gh ?? undefined,
       showScoreboard: isAction("scoreboard"),
@@ -1550,8 +1559,16 @@ function frame(now: number): void {
     // silent, so nothing stacks 15 ticks of gunfire into one instant.
     setAudioLive(accumulator < STEP * 2.5);
     // A live match (booted-in or a playtest) steps the game; otherwise the editor.
-    if (game) game.update();
-    else editorGuard(() => editor!.update());
+    if (game) {
+      game.update(controls.poll(game.player, window.innerWidth, window.innerHeight));
+      // Then the client's reaction to the tick: ease the view, throw the
+      // debris and stamp the holes the sim asked for, play its sounds (the
+      // hit feedback is the local player's), and age last tick's debris.
+      view.update(game);
+      spawnEffects(game.world);
+      sounds.play(game.world.events, game.player.id);
+      tickCosmetics(game.world);
+    } else editorGuard(() => editor!.update());
   }
   setAudioLive(true);
   profiler.end("update");

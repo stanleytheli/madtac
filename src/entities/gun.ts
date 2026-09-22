@@ -4,7 +4,8 @@ import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, NOSCOPE_SPEED_RATIO, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { meleeSwing, spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
-import { playSound, stopSound, type SoundHandle } from "../engine/audio.ts";
+import { emitSound, type GameEvent } from "../engine/events.ts";
+import { nextEntityId } from "../engine/ids.ts";
 
 /** Firing sound played for a gun with no `fireSound` of its own. */
 export const DEFAULT_FIRE_SOUND = "gunshot.wav";
@@ -44,6 +45,10 @@ function sampleNormal(mu: number, sigma: number) {
  * dropped / picked up, so each carries its own state independent of who holds it.
  */
 export class Gun implements Droppable {
+  /** Entity id (see engine/ids.ts). Also names this gun's ongoing sounds — its
+   *  reload clip is voice `reload:<id>`, its bolt cycle `cycle:<id>` — so an
+   *  abort can cut them without holding an audio handle (see cancelReload). */
+  readonly id = nextEntityId();
   readonly spec: GunSpec;
 
   /** Recoil-pattern accumulator. Grows per shot, resets after `recoilDelay` idle ticks. */
@@ -59,18 +64,11 @@ export class Gun implements Droppable {
   mag = 0; // rounds currently in the magazine
   reserveMags = 0; // spare full magazines
   reloadTicks = 0; // ticks left in the current reload (0 = not reloading)
-  /** The reload clip currently playing for this gun, as a stoppable handle (0 =
-   *  none). The HOLDER starts it — Character.tickWeapon, off reloadPulse, since
-   *  only the holder knows where in the world it should sound — and hands the
-   *  handle back here, so whoever aborts the reload can silence it without
-   *  needing to know who was carrying the gun. See cancelReload. */
-  reloadVoice: SoundHandle = 0;
-  /** The bolt/pump "action" clip currently cycling, as a stoppable handle. Same
-   *  deal as reloadVoice, but started by the gun itself in fire(). */
-  cycleVoice: SoundHandle = 0;
   reloadPulse = false; // set the tick a reload cycle (re)starts; the holder reads
-                       // it to play the reload sound — fires once per shell on a
+                       // it to sound the reload — fires once per shell on a
                        // perBullet gun, so the holder clears it after reading.
+                       // (The HOLDER sounds it: only it knows where in the world
+                       // the gun is. See Character.tickWeapon and reloadVoice.)
 
   drawTicks = 0; // ticks left in drawing
 
@@ -201,11 +199,21 @@ export class Gun implements Droppable {
     return true;
   }
 
-  /** Abort an in-progress reload without consuming a spare (e.g. on weapon switch). */
-  cancelReload(): void {
+  /** The voice names of this gun's ongoing sounds (see GameEvent "sound"). */
+  get reloadVoice(): string {
+    return `reload:${this.id}`;
+  }
+  get cycleVoice(): string {
+    return `cycle:${this.id}`;
+  }
+
+  /** Abort an in-progress reload without consuming a spare (e.g. on weapon
+   *  switch). `events` is where to say so, so the clip gets cut (see
+   *  stopActionSounds); omitted = nobody is listening (a bare test). */
+  cancelReload(events?: GameEvent[]): void {
     this.reloadTicks = 0;
     this.reloadPulse = false; // drop a just-started cycle's pending sound
-    this.stopActionSounds(); // ...and cut the one already sounding
+    if (events) this.stopActionSounds(events); // ...and cut the one already sounding
   }
 
   /**
@@ -224,11 +232,9 @@ export class Gun implements Droppable {
    * silences the bolt too; the gun is still on cooldown, but a half-second of
    * click-clack is not what it is telling you.)
    */
-  stopActionSounds(): void {
-    stopSound(this.reloadVoice);
-    this.reloadVoice = 0;
-    stopSound(this.cycleVoice);
-    this.cycleVoice = 0;
+  stopActionSounds(events: GameEvent[]): void {
+    events.push({ kind: "stopSound", voice: this.reloadVoice });
+    events.push({ kind: "stopSound", voice: this.cycleVoice });
   }
 
   /**
@@ -240,10 +246,9 @@ export class Gun implements Droppable {
    */
   private finishReload(): void {
     const f = this.spec.fire!;
-    // The clip is fitted to reloadTime (see scripts/fit_audio.mts), so it has just
-    // ended on its own — drop the handle rather than leave a spent one lying
-    // around. A perBullet gun's next shell sets a fresh one below.
-    this.reloadVoice = 0;
+    // The clip is fitted to reloadTime (see scripts/fit_audio.mts), so it has
+    // just ended on its own; nothing to cut. A perBullet gun's next shell
+    // pulses a fresh one below.
     if (f.perBullet) {
       this.mag += 1;
       this.reserveMags -= 1;
@@ -397,13 +402,13 @@ export class Gun implements Droppable {
     // the sound it names: the default is a gunshot, which a fist has no business
     // making, so a swing with no fireSound stays silent.
     const report = this.spec.melee ? this.spec.fireSound : (this.spec.fireSound ?? DEFAULT_FIRE_SOUND);
-    if (report) playSound(report, { pos: origin, z: owner.z, pitchVar: 0.06 });
+    if (report) emitSound(world.events, report, { pos: origin, z: owner.z, pitchVar: 0.06 });
     // The bolt/pump "action" that cycles between shots, fitted to fire.delay. No
     // pitch wobble — it's synced to the delay, and pitching it would drift its end.
-    // Kept as a handle: unlike the report above, a cycle is an ONGOING action, and
-    // an interruption should cut it (see stopActionSounds).
+    // Named: unlike the report above, a cycle is an ONGOING action, and an
+    // interruption should cut it (see stopActionSounds).
     if (this.spec.cycleSound) {
-      this.cycleVoice = playSound(this.spec.cycleSound, { pos: origin, z: owner.z });
+      emitSound(world.events, this.spec.cycleSound, { pos: origin, z: owner.z, voice: this.cycleVoice });
     }
     const f = this.spec.fire!;
 

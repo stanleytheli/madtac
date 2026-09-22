@@ -30,12 +30,10 @@ const check = (name: string, ok: boolean, detail = ""): void => {
   ok ? passed++ : failed++;
 };
 
-const played = (globalThis as any).__played as string[];
-
 function world(): World {
   const w = {
     obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [],
+    bullets: [], projectiles: [], particles: [], decals: [], events: [],
   } as unknown as World;
   (w as any).grid = new ObstacleGrid([]);
   return w;
@@ -49,19 +47,16 @@ const body = (spec: GunSpec, team: string, x = 0): Character => {
   return c;
 };
 
-/** Fire `spec` once and return every sound file the shot tried to play. The
- *  drain lets the stubbed fetch reject, which frees audio.ts's in-flight set so
- *  the next shot of the same weapon records again. */
+/** Fire `spec` once and return every sound file the shot asked for — the
+ *  sound events the sim emitted (see engine/events.ts), which is what the
+ *  client would play. */
 async function shotSounds(spec: GunSpec, opts: { target?: boolean } = {}): Promise<string[]> {
-  played.length = 0;
   const w = world();
   const shooter = body(spec, "blue");
   const target = opts.target ? body(UNARMED, "red", 60) : null;
   const fired = shooter.fire(w, target ? [shooter, target] : [shooter]);
   if (!fired) throw new Error(`${spec.name} refused to fire`);
-  const out = [...played];
-  await new Promise((r) => setTimeout(r, 0));
-  return out;
+  return w.events.filter((e) => e.kind === "sound").map((e) => soundFile(e.sound));
 }
 
 // -------------------------------------------------- melee ---------------------

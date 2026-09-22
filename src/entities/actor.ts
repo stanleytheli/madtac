@@ -6,7 +6,8 @@ import { Gun } from "./gun.ts";
 import { interpGrip, type ArmorPen, type GripLocal, type GunSpec } from "./guns.ts";
 import { gunIcon, utilityIcon } from "./item.ts";
 import { add, angleOf, deg2rad, len, mid, perp, scale, scaleAlong, sub, vec, type Vec2 } from "../engine/vec.ts";
-import { playSound } from "../engine/audio.ts";
+import { emitSound, type GameEvent } from "../engine/events.ts";
+import { nextEntityId } from "../engine/ids.ts";
 import { FOOTSTEP_LEAD, FOOTSTEP_TICKS } from "../world/hitsounds.ts";
 import type { HitMarks, Hittable, World } from "../world/world.ts";
 import type { Vehicle } from "./vehicle.ts";
@@ -68,6 +69,14 @@ const DAMAGE_MARK_MERGE = (12 * Math.PI) / 180;
 const DAMAGE_MARK_MAX = 8;
 
 export class Character {
+  /** Entity id (see engine/ids.ts). */
+  readonly id = nextEntityId();
+  /** Where this character's sounds go (see engine/events.ts): the session
+   *  points it at World.events on spawn (Game.addCharacter / buildPlayer). A
+   *  character nobody has attached — a test, a marker — talks to itself. The
+   *  actions that need it (a reload, an abort) have no world in hand, which is
+   *  why it lives here rather than being passed. */
+  events: GameEvent[] = [];
   pos: Vec2;
   vel: Vec2 = vec(0, 0);
   forward: Vec2 = vec(0, -1); // unit aim direction
@@ -284,7 +293,7 @@ export class Character {
     }
     const old = this.equipped === "utility" ? null : this.slots[this.equipped];
     old?.resetRecoil();
-    old?.cancelReload(); // switching weapons aborts a reload in progress
+    old?.cancelReload(this.events); // switching weapons aborts a reload in progress
     this.cancelUse(); // ...and aborts a healing use in progress
     this.equipped = slot;
     // this.gun.resetRecoil();
@@ -398,7 +407,7 @@ export class Character {
     const slot: SlotName = gun.spec.primary ? "primary" : "secondary";
     const prev = this.slots[slot];
     prev?.resetRecoil();
-    prev?.cancelReload();
+    prev?.cancelReload(this.events);
     this.slots[slot] = gun;
     // this.equipped = slot;
     gun.resetRecoil();
@@ -415,7 +424,7 @@ export class Character {
     if (this.equipped === "hand" || this.equipped === "utility") return null; // not a droppable gun
     const g = this.slots[this.equipped];
     if (!g) return null;
-    g.cancelReload();
+    g.cancelReload(this.events);
     this.slots[this.equipped] = null;
     this.equipped = "hand";
     this.gun.resetDraw(); // bringing the fists up takes its draw time
@@ -428,7 +437,7 @@ export class Character {
   dropSlot(slot: "primary" | "secondary"): Gun | null {
     const g = this.slots[slot];
     if (!g) return null;
-    g.cancelReload();
+    g.cancelReload(this.events);
     this.slots[slot] = null;
     if (this.equipped === slot) {
       this.equipped = "hand";
@@ -474,7 +483,7 @@ export class Character {
    *  a per-round reload's auto-cycle). No-op if nothing is running. Bound to X. */
   cancelAction(): void {
     this.cancelUse();
-    this.gun.cancelReload();
+    this.gun.cancelReload(this.events);
   }
 
   /** Acceleration + friction movement. `axis` is raw -1/0/1 input per axis. */
@@ -531,8 +540,8 @@ export class Character {
     if (this.gun.reloadPulse) {
       this.gun.reloadPulse = false;
       if (this.gun.spec.reloadSound) {
-        // Handed to the gun so an abort can stop it — see Gun.reloadVoice.
-        this.gun.reloadVoice = playSound(this.gun.spec.reloadSound, { pos: this.pos, z: this.z });
+        // Named by the gun's voice so an abort can stop it — see Gun.reloadVoice.
+        emitSound(this.events, this.gun.spec.reloadSound, { pos: this.pos, z: this.z, voice: this.gun.reloadVoice });
       }
     }
   }
