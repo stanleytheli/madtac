@@ -65,3 +65,21 @@ export function idleInput(): PlayerInput {
     debugHeal: false,
   };
 }
+
+/** `input` with every press cleared and the held state kept: what a slot's
+ *  input becomes once a tick has consumed it, so nothing repeats if no fresh
+ *  input arrives before the next. */
+export function heldOnly(input: PlayerInput): PlayerInput {
+  return {
+    ...input,
+    firePressed: false,
+    equip: null,
+    cancel: false,
+    interact: false,
+    drop: false,
+    dropHud: null,
+    restart: false,
+    debugDamage: false,
+    debugHeal: false,
+  };
+}

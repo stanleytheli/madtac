@@ -8,10 +8,14 @@
     "predev": "node scripts/fit_audio.mts",
     "dev": "vite",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "server": "esbuild server/server.ts --bundle --platform=node --format=esm --external:ws --outfile=dist-server/server.mjs --log-level=warning && node dist-server/server.mjs"
   },
   "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/ws": "^8.18.1",
     "typescript": "^5.5.4",
-    "vite": "^5.4.2"
+    "vite": "^5.4.2",
+    "ws": "^8.21.3"
   }
 }

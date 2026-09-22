@@ -1,5 +1,6 @@
 /**
- * Entity identity. Every live game object — a character, a gun, a ground item,
+ * Entity identity. Assigned once at construction; a client MIRROR of a server
+ * object overwrites it with the server's, so the two sides agree on names. Every live game object — a character, a gun, a ground item,
  * a vehicle, a bullet, a projectile — takes a number here when it is built, so
  * anything that has to NAME one across a boundary (a network snapshot, an event
  * that says who hit whom, a save) has something better than an object reference

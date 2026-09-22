@@ -70,7 +70,7 @@ const DAMAGE_MARK_MAX = 8;
 
 export class Character {
   /** Entity id (see engine/ids.ts). */
-  readonly id = nextEntityId();
+  id = nextEntityId();
   /** Where this character's sounds go (see engine/events.ts): the session
    *  points it at World.events on spawn (Game.addCharacter / buildPlayer). A
    *  character nobody has attached — a test, a marker — talks to itself. The
@@ -239,6 +239,20 @@ export class Character {
   /** Use progress in [0, 1] (0 just started, 1 done). 0 when not using. */
   get useProgress(): number {
     return this.useTotal > 0 ? 1 - this.useTicks / this.useTotal : 0;
+  }
+
+  /** The current use's total length in ticks (0 when not using). */
+  get useTotalTicks(): number {
+    return this.useTotal;
+  }
+
+  /** Mirror a use timer from elsewhere (a snapshot of this character on a
+   *  server): the hands play the animation, but nothing lands when it ends —
+   *  the mirror has no spec to apply, and the server did the real one. */
+  setUseTimer(ticks: number, total: number): void {
+    this.useTicks = ticks;
+    this.useTotal = total;
+    this.usingSpec = null;
   }
 
   /** Current movement speed (world px/tick). */

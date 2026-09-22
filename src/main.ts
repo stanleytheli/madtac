@@ -27,6 +27,8 @@ import { drawParticles } from "./engine/particle.ts";
 import { drawDecals } from "./engine/decal.ts";
 import { SoundPlayer, spawnEffects, tickCosmetics } from "./engine/effects.ts";
 import { ClientView } from "./ui/view.ts";
+import { LocalSession, type Session } from "./ui/session.ts";
+import { NetSession } from "./net/client.ts";
 import { LocalControls } from "./ui/controls.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
@@ -95,6 +97,10 @@ window.addEventListener("mousedown", unlockAudio);
 // the player noclips, and the editor drives the camera + all world mutation.
 const params = new URLSearchParams(location.search);
 const EDIT = params.get("edit") === "true";
+// ?connect=host:port joins a dedicated server's match instead of running one
+// here (see net/client.ts); the level then comes from the server. ?name= is
+// what to join as.
+const CONNECT = params.get("connect");
 
 // The map: ?level=<name> picks a JSON from src/world/levels/; with no param the
 // arena-teamfight map loads. (?edit composes: ?edit=true&level=foo edits it.)
@@ -104,7 +110,7 @@ const levelName = params.get("level");
 if (levelName && !(levelName in LEVELS)) {
   console.warn(`unknown level "${levelName}" — falling back to the default map`);
 }
-const levelText = LEVELS[levelName ?? DEFAULT_LEVEL] ?? null;
+const levelText = CONNECT ? null : (LEVELS[levelName ?? DEFAULT_LEVEL] ?? null);
 const loaded = loadLevel(levelText ?? `{ "version": 1, "entities": [] }`);
 
 // The active gamemode: a ?mode= override wins, else the level's own meta.mode,
@@ -202,6 +208,7 @@ if (modeId === "tdm") {
 
 // --- session vs editor -------------------------------------------------------
 let game: Game | null = null;
+let net: NetSession | null = null;
 let editor: Editor | null = null;
 let editorPlayer: Character | null = null;
 const editorBodies: Body[] = [];
@@ -213,6 +220,8 @@ if (EDIT) {
   });
   editorPlayer.z = start.z;
   editor = new Editor(loaded, editorPlayer, canvas);
+} else if (CONNECT) {
+  net = new NetSession(CONNECT, params.get("name") ?? "Player");
 } else {
   game = new Game(loaded, makeMode(meta));
 }
@@ -222,13 +231,16 @@ if (EDIT) {
 // them between the edit session and a throwaway live match — every render helper
 // closes over these module bindings by name, so reassigning here is all it takes.
 // See startPlaytest / stopPlaytest.
-let world = game ? game.world : loaded.world;
-let player = game ? game.player : editorPlayer!;
-let characters = game ? game.characters : [editorPlayer!];
-let bodies = game ? game.bodies : editorBodies;
+// The match this client draws and drives, from the local human's point of
+// view (see ui/session.ts): the Game in this process, or null in the editor.
+let session: Session | null = game ? new LocalSession(game) : net;
+let world = session ? session.world : loaded.world;
+let player = session ? session.player : editorPlayer!;
+let characters = session ? session.characters : [editorPlayer!];
+let bodies = session ? session.bodies : editorBodies;
 // The client's eased view of the match (camera zoom, crosshair, vision cone,
 // floor fades) — see ui/view.ts. The editor has its own wheel zoom instead.
-let view = new ClientView(player.gun.spec.zoom, game ?? undefined);
+let view = new ClientView(player.gun.spec.zoom, session ?? undefined);
 // The human's keyboard/mouse -> the sim's PlayerInput, once per tick.
 const controls = new LocalControls();
 // The sim's sound events -> the audio engine (see engine/effects.ts).
@@ -252,7 +264,27 @@ let sightMask = game ? sightFlag(meta) : false;
 // The post-death loadout screen (see ui/respawn.ts). Only modes with a
 // customizable respawn (the team modes) build one. Rebound per playtest, so the
 // throwaway match gets its own respawn menu (or none).
-let updateRespawnMenu = game && game.gamemode.setPlayerLoadout ? buildRespawnMenu(game) : null;
+const respawnHost = game ? session?.respawnHost() ?? null : null;
+let updateRespawnMenu = respawnHost ? buildRespawnMenu(respawnHost) : null;
+
+// A networked match: the level arrives with the server's welcome, so the
+// renderer's bindings are pointed at the real world then (and again after a
+// server-side restart rebuilds it).
+if (net) {
+  const n = net;
+  n.onReady = (): void => {
+    world = n.world;
+    player = n.player;
+    characters = n.characters;
+    bodies = n.bodies;
+    view = new ClientView(player.gun.spec.zoom, n);
+    minimap = new Minimap(world, n.meta?.minimapSize);
+    sightMask = n.meta ? sightFlag(n.meta) : false;
+    const host = n.respawnHost();
+    updateRespawnMenu = host ? buildRespawnMenu(host) : null;
+    syncCursor();
+  };
+}
 
 // --- editor playtest ---------------------------------------------------------
 // The editor hands the level as it stands to a live match with no reload: build a
@@ -317,7 +349,7 @@ function showPlayChip(on: boolean): void {
  * menu — separate DOM, drawn over the top — keep a normal cursor to click with.
  */
 function syncCursor(): void {
-  canvas.style.cursor = game ? "none" : "";
+  canvas.style.cursor = session ? "none" : "";
 }
 syncCursor();
 
@@ -332,14 +364,17 @@ function startPlaytest(): void {
   const makePlay = GAMEMODES[pmeta.mode ?? DEFAULT_MODE] ?? GAMEMODES[DEFAULT_MODE];
   const g = new Game(copy, makePlay(pmeta));
   game = g;
-  world = g.world;
-  player = g.player;
-  characters = g.characters;
-  bodies = g.bodies;
-  view = new ClientView(g.player.gun.spec.zoom, g);
+  const s = new LocalSession(g);
+  session = s;
+  world = s.world;
+  player = s.player;
+  characters = s.characters;
+  bodies = s.bodies;
+  view = new ClientView(s.player.gun.spec.zoom, s);
   minimap = new Minimap(g.world, pmeta.minimapSize);
   sightMask = sightFlag(pmeta);
-  updateRespawnMenu = g.gamemode.setPlayerLoadout ? buildRespawnMenu(g) : null;
+  const host = s.respawnHost();
+  updateRespawnMenu = host ? buildRespawnMenu(host) : null;
   editor.setSuspended(true);
   showPlayChip(true);
   syncCursor();
@@ -348,6 +383,7 @@ function startPlaytest(): void {
 function stopPlaytest(): void {
   if (!editor || !game) return;
   game = null;
+  session = null;
   world = loaded.world;
   player = editorPlayer!;
   characters = [editorPlayer!];
@@ -999,6 +1035,27 @@ function levelMasks(
   return { visibleInf, hiddenInf, visible, hidden };
 }
 
+/** Top-right connection line for a networked match: state and round trip. A
+ *  refused join says why, centred, since there is nothing else to look at. */
+function drawNetStatus(n: NetSession, w: number): void {
+  ctx.save();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = n.status === "connected" ? "rgba(255,255,255,0.55)" : "#ffb347";
+  const line = n.status === "connected" ? `${n.ping} ms` : n.status;
+  ctx.fillText(line, w - 12, 10);
+  if (n.status === "rejected" || (n.status === "connecting" && !n.meta)) {
+    ctx.textAlign = "center";
+    ctx.font = "bold 22px system-ui, sans-serif";
+    ctx.fillStyle = "#ffffff";
+    const msg = n.status === "rejected" ? `Refused: ${n.rejectReason}` : `Connecting to ${CONNECT}…`;
+    ctx.fillText(msg, w / 2, window.innerHeight / 2 - 11);
+  }
+  ctx.restore();
+}
+
 function render(): void {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
@@ -1008,7 +1065,7 @@ function render(): void {
   // A match (booted-in OR a playtest) drives the gun/floor zoom; a bare editor
   // session uses its own free wheel-zoom. `game` is the "a match is live"
   // discriminator everywhere below — during a playtest both game and editor exist.
-  const zoom = game ? view.zoom : editor!.zoom;
+  const zoom = session ? view.zoom : editor!.zoom;
   const camPos = player.pos; // camera centers on the player
   setListener(camPos, player.z); // positional audio hears from where the camera sits
 
@@ -1068,7 +1125,7 @@ function render(): void {
 
   // The active gamemode's HUD data, computed once and reused for the in-world
   // overlay (domination points), the minimap, and the HUD panel.
-  const gh: GamemodeHud | null = game ? game.gamemode.hud(game) : null;
+  const gh: GamemodeHud | null = session ? session.hud() : null;
 
   // Sight mask (meta.visibility): the player sees only what a straight line on
   // their own level reaches. Everything else — their level outside that
@@ -1079,7 +1136,7 @@ function render(): void {
   let unseen: Path2D | null = null;
   let offHalves: Path2D | null = null;
   const nearHalves = new Map<number, Path2D>();
-  if (game && sightMask) {
+  if (session && sightMask) {
     // The vision cone, eased toward the aimed weapon's (see Game.visionCone).
     // Within half a degree of all round it is no cone at all.
     const coneDeg = view.visionCone;
@@ -1155,7 +1212,7 @@ function render(): void {
         // disc and its sprite).
         if (live)
           for (const it of world.items)
-            if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === game?.interactable);
+            if (it.z === z && pointInView(it.pos, it.radius)) it.draw(ctx, it === session?.interactable);
 
         // Rounds sit between the two kinds of obstacle: OVER what they fly
         // through, UNDER what stops them. A fence (permeable) never stops a bullet
@@ -1213,8 +1270,9 @@ function render(): void {
         }
 
         // Enter-prompt ring on the seat the player would board with E.
-        if (live && game?.enterable && game.enterable.vehicle.z === z) {
-          const sp = game.enterable.vehicle.seatWorld(game.enterable.seat);
+        const seat = session?.enterable;
+        if (live && seat && seat.vehicle.z === z) {
+          const sp = seat.vehicle.seatWorld(seat.seat);
           ctx.strokeStyle = "#3ddcff";
           ctx.lineWidth = 4;
           ctx.beginPath();
@@ -1361,11 +1419,11 @@ function render(): void {
 
   // Editor overlay: snap grid, spawn markers, selection outline + handles. Only
   // while actually editing — a playtest suppresses it (editor exists but game is live).
-  if (editor && !game) editor.drawWorld(ctx);
+  if (editor && !session) editor.drawWorld(ctx);
 
   ctx.restore();
 
-  if (game) {
+  if (session) {
     profiler.begin("render.hud");
     drawHud(ctx, {
       w,
@@ -1376,18 +1434,19 @@ function render(): void {
       armorBar,
       mouse,
       spread: view.crosshairSpread,
-      interactableLabel: game.interactLabel(),
+      interactableLabel: session.interactLabel(),
       gamemode: gh ?? undefined,
       showScoreboard: isAction("scoreboard"),
-      killFeed: game.killFeed,
+      killFeed: session.killFeed,
       damageMarks: player.damageMarks,
       minimap: minimap ?? undefined,
       characters,
-      deaths: game.minimapDeaths,
+      deaths: session.minimapDeaths,
     });
     profiler.end("render.hud");
     updateRespawnMenu?.(gh, isAction("scoreboard"));
   }
+  if (net) drawNetStatus(net, w);
 
   if (profiler.enabled) drawProfilerOverlay(ctx, window.innerWidth);
 }
@@ -1559,15 +1618,15 @@ function frame(now: number): void {
     // silent, so nothing stacks 15 ticks of gunfire into one instant.
     setAudioLive(accumulator < STEP * 2.5);
     // A live match (booted-in or a playtest) steps the game; otherwise the editor.
-    if (game) {
-      game.update(controls.poll(game.player, window.innerWidth, window.innerHeight));
+    if (session) {
+      session.step(controls.poll(session.player, window.innerWidth, window.innerHeight));
       // Then the client's reaction to the tick: ease the view, throw the
       // debris and stamp the holes the sim asked for, play its sounds (the
       // hit feedback is the local player's), and age last tick's debris.
-      view.update(game);
-      spawnEffects(game.world);
-      sounds.play(game.world.events, game.player.id);
-      tickCosmetics(game.world);
+      view.update(session);
+      spawnEffects(session.world);
+      sounds.play(session.world.events, session.player.id);
+      tickCosmetics(session.world);
     } else editorGuard(() => editor!.update());
   }
   setAudioLive(true);
@@ -1580,7 +1639,10 @@ function frame(now: number): void {
 
   profiler.begin("render");
   const tRender = performance.now();
-  if (game) render();
+  if (session) {
+    session.interpolate?.(now);
+    render();
+  }
   else editorGuard(render);
   profiler.end("render");
   prevUpdateMs = updateMs;

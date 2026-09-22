@@ -8,14 +8,11 @@
  * gamemode's respawn delay is up, so there is always time to choose. The whole
  * panel is driven from the gamemode HUD (see GamemodeHud.choosingLoadout /
  * respawnIn) — it holds no state the mode does not already own, beyond the
- * selection it is mirroring back via setPlayerLoadout.
+ * selection it is mirroring back via the host's setLoadout.
  */
-import type { GameCtx, Gamemode, GamemodeHud } from "../gamemodes/gamemode.ts";
+import type { GamemodeHud } from "../gamemodes/gamemode.ts";
 import { ARMOR_SPECS, GUN_SPECS } from "../entities/specs.ts";
-
-/** What the panel needs from the session: the mode to talk to, and the context
- *  to hand it. The Game satisfies this structurally. */
-export type RespawnHost = GameCtx & { readonly gamemode: Gamemode };
+import type { RespawnHost } from "./session.ts";
 
 // The single respawn panel in the DOM, and the Enter-to-respawn listener bound
 // alongside it. Both are torn down before a rebuild (and when a playtest stops),
@@ -242,7 +239,7 @@ export function buildRespawnMenu(
   respawnBtn.disabled = true;
 
   const apply = (): void => {
-    g.gamemode.setPlayerLoadout?.({
+    g.setLoadout({
       primary: picked.primary || undefined,
       secondary: picked.secondary || undefined,
       armor: picked.armor || undefined,
@@ -328,7 +325,7 @@ export function buildRespawnMenu(
   randomBtn.onclick = () => {
     random = true;
     paint();
-    g.gamemode.randomizePlayerLoadout?.();
+    g.randomize();
   };
 
   teardownRespawnMenu(); // a previous playtest's menu, if any — don't leak it
@@ -341,7 +338,7 @@ export function buildRespawnMenu(
 
   const respawn = (): void => {
     if (!open || !ready) return;
-    if (g.gamemode.requestRespawn?.(g)) {
+    if (g.respawn()) {
       panel.classList.remove("is-open");
       open = false;
     }

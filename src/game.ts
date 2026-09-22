@@ -1,7 +1,14 @@
 /**
  * The play session: everything the fixed-timestep simulation owns and mutates —
- * the world, the live character roster, corpses, the player, and the active
- * gamemode — plus the per-tick `update()` that drives them. The page shell
+ * the world, the live character roster, corpses, the human players, and the
+ * active gamemode — plus the per-tick `update()` that drives them.
+ *
+ * Humans are PlayerSlots: a Character plus the per-person state the sim keeps
+ * for it (its input for the tick, what it could pick up, its kill feed). Single
+ * player is a Game with one slot whose input comes from the keyboard; a server
+ * is a Game with a slot per connection (addHuman / removeHuman) whose inputs
+ * come off the wire. `player` is the first slot's character — the local human
+ * in single player, and what every script means by "the player". The page shell
  * (canvas, rendering, the RAF loop, input wiring) lives in main.ts and reads
  * this object; the level editor is a separate path that never builds a Game.
  *
@@ -42,7 +49,7 @@ import { profiler } from "./engine/profiler.ts";
 import { Robot, type AiContext } from "./ai/robot.ts";
 import { areHostile, type TeamId } from "./entities/team.ts";
 import type { SlotKind } from "./ui/ui.ts";
-import { idleInput, type PlayerInput } from "./engine/command.ts";
+import { heldOnly, idleInput, type PlayerInput } from "./engine/command.ts";
 import { emitSound } from "./engine/events.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
 import { add, angleOf, dist, dot, fromAngle, len, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
@@ -83,32 +90,54 @@ function slotGun(key: string | undefined, fallback: string): Gun | undefined {
   return spec ? new Gun(spec) : undefined;
 }
 
+/** One human in the match: their character and everything the sim keeps per
+ *  person rather than per world. See Game.humans. */
+export class PlayerSlot {
+  /** Their character. Revived in place across respawns, never replaced, so the
+   *  reference (and its id) is stable for the life of the slot. */
+  readonly char: Character;
+  /** Display name (the callsign a gamemode gives them, or what they joined as). */
+  name: string;
+  /** Their intent for the coming tick (see engine/command.ts). Presses are
+   *  consumed by update() — cleared after the tick they were applied — so an
+   *  input that isn't refreshed keeps its held state but repeats no press. */
+  input: PlayerInput = idleInput();
+  /** Whether their input drove them last tick: alive, and the match not yet
+   *  decided. What the HUD's crosshair reads to know when to close. */
+  controllable = true;
+  /** Nearest reachable ground item this tick (for the HUD prompt + E). */
+  interactable: GroundItem | null = null;
+  /** Nearest empty vehicle seat they could board this tick (on foot). E
+   *  boards it; while seated, E exits. */
+  enterable: { vehicle: Vehicle; seat: number } | null = null;
+  /** Recent FRIENDLY death locations (non-hostile to them), for the minimap
+   *  X's. Appended in reapDead, aged + pruned in despawnStale, cleared on reset. */
+  readonly minimapDeaths: DeathMark[] = [];
+  /** Their recent-kills feed (the stacked bars above the ammo). The gamemode
+   *  unshifts a credited kill (newest first); despawnStale ages them and drops
+   *  any past KILLFEED_TTL; cleared on reset. */
+  readonly killFeed: KillFeedEntry[] = [];
+
+  constructor(char: Character, name: string) {
+    this.char = char;
+    this.name = name;
+  }
+}
+
+/** How many humans a Game is built with. Default 1 — the local player. A
+ *  server builds with 0 and adds one per connection (addHuman). */
+export interface GameOptions {
+  humans?: number;
+}
+
 export class Game implements GameCtx {
   readonly world: World;
   readonly nav: NavGraph | null;
   readonly characters: Character[] = [];
   readonly bodies: Body[] = [];
-  readonly player: Character;
+  /** The humans in the match, in join order. See PlayerSlot. */
+  readonly humans: PlayerSlot[] = [];
   tick = 0;
-  /** Whether the player's input drove them last tick: alive, and the match
-   *  not yet decided. What the HUD's crosshair reads to know when to close. */
-  controllable = true;
-
-  /** Nearest reachable ground item this tick (for the HUD prompt + E). */
-  interactable: GroundItem | null = null;
-
-  /** Nearest empty vehicle seat the player could board this tick (on foot). E
-   *  boards it; while seated, E exits. */
-  enterable: { vehicle: Vehicle; seat: number } | null = null;
-
-  /** Recent FRIENDLY death locations (non-hostile to the player), for the minimap
-   *  X's. Appended in reapDead, aged + pruned in despawnStale, cleared on reset. */
-  readonly minimapDeaths: DeathMark[] = [];
-
-  /** The local player's recent-kills feed (the stacked bars above the ammo). The
-   *  gamemode unshifts a credited player kill (newest first); despawnStale ages
-   *  them and drops any past KILLFEED_TTL; cleared on reset. */
-  readonly killFeed: KillFeedEntry[] = [];
 
   /** Ground items the level shipped with — restored on reset so death-drops
    *  from a finished match don't pile up across restarts. */
@@ -122,6 +151,7 @@ export class Game implements GameCtx {
   constructor(
     readonly level: LevelState,
     readonly gamemode: Gamemode,
+    opts: GameOptions = {},
   ) {
     this.world = level.world;
     this.initialItems = level.world.items.slice();
@@ -140,22 +170,74 @@ export class Game implements GameCtx {
     // build rides the fast line-of-sight path too.
     this.world.grid = new ObstacleGrid(this.world.obstacles);
     this.nav = new NavGraph(this.world);
-    this.player = this.buildPlayer();
+    for (let i = 0; i < (opts.humans ?? 1); i++) this.addHuman(`Player ${i + 1}`, false);
     this.start();
   }
 
-  /** Construct the player object once (reused across respawns). */
-  private buildPlayer(): Character {
+  /** The first human's character: the local player in single player, and what
+   *  a script means by "the player". A Game built with no humans has none —
+   *  every path inside the sim goes through `humans` instead. */
+  get player(): Character {
+    const first = this.humans[0];
+    if (!first) throw new Error("Game has no human player");
+    return first.char;
+  }
+
+  /** The slot driving `c`, or undefined for a bot. */
+  slotOf(c: Character): PlayerSlot | undefined {
+    return this.humans.find((h) => h.char === c);
+  }
+
+  /**
+   * Add a human to the match: a fresh character at the level's player spawn,
+   * with the level's kit. In a running match the gamemode is told (onHumanJoin)
+   * so it can put them on a team and spawn them properly; at construction the
+   * slots are built first and start() -> gamemode.init handles them all at once
+   * (`announce` = false).
+   */
+  addHuman(name: string, announce = true): PlayerSlot {
     const spawn = this.level.playerSpawn[0];
-    const player = new Character(
+    const char = new Character(
       vec(spawn?.pos.x ?? 0, spawn?.pos.y ?? 0),
       SKINS[spawn?.skin ?? ""] ?? DEFAULT_SKIN,
       this.playerLoadout(),
     );
-    player.z = spawn?.z ?? 0;
-    player.team = "player";
-    player.events = this.world.events;
-    return player;
+    char.z = spawn?.z ?? 0;
+    char.team = "player";
+    char.events = this.world.events;
+    const slot = new PlayerSlot(char, name);
+    this.humans.push(slot);
+    if (announce) {
+      this.spawnHumanAtLevelSpawn(slot);
+      if (!this.characters.includes(char)) this.characters.push(char);
+      this.gamemode.onHumanJoin?.(this, char);
+    }
+    return slot;
+  }
+
+  /** A human left: their character leaves the roster without a corpse (they
+   *  didn't die), the gamemode is told so it can fill the gap, and the slot is
+   *  dropped. Its character object stays valid for anyone still holding it. */
+  removeHuman(slot: PlayerSlot): void {
+    const i = this.humans.indexOf(slot);
+    if (i < 0) return;
+    const c = slot.char;
+    if (c.vehicle) this.exitVehicle(slot);
+    c.cancelAction();
+    if (this.nav) this.nav.setRoute(c, [], c.team);
+    this.gamemode.onHumanLeave?.(this, c);
+    const ci = this.characters.indexOf(c);
+    if (ci >= 0) this.characters.splice(ci, 1);
+    this.humans.splice(i, 1);
+  }
+
+  /** Put a human back at the level's authored player spawn with its kit. */
+  private spawnHumanAtLevelSpawn(slot: PlayerSlot): void {
+    const spawn = this.level.playerSpawn[0];
+    slot.char.respawn(vec(spawn?.pos.x ?? 0, spawn?.pos.y ?? 0), spawn?.z ?? 0, this.playerLoadout());
+    if (spawn?.armor && ARMOR_SPECS[spawn.armor]) {
+      slot.char.equipArmor(new Armors.Armor(ARMOR_SPECS[spawn.armor]));
+    }
   }
 
   /** A fresh loadout matching the level's player spawn (or the classic kit). */
@@ -183,26 +265,27 @@ export class Game implements GameCtx {
     this.world.events.length = 0;
     this.world.items.length = 0;
     this.world.items.push(...this.initialItems);
-    this.minimapDeaths.length = 0;
-    this.killFeed.length = 0;
+    for (const h of this.humans) {
+      h.minimapDeaths.length = 0;
+      h.killFeed.length = 0;
+      h.interactable = null;
+      h.enterable = null;
+    }
 
     // Rebuild vehicles fresh from the authored transforms (drops any occupants,
     // restores positions), then apply each one's footprint to the CCH — a first
     // drive() with zero throttle just settles it out of walls and runs syncNav.
     this.world.vehicles.length = 0;
-    this.enterable = null;
     for (const iv of this.initialVehicles) {
       this.world.vehicles.push(new Vehicle(iv.spec, iv.pos, iv.angle, iv.z));
     }
     for (const v of this.world.vehicles) v.drive(this.world, this.nav);
 
-    const spawn = this.level.playerSpawn[0];
-    this.player.respawn(vec(spawn?.pos.x ?? 0, spawn?.pos.y ?? 0), spawn?.z ?? 0, this.playerLoadout());
-    if (spawn?.armor && ARMOR_SPECS[spawn.armor]) {
-      this.player.equipArmor(new Armors.Armor(ARMOR_SPECS[spawn.armor]));
-    }
     this.characters.length = 0;
-    this.characters.push(this.player);
+    for (const h of this.humans) {
+      this.spawnHumanAtLevelSpawn(h);
+      this.characters.push(h.char);
+    }
 
     this.gamemode.init(this);
   }
@@ -235,11 +318,11 @@ export class Game implements GameCtx {
     return { pos, z: zone.z };
   }
 
-  /** Reset the player in place at a spawn point and re-add it to the roster.
-   *  With `loadout` (GUN_SPECS / ARMOR_SPECS keys) the player is re-armed to that
-   *  kit; without it the player keeps its current weapons + the level's spawn
+  /** Reset a human's character in place at a spawn point and re-add it to the
+   *  roster. With `loadout` (GUN_SPECS / ARMOR_SPECS keys) they are re-armed to
+   *  that kit; without it they keep their current weapons + the level's spawn
    *  armor. Guns are rebuilt from spec, so ammo is always full. */
-  revivePlayer(pos: Vec2, z: number, loadout?: PlayerLoadout): void {
+  reviveHuman(who: Character, pos: Vec2, z: number, loadout?: PlayerLoadout): void {
     let kit: Loadout;
     let armorKey: string | undefined;
     if (loadout) {
@@ -254,18 +337,33 @@ export class Game implements GameCtx {
       // Keep whatever the player was carrying, rebuilt from spec so ammo refills.
       const clone = (g: Gun | null): Gun | undefined => (g ? new Gun(g.spec) : undefined);
       kit = {
-        primary: clone(this.player.slots.primary),
-        secondary: clone(this.player.slots.secondary),
+        primary: clone(who.slots.primary),
+        secondary: clone(who.slots.secondary),
         hand: new Gun(Guns.UNARMED),
         utilities: startingUtilities(),
       };
       armorKey = this.level.playerSpawn[0]?.armor;
     }
-    this.player.respawn(vec(pos.x, pos.y), z, kit);
+    who.respawn(vec(pos.x, pos.y), z, kit);
     if (armorKey && ARMOR_SPECS[armorKey]) {
-      this.player.equipArmor(new Armors.Armor(ARMOR_SPECS[armorKey]));
+      who.equipArmor(new Armors.Armor(ARMOR_SPECS[armorKey]));
     }
-    if (!this.characters.includes(this.player)) this.characters.push(this.player);
+    if (!this.characters.includes(who)) this.characters.push(who);
+  }
+
+  /** Take a character out of the roster without a death: no corpse, no drops,
+   *  no gamemode death. For a bot a human is replacing (see onHumanJoin). */
+  removeCharacter(c: Character): void {
+    c.cancelAction();
+    if (c.vehicle) {
+      const s = c.vehicle.seats[c.seatIndex];
+      if (s) s.occupant = null;
+      c.vehicle = null;
+      c.seatIndex = -1;
+    }
+    if (this.nav) this.nav.setRoute(c, [], c.team);
+    const i = this.characters.indexOf(c);
+    if (i >= 0) this.characters.splice(i, 1);
   }
 
   // --- simulation --------------------------------------------------------------
@@ -274,16 +372,29 @@ export class Game implements GameCtx {
    *  underfoot. Only ONE floor's deltaZoom applies at a time — overlapping
    *  lookout floors don't stack; the last (topmost, by render order) wins.
    *  A target only: the client eases its camera toward it (see ui/view.ts). */
-  zoomTarget(): number {
+  zoomTarget(slot: PlayerSlot): number {
+    const p = slot.char;
     let abs: number | null = null;
     let delta = 0;
     for (const f of this.world.floors) {
-      if (f.level !== this.player.z || (f.zoom === undefined && f.deltaZoom === undefined)) continue;
-      if (!f.infinite && !pointInBox(this.player.pos, f)) continue;
+      if (f.level !== p.z || (f.zoom === undefined && f.deltaZoom === undefined)) continue;
+      if (!f.infinite && !pointInBox(p.pos, f)) continue;
       if (f.zoom !== undefined) abs = f.zoom;
       if (f.deltaZoom !== undefined) delta = f.deltaZoom;
     }
-    return Math.max(0.3, abs ?? this.player.gun.spec.zoom + delta);
+    return Math.max(0.3, abs ?? p.gun.spec.zoom + delta);
+  }
+
+  /** The crosshair's spread target: what the aimed gun would do at the human's
+   *  current speed, or closed while they can't act. Eased by the client. */
+  spreadTarget(slot: PlayerSlot): number {
+    return slot.controllable ? this.aimingGun(slot).maxSpread(slot.char.speedRatio) : 0;
+  }
+
+  /** The sight mask's vision cone target, degrees (360 = all round): the aimed
+   *  weapon's. Eased by the client. */
+  visionConeTarget(slot: PlayerSlot): number {
+    return this.aimingGun(slot).spec.visionCone ?? 360;
   }
 
   /** Resolve `c` against WALLS: it has already moved this tick (pos += vel), so
@@ -426,16 +537,16 @@ export class Game implements GameCtx {
     return null;
   }
 
-  /** Nearest ground item on the player's level, within reach and line of sight. */
-  private findInteractable(): GroundItem | null {
+  /** Nearest ground item on the human's level, within reach and line of sight. */
+  private findInteractable(p: Character): GroundItem | null {
     let best: GroundItem | null = null;
     let bestD = Infinity;
     for (const it of this.world.items) {
       const onStairs = this.world.stairs.some((s) => stairZ(s, it.pos) !== null);
-      if (it.z !== this.player.z && !onStairs) continue;
-      const d = dist(this.player.pos, it.pos);
+      if (it.z !== p.z && !onStairs) continue;
+      const d = dist(p.pos, it.pos);
       if (d > PICKUP_RANGE || d >= bestD) continue;
-      if (!hasLineOfSight(this.player.pos, it.pos, this.world.obstacles, this.player.z)) continue;
+      if (!hasLineOfSight(p.pos, it.pos, this.world.obstacles, p.z)) continue;
       best = it;
       bestD = d;
     }
@@ -446,17 +557,17 @@ export class Game implements GameCtx {
    *  within ENTER_RANGE, with clear line of sight to the seat. LOS uses only the
    *  static walls (the vehicle's OWN hull doesn't block — boarding "through" its
    *  walls is the whole point), so you can't board through a map wall. */
-  private findEnterable(): { vehicle: Vehicle; seat: number } | null {
+  private findEnterable(p: Character): { vehicle: Vehicle; seat: number } | null {
     let best: { vehicle: Vehicle; seat: number } | null = null;
     let bestD = Infinity;
     for (const v of this.world.vehicles) {
-      if (v.z !== this.player.z) continue;
+      if (v.z !== p.z) continue;
       for (let i = 0; i < v.seats.length; i++) {
         if (v.seats[i].occupant) continue;
         const sp = v.seatWorld(i);
-        const d = dist(this.player.pos, sp);
+        const d = dist(p.pos, sp);
         if (d > ENTER_RANGE || d >= bestD) continue;
-        if (!hasLineOfSight(this.player.pos, sp, this.world.obstacles, this.player.z)) continue;
+        if (!hasLineOfSight(p.pos, sp, this.world.obstacles, p.z)) continue;
         best = { vehicle: v, seat: i };
         bestD = d;
       }
@@ -466,35 +577,37 @@ export class Game implements GameCtx {
 
   /** E on foot: board the boardable seat, else pick up the item (at most one of
    *  the two is set — see update()). Seated: E exits. */
-  private interact(): void {
-    if (this.player.vehicle) this.exitVehicle();
-    else if (this.enterable) this.enterVehicle(this.enterable);
-    else if (this.interactable) this.pickUp(this.interactable);
+  private interact(slot: PlayerSlot): void {
+    if (slot.char.vehicle) this.exitVehicle(slot);
+    else if (slot.enterable) this.enterVehicle(slot, slot.enterable);
+    else if (slot.interactable) this.pickUp(slot, slot.interactable);
   }
 
-  enterVehicle(t: { vehicle: Vehicle; seat: number }): void {
-    t.vehicle.seats[t.seat].occupant = this.player;
-    this.player.vehicle = t.vehicle;
-    this.player.seatIndex = t.seat;
-    this.player.vel = vec(0, 0);
-    this.player.pos = t.vehicle.seatWorld(t.seat);
-    this.player.z = t.vehicle.z;
-    this.interactable = null;
-    this.enterable = null;
+  enterVehicle(slot: PlayerSlot, t: { vehicle: Vehicle; seat: number }): void {
+    const p = slot.char;
+    t.vehicle.seats[t.seat].occupant = p;
+    p.vehicle = t.vehicle;
+    p.seatIndex = t.seat;
+    p.vel = vec(0, 0);
+    p.pos = t.vehicle.seatWorld(t.seat);
+    p.z = t.vehicle.z;
+    slot.interactable = null;
+    slot.enterable = null;
   }
 
-  exitVehicle(): void {
-    const v = this.player.vehicle;
+  exitVehicle(slot: PlayerSlot): void {
+    const p = slot.char;
+    const v = p.vehicle;
     if (!v) return;
-    const seat = this.player.seatIndex;
+    const seat = p.seatIndex;
     if (v.seats[seat]) v.seats[seat].occupant = null;
     v.throttle = 0; // stop driving the instant you step out
     v.steer = 0;
-    this.player.pos = this.exitSpot(v, seat);
-    this.player.z = v.z;
-    this.player.vel = vec(0, 0);
-    this.player.vehicle = null;
-    this.player.seatIndex = -1;
+    p.pos = this.exitSpot(v, seat);
+    p.z = v.z;
+    p.vel = vec(0, 0);
+    p.vehicle = null;
+    p.seatIndex = -1;
   }
 
   /** A free spot to step out to beside `seat`: try left, right, behind, ahead of
@@ -527,9 +640,9 @@ export class Game implements GameCtx {
   /** Route the player's WASD to the driven vehicle — throttle forward/back, steer
    *  left/right, RELATIVE to the hull's facing — and aim its turret at the mouse.
    *  A passenger seat has no driving controls (it only aims a turret if it owns one). */
-  private driveInput(input: PlayerInput): void {
-    const v = this.player.vehicle!;
-    const seat = this.player.seatIndex;
+  private driveInput(slot: PlayerSlot, input: PlayerInput): void {
+    const v = slot.char.vehicle!;
+    const seat = slot.char.seatIndex;
     const spec = v.seats[seat]?.spec;
     if (!spec) return;
     if (spec.role === "driver") {
@@ -541,10 +654,10 @@ export class Game implements GameCtx {
 
   /** The interaction prompt text for the HUD: "Exit" while seated, else "Enter
    *  <vehicle>" or the item's label (at most one is active — see update()). */
-  interactLabel(): string | null {
-    if (this.player.vehicle) return "Exit";
-    if (this.enterable) return `Enter ${this.enterable.vehicle.spec.name}`;
-    return this.interactable ? this.interactable.label : null;
+  interactLabel(slot: PlayerSlot): string | null {
+    if (slot.char.vehicle) return "Exit";
+    if (slot.enterable) return `Enter ${slot.enterable.vehicle.spec.name}`;
+    return slot.interactable ? slot.interactable.label : null;
   }
 
   private tossVel(): Vec2 {
@@ -561,39 +674,40 @@ export class Game implements GameCtx {
     this.world.items.push(it);
   }
 
-  private pickUp(item: GroundItem): void {
+  private pickUp(slot: PlayerSlot, item: GroundItem): void {
+    const p = slot.char;
     const idx = this.world.items.indexOf(item);
     if (idx >= 0) this.world.items.splice(idx, 1);
-    const here = (): Vec2 => vec(this.player.pos.x, this.player.pos.y);
+    const here = (): Vec2 => vec(p.pos.x, p.pos.y);
 
     if (item instanceof GunItem) {
-      const dropped = this.player.holster(item.gun);
-      if (dropped) this.dropToWorld(dropped, here(), this.tossVel(), this.player.z);
+      const dropped = p.holster(item.gun);
+      if (dropped) this.dropToWorld(dropped, here(), this.tossVel(), p.z);
     } else if (item instanceof ArmorItem) {
-      const prev = this.player.equipArmor(item.armor);
-      if (prev) this.dropToWorld(prev, here(), this.tossVel(), this.player.z);
+      const prev = p.equipArmor(item.armor);
+      if (prev) this.dropToWorld(prev, here(), this.tossVel(), p.z);
     } else if (item instanceof UtilityItem) {
       // Take what fits (capped at the spec's maxCarry); leave any remainder on
       // the ground so a full belt doesn't silently swallow the pile.
-      const took = this.player.addUtility(item.spec, item.count);
+      const took = p.addUtility(item.spec, item.count);
       item.count -= took;
       if (item.count > 0) this.world.items.push(item); // re-add the leftover stack
     }
-    this.interactable = null;
+    slot.interactable = null;
   }
 
-  private dropEquippedWeapon(): void {
-    const dropped = this.player.dropEquipped();
-    if (dropped) this.dropToWorld(dropped, vec(this.player.pos.x, this.player.pos.y), this.tossVel(), this.player.z);
+  private dropEquippedWeapon(p: Character): void {
+    const dropped = p.dropEquipped();
+    if (dropped) this.dropToWorld(dropped, vec(p.pos.x, p.pos.y), this.tossVel(), p.z);
   }
 
-  private dropFromHud(kind: SlotKind): void {
+  private dropFromHud(p: Character, kind: SlotKind): void {
     let gear: Droppable | null = null;
-    if (kind === "armor") gear = this.player.dropArmor();
-    else if (kind === "utility") gear = this.player.dropCurrentUtility();
+    if (kind === "armor") gear = p.dropArmor();
+    else if (kind === "utility") gear = p.dropCurrentUtility();
     else if (kind === "melee") return; // fists — nothing to drop
-    else gear = this.player.dropSlot(kind);
-    if (gear) this.dropToWorld(gear, vec(this.player.pos.x, this.player.pos.y), this.tossVel(), this.player.z);
+    else gear = p.dropSlot(kind);
+    if (gear) this.dropToWorld(gear, vec(p.pos.x, p.pos.y), this.tossVel(), p.z);
   }
 
   /** Convert any character at 0 HP into a corpse, dropping its gear, and remove
@@ -608,10 +722,9 @@ export class Game implements GameCtx {
    * in the direction they're actually moving, a few hops. Stop moving (or get in
    * a vehicle, or die) and the claim is withdrawn.
    */
-  private updatePlayerRoute(): void {
+  private updatePlayerRoute(p: Character): void {
     const nav = this.nav;
     if (!nav || this.tick % PLAYER_ROUTE_TICKS !== 0) return;
-    const p = this.player;
     if (p.hp <= 0 || p.vehicle || p.speed < PLAYER_ROUTE_MIN_SPEED) {
       nav.setRoute(p, [], p.team);
       return;
@@ -650,10 +763,11 @@ export class Game implements GameCtx {
   /** The weapon the player's aim actually drives: a turret when seated in one,
    *  otherwise the held gun. One definition, so the trigger and the crosshair
    *  can never disagree about which gun's spread is on screen. */
-  aimingGun(): Gun {
-    const veh = this.player.vehicle;
-    if (!veh) return this.player.gun;
-    return veh.turretGunForSeat(this.player.seatIndex) ?? this.player.gun;
+  aimingGun(slot: PlayerSlot): Gun {
+    const p = slot.char;
+    const veh = p.vehicle;
+    if (!veh) return p.gun;
+    return veh.turretGunForSeat(p.seatIndex) ?? p.gun;
   }
 
   private reapDead(): void {
@@ -687,9 +801,9 @@ export class Game implements GameCtx {
 
       this.gamemode.onDeath(c, this);
 
-      // Mark friendly deaths for the minimap (enemies aren't shown at all).
-      if (!areHostile(this.player.team, c.team)) {
-        this.minimapDeaths.push({ pos: vec(c.pos.x, c.pos.y), z: c.z, age: 0 });
+      // Mark friendly deaths on each human's minimap (enemies aren't shown at all).
+      for (const h of this.humans) {
+        if (!areHostile(h.char.team, c.team)) h.minimapDeaths.push({ pos: vec(c.pos.x, c.pos.y), z: c.z, age: 0 });
       }
 
       // All the dead character's gear, each tossed out on its own random spurt
@@ -717,89 +831,51 @@ export class Game implements GameCtx {
       const it = this.world.items[i];
       if (it.lifetime !== null && it.age >= it.lifetime) this.world.items.splice(i, 1);
     }
-    // Age + prune the minimap's recent-death marks.
-    for (let i = this.minimapDeaths.length - 1; i >= 0; i--) {
-      if (++this.minimapDeaths[i].age > MINIMAP_DEATH_TTL) this.minimapDeaths.splice(i, 1);
-    }
-    // Age + prune the kill feed (the count cap is enforced at push time).
-    for (let i = this.killFeed.length - 1; i >= 0; i--) {
-      if (++this.killFeed[i].age > KILLFEED_TTL) this.killFeed.splice(i, 1);
+    for (const h of this.humans) {
+      // Age + prune the minimap's recent-death marks.
+      for (let i = h.minimapDeaths.length - 1; i >= 0; i--) {
+        if (++h.minimapDeaths[i].age > MINIMAP_DEATH_TTL) h.minimapDeaths.splice(i, 1);
+      }
+      // Age + prune the kill feed (the count cap is enforced at push time).
+      for (let i = h.killFeed.length - 1; i >= 0; i--) {
+        if (++h.killFeed[i].age > KILLFEED_TTL) h.killFeed.splice(i, 1);
+      }
     }
   }
 
   /** One tick. `input` is the human player's intent for it (see
    *  engine/command.ts); omitted = an idle player, which is what a headless
    *  script's is. Last tick's events are dropped first — read them in between. */
-  update(input: PlayerInput = idleInput()): void {
+  /**
+   * One tick. `input` is the FIRST human's intent for it (single player: the
+   * keyboard's, see engine/command.ts); every other slot's input is whatever
+   * was last set on it (a server sets each from the wire before calling this).
+   * Presses are consumed: after the tick each slot keeps only its held state.
+   * Last tick's events are dropped first — read them in between.
+   */
+  update(input?: PlayerInput): void {
     this.tick += 1;
     this.world.events.length = 0;
+    if (input && this.humans[0]) this.humans[0].input = input;
 
-    // Match decided: freeze the player, let the scene keep breathing, and take
-    // the restart key.
+    // Match decided: freeze the humans, let the scene keep breathing, and take
+    // the restart key from anyone.
     const over = this.gamemode.hud(this)?.over ?? false;
-    if (over && input.restart) {
+    if (over && this.humans.some((h) => h.input.restart)) {
+      for (const h of this.humans) h.input = heldOnly(h.input);
       this.reset();
       return;
     }
 
-    const canControl = this.player.hp > 0 && !over;
-    this.controllable = canControl;
-    // Item pickup and vehicle boarding are on-foot actions; while seated E exits.
-    const onFoot = !this.player.vehicle;
-    this.interactable = canControl && onFoot ? this.findInteractable() : null;
-    this.enterable = canControl && onFoot ? this.findEnterable() : null;
-    // Exactly one interaction is active at a time — one highlight, one E action.
-    // When a seat and an item are both in reach, keep the nearer and drop the other.
-    if (this.interactable && this.enterable) {
-      const ds = dist(this.player.pos, this.enterable.vehicle.seatWorld(this.enterable.seat));
-      const di = dist(this.player.pos, this.interactable.pos);
-      if (ds <= di) this.interactable = null;
-      else this.enterable = null;
-    }
-
-    if (canControl) {
-      // Slot keys: switch; the belt key while already on the belt cycles to the
-      // next carried utility (so a player can hold several kinds).
-      if (input.equip === "utility") {
-        if (this.player.equippedSlot === "utility") this.player.cycleUtility();
-        else this.player.equipUtility();
-      } else if (input.equip) {
-        this.player.equip(input.equip);
-      }
-      if (input.reload) this.player.reload();
-      // X: cancel a timed action (a reload — including a per-round auto-cycle — or
-      // a utility use), so you can break off and fire/switch.
-      if (input.cancel) this.player.cancelAction();
-      if (input.interact) this.interact();
-      if (input.drop) {
-        // Drop what's in hand: the held utility, or else the equipped weapon.
-        if (this.player.holdingUtility) this.dropFromHud("utility");
-        else this.dropEquippedWeapon();
-      }
-      if (input.dropHud) this.dropFromHud(input.dropHud);
-      if (input.debugDamage) this.player._takeDamage(22);
-      if (input.debugHeal) this.player._heal(10);
-    }
+    for (const h of this.humans) this.prepareHuman(h, over);
 
     // Refresh every character's staircase state before anyone moves, so the climb
     // slowdown (Character.move / applyStairMove) and the recoil speed both see it.
     for (const c of this.characters) c.onStairs = this.stairDirAt(c);
 
-    if (canControl) {
-      this.player.forward = input.aim;
-      if (this.player.vehicle) {
-        this.driveInput(input); // WASD -> vehicle (relative to its facing); aim its turret
-      } else {
-        this.player.move(input.move); // speed factors live on the Character now
-        this.applyStairZ(this.player); // flip z at the midpoint BEFORE resolving...
-        this.resolveCollisions(this.player); // ...so it's against the level it ends on (walls only)
-      }
-    }
+    for (const h of this.humans) this.moveHuman(h);
 
-    // The player has moved for this tick, so their inferred corridor is current.
-    this.updatePlayerRoute();
-
-    // Vehicles: integrate physics + sync the CCH every tick. Only the player-driven
+    // Vehicles: integrate physics + sync the CCH every tick. Only a human-driven
     // vehicle carries nonzero throttle/steer (set in driveInput); the rest idle.
     // Then pin every occupant to its seat (they don't move or collide on their own).
     for (const v of this.world.vehicles) {
@@ -823,31 +899,9 @@ export class Game implements GameCtx {
     // a regen tick can't revive someone the same tick a lethal shot lands.
     for (const c of this.characters) c.tickStatus();
 
-    if (canControl) {
-      const veh = this.player.vehicle;
-      if (veh) {
-        // Seated: a turret seat fires the mounted weapon (from a muzzle outside the
-        // hull); any other seat fires the occupant's own personal weapon out.
-        const seat = this.player.seatIndex;
-        const tgun = veh.turretGunForSeat(seat);
-        const f = this.aimingGun().spec.fire;
-        if (f) {
-          const wantFire = f.auto ? input.fire : input.firePressed;
-          if (wantFire) {
-            if (tgun) veh.fireTurret(seat, this.world, this.player);
-            else this.player.fire(this.world, this.characters);
-          }
-        }
-      } else if (this.player.holdingUtility) {
-        // Click begins using the selected healing item (not a punch/shot).
-        if (input.firePressed) this.player.startUse();
-      } else {
-        const f = this.player.gun.spec.fire;
-        if (f) {
-          const wantFire = f.auto ? input.fire : input.firePressed;
-          if (wantFire) this.player.fire(this.world, this.characters);
-        }
-      }
+    for (const h of this.humans) {
+      this.fireHuman(h);
+      h.input = heldOnly(h.input); // presses consumed; held state carries
     }
 
     profiler.begin("ai");
@@ -864,7 +918,7 @@ export class Game implements GameCtx {
     profiler.end("ai");
 
     // Footsteps, everyone's: on foot and moving, one every FOOTSTEP_TICKS,
-    // clips cycled. Positional at the walker's feet — the player's own sit in
+    // clips cycled. Positional at the walker's feet — a human's own sit in
     // the same mix as the world's, and an unseen bot's carry through walls.
     // After the AI phase so a bot's step this tick is in its vel.
     for (const c of this.characters) {
@@ -882,12 +936,12 @@ export class Game implements GameCtx {
 
     profiler.begin("collide");
     for (const c of this.characters) {
-      if (c === this.player || c.vehicle) continue; // player resolved above; occupants are pinned
+      if (c.vehicle || this.slotOf(c)) continue; // humans resolved above; occupants are pinned
       this.applyStairZ(c); // flip z after this tick's move, before resolving (see applyStairZ)
       this.resolveCollisions(c);
     }
     // Body-vs-body last, as one symmetric pass over all characters — every agent
-    // treated equally (no resolve-order priority; the player included).
+    // treated equally (no resolve-order priority; the humans included).
     this.separateCharacters();
     profiler.end("collide");
 
@@ -909,5 +963,99 @@ export class Game implements GameCtx {
     // Clear corpses/drops that have aged out (TDM; no-op when no TTL is set).
     this.despawnStale();
     profiler.end("rules");
+  }
+
+  /** The start of a human's tick: what they can reach, and every one-shot
+   *  action their input asks for (equip, reload, cancel, interact, drops). */
+  private prepareHuman(h: PlayerSlot, over: boolean): void {
+    const p = h.char;
+    const input = h.input;
+    const canControl = p.hp > 0 && !over;
+    h.controllable = canControl;
+    // Item pickup and vehicle boarding are on-foot actions; while seated E exits.
+    const onFoot = !p.vehicle;
+    h.interactable = canControl && onFoot ? this.findInteractable(p) : null;
+    h.enterable = canControl && onFoot ? this.findEnterable(p) : null;
+    // Exactly one interaction is active at a time — one highlight, one E action.
+    // When a seat and an item are both in reach, keep the nearer and drop the other.
+    if (h.interactable && h.enterable) {
+      const ds = dist(p.pos, h.enterable.vehicle.seatWorld(h.enterable.seat));
+      const di = dist(p.pos, h.interactable.pos);
+      if (ds <= di) h.interactable = null;
+      else h.enterable = null;
+    }
+    if (!canControl) return;
+
+    // Slot keys: switch; the belt key while already on the belt cycles to the
+    // next carried utility (so a player can hold several kinds).
+    if (input.equip === "utility") {
+      if (p.equippedSlot === "utility") p.cycleUtility();
+      else p.equipUtility();
+    } else if (input.equip) {
+      p.equip(input.equip);
+    }
+    if (input.reload) p.reload();
+    // X: cancel a timed action (a reload — including a per-round auto-cycle — or
+    // a utility use), so you can break off and fire/switch.
+    if (input.cancel) p.cancelAction();
+    if (input.interact) this.interact(h);
+    if (input.drop) {
+      // Drop what's in hand: the held utility, or else the equipped weapon.
+      if (p.holdingUtility) this.dropFromHud(p, "utility");
+      else this.dropEquippedWeapon(p);
+    }
+    if (input.dropHud) this.dropFromHud(p, input.dropHud);
+    if (input.debugDamage) p._takeDamage(22);
+    if (input.debugHeal) p._heal(10);
+  }
+
+  /** A human's movement for the tick (aim, walk or drive), then their inferred
+   *  corridor for the nav congestion field. */
+  private moveHuman(h: PlayerSlot): void {
+    const p = h.char;
+    if (h.controllable) {
+      p.forward = h.input.aim;
+      if (p.vehicle) {
+        this.driveInput(h, h.input); // WASD -> vehicle (relative to its facing); aim its turret
+      } else {
+        p.move(h.input.move); // speed factors live on the Character now
+        this.applyStairZ(p); // flip z at the midpoint BEFORE resolving...
+        this.resolveCollisions(p); // ...so it's against the level it ends on (walls only)
+      }
+    }
+    // They have moved for this tick, so their inferred corridor is current.
+    this.updatePlayerRoute(p);
+  }
+
+  /** A human's trigger for the tick: the mounted weapon from a turret seat,
+   *  the selected utility from the belt, or the held gun. */
+  private fireHuman(h: PlayerSlot): void {
+    if (!h.controllable) return;
+    const p = h.char;
+    const input = h.input;
+    const veh = p.vehicle;
+    if (veh) {
+      // Seated: a turret seat fires the mounted weapon (from a muzzle outside the
+      // hull); any other seat fires the occupant's own personal weapon out.
+      const seat = p.seatIndex;
+      const tgun = veh.turretGunForSeat(seat);
+      const f = this.aimingGun(h).spec.fire;
+      if (f) {
+        const wantFire = f.auto ? input.fire : input.firePressed;
+        if (wantFire) {
+          if (tgun) veh.fireTurret(seat, this.world, p);
+          else p.fire(this.world, this.characters);
+        }
+      }
+    } else if (p.holdingUtility) {
+      // Click begins using the selected healing item (not a punch/shot).
+      if (input.firePressed) p.startUse();
+    } else {
+      const f = p.gun.spec.fire;
+      if (f) {
+        const wantFire = f.auto ? input.fire : input.firePressed;
+        if (wantFire) p.fire(this.world, this.characters);
+      }
+    }
   }
 }

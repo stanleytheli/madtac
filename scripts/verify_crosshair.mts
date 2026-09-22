@@ -16,6 +16,7 @@ import { loadLevel } from "../src/world/level.ts";
 import { DEFAULT_MODE, GAMEMODES } from "../src/gamemodes/gamemode.ts";
 import { Game } from "../src/game.ts";
 import { ClientView } from "../src/ui/view.ts";
+import { LocalSession } from "../src/ui/session.ts";
 import { Gun, EnemyGun } from "../src/entities/gun.ts";
 import { GUN_SPECS } from "../src/entities/specs.ts";
 import { UNARMED } from "../src/entities/guns.ts";
@@ -122,19 +123,20 @@ console.log("\n--- ClientView.crosshairSpread is smoothed ---");
 const loaded = loadLevel(readFileSync("src/world/levels/tdm-arena-big.json", "utf8"));
 const mode = loaded.meta?.mode ?? DEFAULT_MODE;
 const game = new Game(loaded, GAMEMODES[mode]({ ...loaded.meta, mode }));
-const view = new ClientView(game.player.gun.spec.zoom, game); // the client's eased HUD state
+const session = new LocalSession(game); // the client's view of it
+const view = new ClientView(game.player.gun.spec.zoom, session); // the client's eased HUD state
 let biggestJump = 0;
 let ticks = 0;
 let prev = view.crosshairSpread;
 for (let i = 0; i < 600; i++) {
   game.update();
-  view.update(game);
+  view.update(session);
   const jump = Math.abs(view.crosshairSpread - prev);
   if (i > 5) biggestJump = Math.max(biggestJump, jump);
   prev = view.crosshairSpread;
   ticks++;
 }
-const truth = game.aimingGun().maxSpread(game.player.speedRatio);
+const truth = game.aimingGun(game.humans[0]).maxSpread(game.player.speedRatio);
 check("converges on the gun's own answer while idle",
   Math.abs(view.crosshairSpread - truth) < 1e-3,
   `hud=${view.crosshairSpread.toFixed(5)} gun=${truth.toFixed(5)}`);
@@ -148,9 +150,9 @@ check("never steps more than the easing allows", biggestJump < 0.3 * 0.25,
 // value must walk there over several ticks, not arrive next frame.
 const settled = view.crosshairSpread;
 game.player.gun.currentRecoil = 40; // as if mid-burst
-const raw = game.aimingGun().maxSpread(game.player.speedRatio);
+const raw = game.aimingGun(game.humans[0]).maxSpread(game.player.speedRatio);
 game.update();
-view.update(game);
+view.update(session);
 const afterOne = view.crosshairSpread;
 check("a sudden real change is not applied in one tick",
   afterOne < settled + (raw - settled) * 0.9,
@@ -159,10 +161,10 @@ check("a sudden real change is not applied in one tick",
 let steps = 1;
 while (
   steps < 400 &&
-  Math.abs(view.crosshairSpread - game.aimingGun().maxSpread(game.player.speedRatio)) > 1e-4
+  Math.abs(view.crosshairSpread - game.aimingGun(game.humans[0]).maxSpread(game.player.speedRatio)) > 1e-4
 ) {
   game.update();
-  view.update(game);
+  view.update(session);
   steps += 1;
 }
 check("but it does converge on the gun once left alone", steps < 400,

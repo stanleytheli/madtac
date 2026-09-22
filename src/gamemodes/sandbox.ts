@@ -4,6 +4,7 @@
  * layer existed. Used whenever a level names no mode.
  */
 import { spawnEnemy } from "../ai/enemies.ts";
+import type { Character } from "../entities/actor.ts";
 import type { GameCtx, Gamemode, GamemodeHud } from "./gamemode.ts";
 
 export class SandboxMode implements Gamemode {
@@ -11,8 +12,12 @@ export class SandboxMode implements Gamemode {
   readonly label = "Sandbox";
 
   init(ctx: GameCtx): void {
-    ctx.player.team = "player";
+    for (const h of ctx.humans) h.char.team = "player";
     for (const s of ctx.level.spawns) ctx.addCharacter(spawnEnemy(s));
+  }
+
+  onHumanJoin(_ctx: GameCtx, who: Character): void {
+    who.team = "player";
   }
 
   update(): void {}

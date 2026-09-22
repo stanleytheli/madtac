@@ -5,8 +5,11 @@
  * Domination both extend `TeamMatchMode`, supplying only their scoring/win rule
  * (the ticket bars, the loss condition, any per-tick objective logic).
  *
- * The player is always blue's first combatant; both sides are otherwise
- * AI-filled from the per-side `TeamConfig` (troop count, skill, equipment tier).
+ * Humans are blue's first combatants — each takes one of blue's slots, so blue
+ * fields `troops - humans` bots (never fewer than none); a human joining a
+ * running match retires a blue bot to make room, and one leaving brings a bot
+ * back. Both sides are otherwise AI-filled from the per-side `TeamConfig`
+ * (troop count, skill, equipment tier).
  */
 import type { Character } from "../entities/actor.ts";
 import { BANDAGE, SYRINGE, UtilityStack } from "../entities/consumable.ts";
@@ -170,7 +173,14 @@ export function rollUtilities(): UtilityStack[] {
 export interface Agent {
   name: string;
   team: "blue" | "red";
+  /** A human (see `human`), as opposed to a bot. */
   isPlayer: boolean;
+  /** The human's persistent character — revived in place each life, so this
+   *  stays the same object while `char` is null between lives. Bots: undefined. */
+  human?: Character;
+  /** A human's most recent death (killer / weapon / range), to headline their
+   *  respawn screen. Null until they first go down. */
+  lastDeath?: { killerName: string; gunName: string | null; meters: number } | null;
   skill: number;
   /** Equipment tier name. Bots re-roll a gun+armor from it every (re)spawn. */
   equip: string;
@@ -221,15 +231,11 @@ export abstract class TeamMatchMode implements Gamemode {
   protected phase: "playing" | "over" = "playing";
   protected agents: Agent[] = [];
   protected queue: RespawnSlot[] = [];
-  /** The player's identity, kept for the respawn-screen loadout dropdown. */
-  protected playerAgent: Agent | null = null;
-
-  /** The player's most recent death (killer / weapon / range), to headline the
-   *  respawn screen. Null until they first go down; reset each match in start(). */
-  private playerDeath: { killerName: string; gunName: string | null; meters: number } | null = null;
   /** Character -> its Agent, kept even after the character dies, so a kill that
    *  lands after the shooter died/respawned still credits the right agent. */
   protected charAgent = new WeakMap<Character, Agent>();
+  /** Hands out the match's callsigns (see NAMES); rebuilt in init. */
+  private nextName: () => string = () => "?";
 
   constructor(cfg: TeamMatchConfig) {
     this.cfg = cfg;
@@ -246,46 +252,87 @@ export abstract class TeamMatchMode implements Gamemode {
     this.phase = "playing";
     this.agents = [];
     this.queue = [];
-    this.playerDeath = null;
     this.charAgent = new WeakMap();
 
     const names = shuffle(NAMES.slice());
     let n = 0;
-    const nextName = (): string => {
+    this.nextName = (): string => {
       const base = names[n % names.length];
       const dup = n >= names.length ? ` ${Math.floor(n / names.length) + 1}` : "";
       n += 1;
       return base + dup;
     };
 
-    // The player IS blue's first combatant (fills one slot, so blue also fields
-    // blueTroops - 1 bots), wears the blue skin, and starts on blue's equip tier.
-    ctx.player.team = "blue";
-    const blueSkin = SKINS[TEAM_SKIN.blue];
-    if (blueSkin) ctx.player.skin = blueSkin;
-    const player: Agent = {
-      name: nextName(), team: "blue", isPlayer: true, skill: this.cfg.blue.skill,
-      equip: this.cfg.blue.equip, loadout: {}, random: true,
-      kills: 0, deaths: 0, char: ctx.player,
-    };
-    this.agents.push(player);
-    this.playerAgent = player;
-    this.spawnAgent(ctx, player);
-
-    const makeBots = (team: "blue" | "red", cfg: TeamConfig, count: number): void => {
-      for (let i = 0; i < count; i++) {
-        const a: Agent = {
-          name: nextName(), team, isPlayer: false, skill: cfg.skill,
-          equip: cfg.equip, kills: 0, deaths: 0, char: null,
-        };
-        this.agents.push(a);
-        this.spawnAgent(ctx, a);
-      }
-    };
-    makeBots("blue", this.cfg.blue, Math.max(0, this.cfg.blue.troops - 1));
-    makeBots("red", this.cfg.red, this.cfg.red.troops);
+    // The humans ARE blue's first combatants (each fills one slot, so blue also
+    // fields blueTroops - humans bots), wear the blue skin, and start on blue's
+    // equip tier.
+    for (const h of ctx.humans) this.enlistHuman(ctx, h.char, h.name);
+    this.addBots(ctx, "blue", Math.max(0, this.cfg.blue.troops - ctx.humans.length));
+    this.addBots(ctx, "red", this.cfg.red.troops);
 
     this.onInit(ctx);
+  }
+
+  /** Put a human on blue as a fresh agent and spawn them. `name` = their own
+   *  (a joined player's), or a callsign from the pool when they have none. */
+  private enlistHuman(ctx: GameCtx, who: Character, name?: string): Agent {
+    who.team = "blue";
+    const blueSkin = SKINS[TEAM_SKIN.blue];
+    if (blueSkin) who.skin = blueSkin;
+    const a: Agent = {
+      name: name && name.trim() && !name.startsWith("Player ") ? name.trim() : this.nextName(),
+      team: "blue", isPlayer: true, human: who, skill: this.cfg.blue.skill,
+      equip: this.cfg.blue.equip, loadout: {}, random: true, lastDeath: null,
+      kills: 0, deaths: 0, char: who,
+    };
+    this.agents.push(a);
+    this.spawnAgent(ctx, a);
+    return a;
+  }
+
+  private addBots(ctx: GameCtx, team: "blue" | "red", count: number): void {
+    const cfg = this.cfg[team];
+    for (let i = 0; i < count; i++) {
+      const a: Agent = {
+        name: this.nextName(), team, isPlayer: false, skill: cfg.skill,
+        equip: cfg.equip, kills: 0, deaths: 0, char: null,
+      };
+      this.agents.push(a);
+      this.spawnAgent(ctx, a);
+    }
+  }
+
+  /** A human joined mid-match: they take a blue slot, and a blue bot (a live
+   *  one, else one waiting to respawn) is retired to keep blue's headcount. */
+  onHumanJoin(ctx: GameCtx, who: Character): void {
+    const slot = ctx.humans.find((h) => h.char === who);
+    this.enlistHuman(ctx, who, slot?.name);
+    const bot = this.agents.find((a) => a.team === "blue" && !a.isPlayer);
+    if (bot) this.retire(ctx, bot);
+  }
+
+  /** A human left: their agent goes (no death, no ticket), and a blue bot
+   *  takes the slot back. */
+  onHumanLeave(ctx: GameCtx, who: Character): void {
+    const a = this.charAgent.get(who);
+    if (!a) return;
+    this.retire(ctx, a);
+    if (!this.matchOver) this.addBots(ctx, "blue", 1);
+  }
+
+  /** Drop an agent from the roster and the respawn queue, and its character
+   *  (if alive) from the world without a death. */
+  private retire(ctx: GameCtx, a: Agent): void {
+    if (a.char) ctx.removeCharacter(a.char);
+    a.char = null;
+    this.agents = this.agents.filter((x) => x !== a);
+    this.queue = this.queue.filter((q) => q.agent !== a);
+  }
+
+  /** The agent a human character belongs to, if it is one. */
+  private humanAgent(who: Character | undefined): Agent | undefined {
+    const a = who ? this.charAgent.get(who) : undefined;
+    return a?.isPlayer ? a : undefined;
   }
 
   /** (Re)spawn an agent's character at one of its team's zones. Bots re-roll a
@@ -299,8 +346,9 @@ export abstract class TeamMatchMode implements Gamemode {
       return;
     }
     if (agent.isPlayer) {
-      ctx.revivePlayer(sp.pos, sp.z, agent.random ? rollLoadout(agent.equip) : (agent.loadout ?? {}));
-      agent.char = ctx.player;
+      const who = agent.human!;
+      ctx.reviveHuman(who, sp.pos, sp.z, agent.random ? rollLoadout(agent.equip) : (agent.loadout ?? {}));
+      agent.char = who;
     } else {
       const e = rollLoadout(agent.equip); // full kit, sampled fresh each life
       const p = skillParams(agent.skill);
@@ -329,32 +377,34 @@ export abstract class TeamMatchMode implements Gamemode {
     return undefined;
   }
 
-  /** Store the player's next-life kit (respawn-screen menu), keeping only keys
+  /** Store a human's next-life kit (respawn-screen menu), keeping only keys
    *  that exist so a stale/garbage value can't break a spawn. */
-  setPlayerLoadout(loadout: PlayerLoadout): void {
-    if (!this.playerAgent) return;
-    this.playerAgent.loadout = {
+  setPlayerLoadout(who: Character, loadout: PlayerLoadout): void {
+    const a = this.humanAgent(who);
+    if (!a) return;
+    a.loadout = {
       primary: loadout.primary && loadout.primary in GUN_SPECS ? loadout.primary : undefined,
       secondary: loadout.secondary && loadout.secondary in GUN_SPECS ? loadout.secondary : undefined,
       armor: loadout.armor && loadout.armor in ARMOR_SPECS ? loadout.armor : undefined,
     };
-    this.playerAgent.random = false; // an explicit pick overrides the dice
+    a.random = false; // an explicit pick overrides the dice
   }
 
-  /** The player hit the dice button: hand them the same roll the bots get from
+  /** A human hit the dice button: hand them the same roll the bots get from
    *  their side's equip tier, fresh every life, until they pick something. */
-  randomizePlayerLoadout(): void {
-    if (this.playerAgent) this.playerAgent.random = true;
+  randomizePlayerLoadout(who: Character): void {
+    const a = this.humanAgent(who);
+    if (a) a.random = true;
   }
 
-  /** The player pressed Respawn. Respawning is voluntary — the player's queue
-   *  entry is never spawned by `update`, it just sits there marking when the
-   *  timer is up — so this is the only way back in. No-op (false) while the
-   *  timer still has time on it. */
-  requestRespawn(ctx: GameCtx): boolean {
-    const agent = this.playerAgent;
+  /** A human pressed Respawn. Respawning is voluntary — a human's queue entry
+   *  is never spawned by `update`, it just sits there marking when the timer is
+   *  up — so this is the only way back in. No-op (false) while the timer still
+   *  has time on it. */
+  requestRespawn(ctx: GameCtx, who: Character): boolean {
+    const agent = this.humanAgent(who);
     if (this.matchOver || !agent || agent.char) return false; // decided, or already alive
-    const i = this.queue.findIndex((p) => p.agent.isPlayer);
+    const i = this.queue.findIndex((p) => p.agent === agent);
     if (i >= 0) {
       if (ctx.tick < this.queue[i].at) return false; // timer still running
       this.queue.splice(i, 1);
@@ -365,10 +415,10 @@ export abstract class TeamMatchMode implements Gamemode {
     return true;
   }
 
-  /** Seconds until the player may respawn (0 = now), or undefined if they're
-   *  not waiting to. */
-  private respawnIn(ctx: GameCtx): number | undefined {
-    const mine = this.queue.find((p) => p.agent.isPlayer);
+  /** Seconds until `agent` may respawn (0 = now), or undefined if it's not
+   *  waiting to. */
+  private respawnIn(ctx: GameCtx, agent: Agent): number | undefined {
+    const mine = this.queue.find((p) => p.agent === agent);
     return mine ? Math.max(0, (mine.at - ctx.tick) / 60) : undefined;
   }
 
@@ -384,7 +434,7 @@ export abstract class TeamMatchMode implements Gamemode {
 
     victim.deaths += 1;
     victim.char = null;
-    // While the player is on random they have no picks of their own, so park the
+    // While a human is on random they have no picks of their own, so park the
     // kit they went down with under the dice: the menu opens on something real,
     // and turning random off starts from what they were just carrying. Once they
     // pick for themselves those picks are theirs and this stops overwriting them.
@@ -403,29 +453,31 @@ export abstract class TeamMatchMode implements Gamemode {
     const killer = attacker ? this.charAgent.get(attacker) : undefined;
     if (killer && killer !== victim && areHostile(attacker!.team, dead.team)) killer.kills += 1;
 
-    // Kill feed: any kill the local player is part of — as the killer (enemies AND
-    // team kills), as the victim, or as both, since blowing yourself up is a death
+    // Kill feed: any kill a human is part of — as the killer (enemies AND team
+    // kills), as the victim, or as both, since blowing yourself up is a death
     // worth reporting even though it credits nobody. Newest on top (unshift); the
     // Game ages them out and a 5th kill evicts the oldest.
-    if (attacker && killer && (attacker === ctx.player || dead === ctx.player)) {
+    if (attacker && killer) {
       const meters = Math.hypot(attacker.pos.x - dead.pos.x, attacker.pos.y - dead.pos.y) / PX_PER_METER;
-      ctx.killFeed.unshift({
-        killerName: killer.name,
-        killerColor: TEAMS[killer.team].color,
-        victimName: victim.name,
-        victimColor: TEAMS[victim.team].color,
-        gun: dead.lastAttackerGun,
-        meters,
-        marks: dead.lastAttackerMarks,
-        selfKill: killer === victim,
-        age: 0,
-      });
-      if (ctx.killFeed.length > KILLFEED_MAX) ctx.killFeed.length = KILLFEED_MAX;
-
-      // When it's the player who went down, headline the respawn screen with it.
-      // (A self-kill names the player as their own killer, which reads correctly.)
-      if (dead === ctx.player) {
-        this.playerDeath = { killerName: killer.name, gunName: dead.lastAttackerGun?.name ?? null, meters };
+      for (const h of ctx.humans) {
+        if (attacker !== h.char && dead !== h.char) continue;
+        h.killFeed.unshift({
+          killerName: killer.name,
+          killerColor: TEAMS[killer.team].color,
+          victimName: victim.name,
+          victimColor: TEAMS[victim.team].color,
+          gun: dead.lastAttackerGun,
+          meters,
+          marks: dead.lastAttackerMarks,
+          selfKill: killer === victim,
+          age: 0,
+        });
+        if (h.killFeed.length > KILLFEED_MAX) h.killFeed.length = KILLFEED_MAX;
+      }
+      // When it's a human who went down, headline their respawn screen with it.
+      // (A self-kill names them as their own killer, which reads correctly.)
+      if (victim.isPlayer) {
+        victim.lastDeath = { killerName: killer.name, gunName: dead.lastAttackerGun?.name ?? null, meters };
       }
     }
 
@@ -448,23 +500,24 @@ export abstract class TeamMatchMode implements Gamemode {
     this.rules(ctx); // subclass per-tick scoring (domination point control)
   }
 
-  hud(ctx: GameCtx): GamemodeHud {
+  hud(ctx: GameCtx, viewer?: Character): GamemodeHud {
+    const me = this.humanAgent(viewer);
     const players: PlayerRow[] = this.agents.map((a) => ({
       name: a.name,
       team: a.team,
       color: TEAMS[a.team].color,
       kills: a.kills,
       deaths: a.deaths,
-      isPlayer: a.isPlayer,
+      isPlayer: a === me,
     }));
 
-    // Player awaiting respawn: it's dead (no live char) while the match plays on.
+    // The viewer awaiting respawn: dead (no live char) while the match plays on.
     // Held back for MENU_DELAY ticks after the death so the panel doesn't slam up
-    // the instant they go down. A dead player with no queue slot (their spawn
+    // the instant they go down. A dead human with no queue slot (their spawn
     // failed) has no death tick to wait on, so the menu opens right away — it's
     // their only way back in.
-    const dead = this.phase === "playing" && !!this.playerAgent && this.playerAgent.char === null;
-    const slot = dead ? this.queue.find((p) => p.agent.isPlayer) : undefined;
+    const dead = this.phase === "playing" && !!me && me.char === null;
+    const slot = dead ? this.queue.find((p) => p.agent === me) : undefined;
     const choosingLoadout = dead && (!slot || ctx.tick - slot.diedAt >= MENU_DELAY);
 
     // No death banner while choosing: the respawn menu is centered over the same
@@ -480,14 +533,14 @@ export abstract class TeamMatchMode implements Gamemode {
       over: this.matchOver,
       players,
       choosingLoadout,
-      deathTitle: this.playerDeath
-        ? `Killed by ${this.playerDeath.killerName}` +
-          (this.playerDeath.gunName ? ` using ${this.playerDeath.gunName}` : "") +
-          ` at ${this.playerDeath.meters.toFixed(1)} meters`
+      deathTitle: me?.lastDeath
+        ? `Killed by ${me.lastDeath.killerName}` +
+          (me.lastDeath.gunName ? ` using ${me.lastDeath.gunName}` : "") +
+          ` at ${me.lastDeath.meters.toFixed(1)} meters`
         : undefined,
-      loadout: this.playerAgent?.loadout,
-      randomLoadout: !!this.playerAgent?.random,
-      respawnIn: choosingLoadout ? (this.respawnIn(ctx) ?? 0) : undefined,
+      loadout: me?.loadout,
+      randomLoadout: !!me?.random,
+      respawnIn: choosingLoadout && me ? (this.respawnIn(ctx, me) ?? 0) : undefined,
       ...this.extraHud(ctx),
     };
   }

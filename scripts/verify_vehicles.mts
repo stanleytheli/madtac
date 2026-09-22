@@ -270,12 +270,12 @@ console.log("enter/exit — occupant pinned; exit never clips into a wall:");
   const tank = game.world.vehicles[0];
   check("level loaded the tank", !!tank && tank.spec === TANK);
 
-  game.enterVehicle({ vehicle: tank, seat: 0 });
+  game.enterVehicle(game.humans[0], { vehicle: tank, seat: 0 });
   check("player is seated", game.player.vehicle === tank && tank.seats[0].occupant === game.player);
   game.update(); // occupant should be pinned to the seat
   check("occupant pinned to the seat", near(game.player.pos.x, tank.seatWorld(0).x) && near(game.player.pos.y, tank.seatWorld(0).y));
 
-  game.exitVehicle();
+  game.exitVehicle(game.humans[0]);
   check("player left the vehicle", game.player.vehicle === null && tank.seats[0].occupant === null);
   const wall = game.world.obstacles.find((o) => o.pos.y === 120)!;
   const outOfWall = resolveCircleVsBox(game.player.pos, BODY_RADIUS, wall);

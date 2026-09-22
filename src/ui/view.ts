@@ -5,7 +5,7 @@
  * that depend on where the viewer stands. None of it is game state — a server
  * would never compute it — which is why it left Game.update for here.
  */
-import type { Game } from "../game.ts";
+import type { Session } from "./session.ts";
 import { updateSurfaceAlphas } from "../world/world.ts";
 
 const ZOOM_EASE = 0.12;
@@ -30,34 +30,32 @@ export class ClientView {
   private lastTick = -1;
 
   /** `zoom` is where the camera starts (the held gun's, normally). With a
-   *  `game`, the floor fades are snapped to the player's spot right away, so
+   *  session, the floor fades are snapped to the player's spot right away, so
    *  the first frame doesn't fade in from wherever the level was authored. */
-  constructor(zoom: number, game?: Game) {
+  constructor(zoom: number, session?: Session) {
     this.zoom = zoom;
-    if (game) this.snapSurfaces(game);
+    if (session) this.snapSurfaces(session);
   }
 
-  private snapSurfaces(game: Game): void {
-    updateSurfaceAlphas(game.world, game.player.z, game.player.pos, true);
-    this.lastTick = game.tick;
+  private snapSurfaces(s: Session): void {
+    updateSurfaceAlphas(s.world, s.player.z, s.player.pos, true);
+    this.lastTick = s.tick;
   }
 
-  /** Once per sim tick, after Game.update. */
-  update(game: Game): void {
-    const p = game.player;
-    this.zoom += (game.zoomTarget() - this.zoom) * ZOOM_EASE;
+  /** Once per sim tick, after the session stepped. */
+  update(s: Session): void {
+    const p = s.player;
+    this.zoom += (s.zoomTarget() - this.zoom) * ZOOM_EASE;
 
     // Crosshair spread, eased toward whatever the aimed gun says it would do at
-    // the player's current speed. Asked of the gun rather than recomputed here.
-    const spreadTarget = game.controllable ? game.aimingGun().maxSpread(p.speedRatio) : 0;
-    this.crosshairSpread += (spreadTarget - this.crosshairSpread) * CROSSHAIR_EASE;
-    const coneTarget = game.aimingGun().spec.visionCone ?? 360;
-    this.visionCone += (coneTarget - this.visionCone) * VISION_CONE_EASE;
+    // the player's current speed. Asked of the session rather than recomputed here.
+    this.crosshairSpread += (s.spreadTarget() - this.crosshairSpread) * CROSSHAIR_EASE;
+    this.visionCone += (s.visionConeTarget() - this.visionCone) * VISION_CONE_EASE;
 
     // Floor/stair fades follow the viewer. A restart (the tick went backwards)
     // teleports the player to spawn, so snap rather than fade from the old spot.
-    if (game.tick < this.lastTick) this.snapSurfaces(game);
-    else updateSurfaceAlphas(game.world, p.z, p.pos);
-    this.lastTick = game.tick;
+    if (s.tick < this.lastTick) this.snapSurfaces(s);
+    else updateSurfaceAlphas(s.world, p.z, p.pos);
+    this.lastTick = s.tick;
   }
 }

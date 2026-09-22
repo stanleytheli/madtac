@@ -14,8 +14,8 @@ import type { Obstacle } from "../world/world.ts";
  * is decided by whoever owns the item list, by switching on the concrete subtype.
  */
 export interface GroundItem {
-  /** Entity id (see engine/ids.ts). */
-  readonly id: number;
+  /** Entity id (see engine/ids.ts). Writable so a client mirror can take the server's. */
+  id: number;
   pos: Vec2;
   /** The z level it's lying on (dropped items inherit the dropper's level). */
   z: number;
@@ -327,7 +327,7 @@ function drawGroundIconFit(
 
 /** A gun lying on the ground, tied to its Gun instance (so it keeps its ammo). */
 export class GunItem implements GroundItem {
-  readonly id = nextEntityId();
+  id = nextEntityId();
   pos: Vec2;
   vel: Vec2;
   z: number;
@@ -376,7 +376,7 @@ const ARMOR_ITEM_RADIUS = 45; // larger footprint than a gun (bigger sprite)
 
 /** A piece of armor lying on the ground, tied to its Armor instance (keeps its HP). */
 export class ArmorItem implements GroundItem {
-  readonly id = nextEntityId();
+  id = nextEntityId();
   pos: Vec2;
   vel: Vec2;
   z: number;
@@ -427,7 +427,7 @@ const UTILITY_TARGET = 46; // longest-side world px on the ground
 /** A stack of a utility consumable lying on the ground (a death drop or a manual
  *  drop). Carries its spec and how many are in the pile. */
 export class UtilityItem implements GroundItem {
-  readonly id = nextEntityId();
+  id = nextEntityId();
   pos: Vec2;
   vel: Vec2;
   z: number;

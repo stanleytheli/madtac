@@ -48,7 +48,7 @@ export class Gun implements Droppable {
   /** Entity id (see engine/ids.ts). Also names this gun's ongoing sounds — its
    *  reload clip is voice `reload:<id>`, its bolt cycle `cycle:<id>` — so an
    *  abort can cut them without holding an audio handle (see cancelReload). */
-  readonly id = nextEntityId();
+  id = nextEntityId();
   readonly spec: GunSpec;
 
   /** Recoil-pattern accumulator. Grows per shot, resets after `recoilDelay` idle ticks. */
@@ -76,6 +76,16 @@ export class Gun implements Droppable {
    *  hand is throwing it (+1 right / -1 left), alternating each punch. */
   private meleeTicks = 0;
   private meleeHand: 1 | -1 = -1;
+
+  /** The punch in progress, signed by hand (+ticks right, -ticks left, 0 none),
+   *  and its setter — a mirror's way to play a punch it saw in a snapshot. */
+  get punch(): number {
+    return this.meleeTicks * this.meleeHand;
+  }
+  setPunch(signedTicks: number): void {
+    this.meleeTicks = Math.abs(signedTicks);
+    if (signedTicks !== 0) this.meleeHand = signedTicks > 0 ? 1 : -1;
+  }
 
   constructor(spec: GunSpec) {
     this.spec = spec;

@@ -104,7 +104,7 @@ const isSolid = (p: VehiclePartSpec): boolean => p.solid ?? true;
 
 export class Vehicle {
   /** Entity id (see engine/ids.ts). */
-  readonly id = nextEntityId();
+  id = nextEntityId();
   pos: Vec2;
   angle: number;
   z: number;

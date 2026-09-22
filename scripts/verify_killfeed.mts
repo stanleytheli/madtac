@@ -157,8 +157,8 @@ console.log("\nthe feed itself, on a live match:");
     check("the blast killed the player", p.hp <= 0, `hp ${p.hp}`);
     check("...and named them their own attacker", p.lastAttacker === p);
     game.update(); // the mode reaps the dead and writes the feed
-    const entry = game.killFeed.find((f) => f.selfKill);
-    check("a self-kill reaches the feed at all", !!entry, `${game.killFeed.length} entries`);
+    const entry = game.humans[0].killFeed.find((f) => f.selfKill);
+    check("a self-kill reaches the feed at all", !!entry, `${game.humans[0].killFeed.length} entries`);
     check("...naming the same person both sides, for the HUD to collapse",
       entry?.killerName === entry?.victimName, `${entry?.killerName} / ${entry?.victimName}`);
     check("...and not marked a wallbang", entry?.marks.throughWall !== true);
@@ -175,8 +175,8 @@ console.log("\nthe feed itself, on a live match:");
     p.registerHit(vec(1, 0), p.pos, 500, AP, foe, AWM, { throughWall: true });
     check("the player went down to it", p.hp <= 0);
     game.update();
-    const entry = game.killFeed.find((f) => !f.selfKill);
-    check("the kill reaches the feed", !!entry, `${game.killFeed.length} entries`);
+    const entry = game.humans[0].killFeed.find((f) => !f.selfKill);
+    check("the kill reaches the feed", !!entry, `${game.humans[0].killFeed.length} entries`);
     check("...marked as a wallbang", entry?.marks.throughWall === true);
     check("...and not a self-kill", entry?.selfKill === false);
     check("...naming two different people", entry?.killerName !== entry?.victimName,
@@ -192,7 +192,7 @@ console.log("\nthe feed itself, on a live match:");
     p.registerHit(vec(1, 0), p.pos, 500, AP, foe, AWM, {});
     game.update();
     check("a plain kill carries no mark",
-      game.killFeed.find((f) => !f.selfKill)?.marks.throughWall !== true);
+      game.humans[0].killFeed.find((f) => !f.selfKill)?.marks.throughWall !== true);
   }
 }
 
@@ -341,7 +341,7 @@ console.log("\nno-scope: a sniper landed on the move:");
   p.hp = 1;
   p.registerHit(vec(1, 0), p.pos, 500, AP, foe, AWM, { throughWall: true, noscope: true });
   game.update();
-  const entry = game.killFeed.find((f) => !f.selfKill);
+  const entry = game.humans[0].killFeed.find((f) => !f.selfKill);
   check("the feed entry carries both marks",
     entry?.marks.throughWall === true && entry?.marks.noscope === true,
     JSON.stringify(entry?.marks));

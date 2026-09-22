@@ -52,7 +52,7 @@ function darkenSkin(skin: Skin, f: number): Skin {
  */
 export class Body {
   /** Entity id (see engine/ids.ts). */
-  readonly id = nextEntityId();
+  id = nextEntityId();
   pos: Vec2;
   vel: Vec2;
   readonly z: number; // level the character died on (corpses don't ride stairs)
@@ -103,6 +103,15 @@ export class Body {
       darkenSkin(c.skin, DARKEN),
       c.team,
     );
+  }
+
+  /** A client mirror of a corpse a server holds: no launch of its own — it is
+   *  told where it lies each snapshot (see net/client.ts). The skin arrives
+   *  already darkened, so it is used as is. */
+  static mirror(id: number, pos: Vec2, z: number, angle: number, skin: Skin, team: TeamId): Body {
+    const b = new Body(pos, z, angle, { x: 0, y: 0 }, 0, skin, team);
+    b.id = id;
+    return b;
   }
 
   /** True once the corpse has outlived its lifetime (immortal if lifetime null). */

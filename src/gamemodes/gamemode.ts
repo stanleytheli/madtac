@@ -17,6 +17,7 @@ import type { NavGraph } from "../world/nav.ts";
 import type { TeamId } from "../entities/team.ts";
 import type { Vec2 } from "../engine/vec.ts";
 import type { HitMarks, World } from "../world/world.ts";
+import type { PlayerSlot } from "../game.ts";
 import { SandboxMode } from "./sandbox.ts";
 import { TeamDeathmatchMode } from "./tdm.ts";
 import { DominationMode } from "./domination.ts";
@@ -26,8 +27,8 @@ export const KILLFEED_TTL = 6 * 60; // 6 s at 60 tps
 /** Hard cap on visible kill-feed bars — a 5th kill evicts the oldest. */
 export const KILLFEED_MAX = 4;
 
-/** One line of the player's kill feed (the stacked bars above the ammo). Emitted
- *  only for the local player's kills; the Game ages and prunes them. */
+/** One line of a human's kill feed (the stacked bars above the ammo). Emitted
+ *  only for kills that human is part of; the Game ages and prunes them. */
 export interface KillFeedEntry {
   killerName: string;
   killerColor: string;
@@ -52,26 +53,29 @@ export interface KillFeedEntry {
 export interface GameCtx {
   readonly world: World;
   readonly nav: NavGraph | null;
-  /** The live roster (player + bots). Mutable — spawn via addCharacter. */
+  /** The live roster (humans + bots). Mutable — spawn via addCharacter. */
   readonly characters: Character[];
   readonly bodies: Body[];
-  readonly player: Character;
-  /** The local player's recent-kills feed. Gamemodes push credited player kills;
-   *  the Game ages/caps them and the HUD renders the bars. */
-  readonly killFeed: KillFeedEntry[];
+  /** The humans in the match (see PlayerSlot): each one's character and kill
+   *  feed. Gamemodes push a credited kill onto the feed of every human it
+   *  involves; the Game ages/caps them and each HUD renders its own bars. */
+  readonly humans: readonly PlayerSlot[];
   /** The loaded level (spawnZones, playerSpawn, meta). */
   readonly level: LevelState;
   /** Ticks since the match (re)started. */
   readonly tick: number;
   /** Add a freshly built character to the roster. */
   addCharacter(c: Character): void;
+  /** Take a character out of the roster with no death (no corpse, no drops,
+   *  no onDeath) — a bot a human is replacing. */
+  removeCharacter(c: Character): void;
   /** A random point inside a random zone of `team`, or null if it has none. */
   spawnPoint(team: TeamId): { pos: Vec2; z: number } | null;
-  /** Reset the player object in place and re-add it to the roster (reusing the
-   *  object so render/camera refs stay valid). With `loadout` (GUN_SPECS /
-   *  ARMOR_SPECS keys) the player is re-armed to that kit with full ammo; without
-   *  it, the player keeps whatever it currently holds, ammo refreshed. */
-  revivePlayer(pos: Vec2, z: number, loadout?: PlayerLoadout): void;
+  /** Reset a human's character in place and re-add it to the roster (reusing
+   *  the object so references stay valid). With `loadout` (GUN_SPECS /
+   *  ARMOR_SPECS keys) they are re-armed to that kit with full ammo; without
+   *  it, they keep whatever they currently hold, ammo refreshed. */
+  reviveHuman(who: Character, pos: Vec2, z: number, loadout?: PlayerLoadout): void;
 }
 
 /** A player kit chosen at the respawn screen — GUN_SPECS / ARMOR_SPECS keys
@@ -164,20 +168,29 @@ export interface Gamemode {
   update(ctx: GameCtx): void;
   /** A character just died (before it leaves the roster). */
   onDeath(dead: Character, ctx: GameCtx): void;
-  /** Scoreboard/banner for the HUD, or null for no gamemode UI. */
-  hud(ctx: GameCtx): GamemodeHud | null;
-  /** Set the player's chosen kit for their next life (respawn-screen menu).
+  /** Scoreboard/banner for the HUD, or null for no gamemode UI. `viewer` is
+   *  whose HUD: their own row is highlighted and the respawn-screen fields
+   *  (choosingLoadout, deathTitle, loadout, respawnIn) are theirs. Omitted =
+   *  nobody's — the match-wide fields only (scores, banner, over). */
+  hud(ctx: GameCtx, viewer?: Character): GamemodeHud | null;
+  /** Set a human's chosen kit for their next life (respawn-screen menu).
    *  Only modes with a customizable respawn (TDM) implement this. */
-  setPlayerLoadout?(loadout: PlayerLoadout): void;
-  /** Put the player on a randomly rolled kit (the same roll the bots get from
+  setPlayerLoadout?(who: Character, loadout: PlayerLoadout): void;
+  /** Put a human on a randomly rolled kit (the same roll the bots get from
    *  their side's equip tier), overriding any picked loadout until they pick
    *  again. Implemented alongside setPlayerLoadout. */
-  randomizePlayerLoadout?(): void;
-  /** The player pressed Respawn. Puts them back in with their chosen kit and
+  randomizePlayerLoadout?(who: Character): void;
+  /** A human pressed Respawn. Puts them back in with their chosen kit and
    *  returns true; returns false (and does nothing) while the respawn timer is
    *  still running or they aren't waiting to spawn. Implemented alongside
    *  setPlayerLoadout by the modes with a respawn screen. */
-  requestRespawn?(ctx: GameCtx): boolean;
+  requestRespawn?(ctx: GameCtx, who: Character): boolean;
+  /** A human joined a running match (see Game.addHuman): put them on a side
+   *  and in the fight. Omitted = they stand where the Game put them. */
+  onHumanJoin?(ctx: GameCtx, who: Character): void;
+  /** A human left a running match (see Game.removeHuman): drop them from the
+   *  roster and fill the gap they leave, if the mode keeps sides even. */
+  onHumanLeave?(ctx: GameCtx, who: Character): void;
   /** The objectives to feed objective-seeking AIs this tick (domination points),
    *  or undefined for modes without them. */
   objectives?(ctx: GameCtx): ObjectivePoint[];
