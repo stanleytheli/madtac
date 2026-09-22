@@ -54,7 +54,9 @@ export const HOLE_H = 10;
  * the new hole's width) restarts that hole's clock instead of stacking a second
  * one on top — the existing hole stays exactly where it is, so a burst into one
  * patch of wall leaves a few holes that hold still, not one per round smeared
- * into a black blot (or one hole that jitters with every round).
+ * into a black blot (or one hole that jitters with every round). The one
+ * exception: a BIGGER round replaces the hole outright (new size, new point),
+ * since a .50 landing on a pistol mark should leave a .50 mark.
  */
 export function stampBulletHole(out: Decal[], near: Vec2, o: Obstacle, z: number, heft = 1): void {
   if (heft <= 0 || o.invisible) return; // an invisible barrier shows no holes
@@ -68,6 +70,12 @@ export function stampBulletHole(out: Decal[], near: Vec2, o: Obstacle, z: number
     const dx = d.pos.x - pos.x;
     const dy = d.pos.y - pos.y;
     if (dx * dx + dy * dy > mergeR * mergeR) continue;
+    if (w > d.w) {
+      d.pos = pos;
+      d.normal = angleOf(n);
+      d.w = w;
+      d.h = h;
+    }
     d.life = DECAL_LIFE;
     return;
   }

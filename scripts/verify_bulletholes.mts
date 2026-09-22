@@ -147,8 +147,12 @@ console.log("\na round landing on an existing hole restarts its clock and leaves
   check("...with its clock restarted", first.life === DECAL_LIFE, `life=${first.life}`);
   stampBulletHole(out, vec(-25, HOLE_W / 2 + 1), wall, 0); // just past half a width from the hole
   check("further than that: a second hole", out.length === 2, `n=${out.length}`);
-  stampBulletHole(out, vec(-25, 0), wall, 0, 3); // a heavy round merges over its OWN half width
-  check("a heavier round merges over its own, wider radius, and the hole keeps its size", out.length === 2 && out.every((d) => d.w === HOLE_W), `n=${out.length}`);
+  stampBulletHole(out, vec(-25, 1), wall, 0, 3); // a heavy round merges over its OWN half width
+  check("a heavier round merges over its own, wider radius", out.length === 2, `n=${out.length}`);
+  check("...and takes the hole over: its size and its point", first.w === 3 * HOLE_W && first.h === 3 * HOLE_H && Math.abs(first.pos.y - 1) < 1e-9, `w=${first.w} ${fmt(first.pos)}`);
+  first.life = 100;
+  stampBulletHole(out, vec(-25, 0), wall, 0, 1); // a lighter round on the big hole
+  check("a lighter round refreshes the big hole but leaves it big and put", out.length === 2 && first.w === 3 * HOLE_W && Math.abs(first.pos.y - 1) < 1e-9 && first.life === DECAL_LIFE, `w=${first.w} ${fmt(first.pos)} life=${first.life}`);
   stampBulletHole(out, vec(75, HOLE_W / 2 - 1), other, 0);
   check("the same spot on a different obstacle is its own hole", out.length === 3, `n=${out.length}`);
 
