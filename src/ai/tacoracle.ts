@@ -753,14 +753,8 @@ export class TacOracle extends Oracle {
       // or wedge front-to-front converging on the same spot. General spacing is
       // postMove's job; this is path-specific.
       this.strafeTarget = null;
-      // Same level only: the "lane" to an off-level chase is a straight line
-      // through the floor — fiction. The walk there goes via stairs (usually
-      // some other direction entirely), and there is no firing lane to keep
-      // clear because the gun can't cross levels anyway. Sidestepping against
-      // that phantom line marched pairs of bots away from their own waypoints
-      // in lockstep at full speed, each "clearing" the other's nonexistent
-      // lane, for hundreds of ticks (traced in scripts/probe_grind.mts).
-      const blocker = chase.z === this.z ? this.blockingMate(ai, chase) : null;
+      // Only against a chase we actually have a lane to — see blockingMate.
+      const blocker = this.blockingMate(ai, chase);
       // Veer around a mate in the lane if there's room; if boxed in, drive
       // straight and let the squishy body collision phase us through.
       const engaging = target && target.z === this.z ? target : null;
@@ -811,9 +805,9 @@ export class TacOracle extends Oracle {
     }
     // Keep clearing a teammate's firing lane between plan ticks too (drive
     // straight if boxed — squishy collision phases through rather than freezing).
-    // Same level only, as in act(): an off-level chase has no lane to clear.
+    // Only where there IS a lane, as in act() — see blockingMate.
     const chase = target ?? this.focus;
-    const blocker = chase && chase.z === this.z ? this.blockingMate(ai, chase) : null;
+    const blocker = chase ? this.blockingMate(ai, chase) : null;
     if (!chase || !blocker || !this.sidestep(ai, chase, blocker)) this.coastStep(ai);
   }
 
@@ -2448,8 +2442,28 @@ export class TacOracle extends Oracle {
    *  CROWD_DIST ahead, CROWD_MARGIN of the line), or null — i.e. someone we'd be
    *  flagging (and marching behind) if we kept going straight. Reuses the
    *  anti-friendly-fire lane test so "in the lane" means the same thing here as
-   *  for holding fire. */
+   *  for holding fire.
+   *
+   *  Null unless the lane is REAL: the chase is on our level and in plain line
+   *  of sight. The lane is the straight line at the chase, and `sidestep` walks
+   *  a diagonal along it, so against a chase we can't see that line is fiction
+   *  and following it leaves the route for a wall:
+   *   - Another level: the line runs through the floor, the walk goes by the
+   *     stairs (usually some other way entirely), and the gun can't cross levels
+   *     anyway. Pairs of bots each "cleared" the other's nonexistent lane, away
+   *     from their own waypoints in lockstep, for hundreds of ticks (traced in
+   *     scripts/probe_grind.mts).
+   *   - Behind a wall on our level: same thing sideways. A file of bots going
+   *     through a doorway (dust2's long doors) all had the bot ahead "in the
+   *     lane" to an enemy round the corner, so each stepped off the route
+   *     diagonally at that enemy and slid along the wall — straight-lining at
+   *     someone they couldn't see. It was 80% of all sidesteps in a 10v10.
+   *  Both checks live HERE rather than at the call sites so a new caller can't
+   *  forget one; that is how the second case outlived the fix for the first.
+   *  Sight is the plain line (losClear), not canSee/visibility: those count a
+   *  wall the gun could shoot through, and a body can't sidestep through it. */
   private blockingMate(ai: AiContext, chase: Character): Character | null {
+    if (chase.z !== this.z || !losClear(ai.world, this.pos, chase.pos, this.z)) return null;
     const to = sub(chase.pos, this.pos);
     const len = Math.hypot(to.x, to.y);
     if (len < 1e-3) return null;

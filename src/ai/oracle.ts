@@ -46,12 +46,34 @@ const REPLAN_TICKS = 30; // re-run the path query this often (~0.5s) to chase a 
 const REPLAN_JITTER = 10;
 const SWITCH_MARGIN = 80; // keep the committed hop unless a fresh plan is this much cheaper (px)
 const MAX_SKIP = 4; // hops per tick the string-pull may cut when the line ahead is clear
+/** How much ROUTE the string-pull may cut, in world px, on one commitment: the
+ *  summed length of the hops it jumps past before the bot has to arrive
+ *  somewhere (or commit to a different hop) to earn more. The per-tick MAX_SKIP
+ *  alone bounds nothing — the pull runs every tick — so in a wide walkway every
+ *  bot's waypoint slid to the same far corner node and they all walked one
+ *  straight, off-graph line to it: single file, on ground the congestion field
+ *  neither prices nor sees (a stamp starts at the waypoint). Capping the reach
+ *  keeps each bot near the lane its congested route chose, and its stamp near
+ *  where it is.
+ *
+ *  A length, not a node count, so the reach doesn't depend on how densely a
+ *  level is noded. 600px fits two route hops on average (1.95 across arena /
+ *  dust2 / harbor / house; route edges average ~245px), i.e. a waypoint about
+ *  three nodes ahead of where the bot stands. */
+const SKIP_AHEAD_DIST = 600;
 const AIM_HOLD_TICKS = 45; // keep the last combat aim this long after losing sight
 const FACE_NEXT_DISTANCE = 650; // this close to the waypoint, aim at the hop after it
-/** How many hops of the committed route are declared to the congestion field.
- *  Bounded because walking it costs a route() query per hop, and the far end of a
- *  long path is stale by the time anyone gets there anyway. */
-const ROUTE_STAMP_HOPS = 12;
+/** How many hops of the committed route (from the waypoint on) are declared to
+ *  the congestion field. Infinity = the whole route, which is what measures
+ *  best once the string-pull is capped (SKIP_AHEAD_DIST): on dust2 10v10, single-file
+ *  walking was 2.7% of moving bot-samples at 1 hop, 2.0% at 12, 1.5% for the
+ *  whole route (harbor 1.9 / 2.1 / 1.6). A short stamp was tried on the theory
+ *  that the far end of a route is stale by the time anyone gets there; it cut
+ *  ordinary bumping slightly on an open arena but leaves teammates free to pile
+ *  onto the same corridor further along. The stamp is built from ONE routePath
+ *  query, so length costs arcs to customize, not extra searches — if plan()
+ *  cost ever matters again at large bot counts, this is the dial. */
+const ROUTE_STAMP_HOPS = Infinity;
 
 export interface OracleOptions extends RobotOptions {
   /** Constant movement speed, world px/tick. */
@@ -68,12 +90,24 @@ export class Oracle extends Robot {
    *  oscillation when line of sight to a nearer node blinks around a corner. */
   private waypoint = -1;
   /** True iff the last plan found my node == the target's node — the only
-   *  state in which beelining at the target itself is allowed. */
+   *  state in which beelining at the target itself is allowed. It is a fact
+   *  about ONE character, the one that plan was made for: see planFor. */
   private atGoalNode = false;
+  /** Who the last plan was made for. atGoalNode (and the whole committed route)
+   *  says nothing about anyone else, so a beeline is only ever taken at this
+   *  character, and a different chase forces a fresh plan. Without it a bot
+   *  standing on its capture node (plan for the objective marker, atGoalNode
+   *  true) that picked up an enemy — a hidden one included — walked dead
+   *  straight at it through whatever was in between, for as long as the stale
+   *  plan lasted. */
+  private planFor: Character | null = null;
   /** The goal node of the last plan (nearest node that sees the chase), or
    *  -1. Kept so blind facing can look up the hop after the waypoint. */
   private goal = -1;
   private replanIn = 0;
+  /** Route length the string-pull may still cut on the current commitment (see
+   *  SKIP_AHEAD_DIST). */
+  private skipLeft = SKIP_AHEAD_DIST;
 
   constructor(pos: Vec2, options: OracleOptions = {}) {
     super(pos, { skin: ORACLE_SKIN, ...options });
@@ -128,7 +162,9 @@ export class Oracle extends Robot {
         ? this.lastTarget
         : null;
     if (this.atGoalNode) {
-      if (chase) {
+      // Only at the character the plan found us sharing a node with (planFor);
+      // lastTarget can be someone else entirely by now.
+      if (chase && chase === this.planFor) {
         direct = true;
         dest = chase.pos;
       }
@@ -156,13 +192,16 @@ export class Oracle extends Robot {
 
     if (ai.nav && ai.nav.nodes.length > 0) {
       this.updatePlan(ai.nav, ai.world, chase, ai.tick);
-      if (this.atGoalNode && this.z === chase.z) {
+      if (this.atGoalNode && this.planFor === chase && this.z === chase.z) {
         // Same node as the target: close-quarters chase on the target itself.
         // Was `(target || this.z === chase.z)`. A target used to imply a shared
         // level — selectTarget refused anyone else — so the shorthand was safe.
         // Now that off-level hostiles are targets, it made a bot beeline at
         // someone a floor away and freeze on the stair boundary, where the guard
         // below refuses the level change. Only waypoint legs cross floors.
+        // And only at the character the plan was made for: when the plan
+        // budget defers a replan onto a new chase, the old plan's "same node"
+        // must not be read as being about this one.
         direct = true;
         dest = chase.pos;
       } else if (this.waypoint >= 0) {
@@ -268,7 +307,12 @@ export class Oracle extends Robot {
     ) {
       this.waypoint = -1; // reached an intermediate hop: pick the next one now
     }
-    if ((this.waypoint < 0 || this.replanIn <= 0) && Oracle.plansLeft > 0) {
+    // A different chase than the plan was made for is a different route: replan
+    // now rather than walking the old one until the timer happens to fire.
+    if (
+      (this.waypoint < 0 || this.replanIn <= 0 || chase !== this.planFor) &&
+      Oracle.plansLeft > 0
+    ) {
       Oracle.plansLeft -= 1;
       this.plan(nav, world, chase);
       this.replanIn = REPLAN_TICKS + Math.floor(Math.random() * REPLAN_JITTER);
@@ -280,16 +324,20 @@ export class Oracle extends Robot {
    *  (toward the goal) is already reachable in a straight clear line from here,
    *  skip the current waypoint and head for that hop instead — cutting the corner
    *  rather than first detouring out to a node we can already see past. Bounded
-   *  per tick; runs forward only (toward the goal), so it can't oscillate. Stops
-   *  at the goal node, where the existing arrival/atGoalNode flow takes over. */
+   *  per tick and, across ticks, by SKIP_AHEAD_DIST of route per commitment; runs forward
+   *  only (toward the goal), so it can't oscillate. Stops at the goal node, where
+   *  the existing arrival/atGoalNode flow takes over. */
   private skipReachableHops(nav: NavGraph, world: World): void {
     if (this.atGoalNode || this.goal < 0) return;
     for (let hop = 0; hop < MAX_SKIP && this.waypoint >= 0 && this.waypoint !== this.goal; hop++) {
       const step = nav.route(this.waypoint, this.goal, this.team);
       if (!step) return;
       const next = nav.nodes[step.next];
+      const cut = dist(nav.nodes[this.waypoint].pos, next.pos); // route length this skip jumps past
+      if (cut > this.skipLeft) return;
       if (!walkable(world, this.pos, this.z, next.pos, next.z)) return;
       this.waypoint = step.next;
+      this.skipLeft -= cut;
     }
   }
 
@@ -301,9 +349,15 @@ export class Oracle extends Robot {
     // is both wrong and unstable. It goes back on at the end, so between plans
     // everyone else still sees where we intend to walk.
     nav.setRoute(this, [], this.team);
+    const committed = this.waypoint;
+    this.planFor = chase;
     try {
       this.planInner(nav, world, chase);
     } finally {
+      // A new commitment (arrived and moved on, or re-routed) earns a fresh
+      // string-pull allowance; a replan that keeps the same hop does not, or the
+      // waypoint would creep forward without limit one replan at a time.
+      if (this.waypoint !== committed) this.skipLeft = SKIP_AHEAD_DIST;
       // Declare the new route whatever happened, including the early returns
       // that leave us with no waypoint at all (which declares nothing).
       nav.setRoute(this, this.routeNodes(nav), this.team);
@@ -311,8 +365,8 @@ export class Oracle extends Robot {
   }
 
   /** The committed route's nodes, for the congestion field — built in ONE query
-   *  (not one per hop) and capped at ROUTE_STAMP_HOPS edges, since we only stamp
-   *  the near corridor rather than the whole map. */
+   *  (not one per hop) and capped at ROUTE_STAMP_HOPS edges (currently no cap:
+   *  the whole route — see ROUTE_STAMP_HOPS). */
   private routeNodes(nav: NavGraph): number[] {
     if (this.waypoint < 0 || this.goal < 0) return [];
     const rp = nav.routePath(this.waypoint, this.goal, this.team);
