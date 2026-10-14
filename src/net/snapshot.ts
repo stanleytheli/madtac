@@ -261,6 +261,10 @@ export class ClientMirror {
         if (!e.pos || near(e.pos)) wire.push(e);
       } else if (e.kind === "particles") {
         if (seen(e.pos, e.z)) wire.push(e);
+      } else if (e.kind === "scorch") {
+        // In earshot, like the boom that came with it: it tells no more than the
+        // sound did, and the mark is there to find once you walk over to it.
+        if (near(e.pos)) wire.push(e);
       } else if (seen(e.near, e.z)) {
         const we = toWire(e, this.obstacleIndex);
         if (we) wire.push(we);

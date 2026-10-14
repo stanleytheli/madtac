@@ -262,6 +262,7 @@ export class Game implements GameCtx {
     this.world.bullets.length = 0;
     this.world.particles.length = 0;
     this.world.decals.length = 0;
+    this.world.scorches.length = 0;
     this.world.events.length = 0;
     this.world.items.length = 0;
     this.world.items.push(...this.initialItems);

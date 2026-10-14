@@ -190,6 +190,10 @@ export class NavGraph {
   private aLo!: Int32Array;
   private aHi!: Int32Array;
   private aBase!: Float64Array; // straight-line dist if walkable now, else Infinity
+  /** Straight-line length of every arc whether or not it is walkable right now —
+   *  the fixed quantity a congestion stamp is priced on (aBase goes Infinity when
+   *  a vehicle parks across the edge; a stamp must not). */
+  private aLen!: Float64Array;
 
   /** One customization of the hierarchy. The topology is shared; each metric
    *  carries its own weights and shortcut-unpacking pointers, which is the whole
@@ -203,7 +207,10 @@ export class NavGraph {
    *  you may want to intercept). Each team gets its own surcharge array + congested
    *  metric, built lazily on first use (teamCong). Same per-stamp / per-query cost
    *  as one shared field — just partitioned by team. */
-  private readonly congByTeam = new Map<TeamId, { congestion: Float64Array; cong: Metric }>();
+  private readonly congByTeam = new Map<
+    TeamId,
+    { count: Int32Array; congestion: Float64Array; cong: Metric }
+  >();
   /** Each owner's currently-stamped route arcs, so a re-stamp only pays for the
    *  difference (a bot re-planning to a similar route touches almost nothing). An
    *  owner never changes team, so the arcs always belong to that team's field. */
@@ -319,6 +326,7 @@ export class NavGraph {
     this.aLo = new Int32Array(loNodes);
     this.aHi = new Int32Array(hiNodes);
     this.aBase = new Float64Array(m);
+    this.aLen = new Float64Array(m);
     this.plain = this.makeMetric(null);
     this.up = nodes.map(() => []);
     this.down = nodes.map(() => []);
@@ -333,6 +341,7 @@ export class NavGraph {
       // walkable candidate pair carries its distance, a blocked one Infinity.
       const d = nodes[lo].movable.get(hi);
       this.aBase[a] = d === undefined ? Infinity : d;
+      this.aLen[a] = dist(nodes[lo].pos, nodes[hi].pos);
     }
   }
 
@@ -546,17 +555,24 @@ export class NavGraph {
 
   // ============================================================ congestion ====
 
-  /** Per-edge surcharge (world px) applied to each hop of a route someone has
-   *  committed to walking. Big enough that a second bot prefers a genuinely
-   *  different corridor when one exists, small enough that it never invents a
-   *  long detour around a short shared hop.
+  /** Surcharge per stamp, as a multiple of the stamped edge's own length: each
+   *  stamp makes an edge read this much LONGER to teammates, on top of its real
+   *  length. Proportional rather than a flat amount per edge so the price of
+   *  sharing a corridor depends on how far you share it, not on how many nodes
+   *  the level author happened to drop along it — a flat 200/edge charged a
+   *  densely-noded stretch several times what it charged the same stretch drawn
+   *  with two nodes.
    *
-   *  Tuned by measurement, and it is NOT monotone — 60/200/400 all behave much
-   *  the same, and by 2500 spreading is back to no-congestion levels. A surcharge
-   *  that large dwarfs the Oracle's SWITCH_MARGIN (80), so the sticky-hop rule
-   *  stops damping waypoint churn and the routes thrash. Width, not magnitude, is
-   *  the lever that separates bots (see ROUTE_SPREAD). */
-  static readonly ROUTE_PENALTY = 200;
+   *  Calibrated to the old flat 200: stamped edges average ~235px across the
+   *  arena / dust2 / harbor / house maps (227 / 234 / 245 / 235, measured in live
+   *  matches over the stamp multiset), and 200 / 235 = 0.85.
+   *
+   *  Tuned by measurement, and it is NOT monotone — flat values of 60/200/400
+   *  all behaved much the same, and by 2500 spreading was back to no-congestion
+   *  levels. A surcharge that large dwarfs the Oracle's SWITCH_MARGIN (80), so
+   *  the sticky-hop rule stops damping waypoint churn and the routes thrash.
+   *  Width, not magnitude, is the lever that separates bots (see ROUTE_SPREAD). */
+  static readonly ROUTE_PENALTY_PER_PX = 0.85;
 
   /** Stamp every edge incident to a route node, not only the edges the route
    *  itself uses. Magnitude alone saturates — past a point it just destabilises
@@ -567,13 +583,14 @@ export class NavGraph {
   /** `team`'s congestion field + metric, built (and fully customized once) on
    *  first use. A new field starts all-zero, so its metric equals `plain` until
    *  the first route is stamped. */
-  private teamCong(team: TeamId): { congestion: Float64Array; cong: Metric } {
+  private teamCong(team: TeamId): { count: Int32Array; congestion: Float64Array; cong: Metric } {
     let tc = this.congByTeam.get(team);
     if (!tc) {
+      const count = new Int32Array(this.aBase.length);
       const congestion = new Float64Array(this.aBase.length);
       const cong = this.makeMetric(congestion);
       this.customizeFull(cong);
-      tc = { congestion, cong };
+      tc = { count, congestion, cong };
       this.congByTeam.set(team, tc);
     }
     return tc;
@@ -590,7 +607,7 @@ export class NavGraph {
    *  a bot re-planning onto a similar route pays for the few hops that changed.
    *  Pass an empty array to withdraw (death, or no route). */
   setRoute(owner: object, nodes: readonly number[], team: TeamId): void {
-    const { congestion, cong } = this.teamCong(team);
+    const { count, congestion, cong } = this.teamCong(team);
     const next: number[] = [];
     for (let i = 0; i + 1 < nodes.length; i++) {
       const a = this.arc(nodes[i], nodes[i + 1]);
@@ -617,7 +634,11 @@ export class NavGraph {
     const dirty: number[] = [];
     for (const [a, d] of delta) {
       if (d === 0) continue;
-      congestion[a] = Math.max(0, congestion[a] + d * NavGraph.ROUTE_PENALTY);
+      // The surcharge is derived from an integer stamp count, never accumulated:
+      // adding and removing a fractional amount would leave rounding residue on
+      // an arc nobody is stamping any more.
+      count[a] = Math.max(0, count[a] + d);
+      congestion[a] = count[a] * NavGraph.ROUTE_PENALTY_PER_PX * this.aLen[a];
       dirty.push(a);
     }
     if (next.length) this.stamped.set(owner, next);
@@ -627,10 +648,11 @@ export class NavGraph {
 
   /** Withdraw every stamp (match reset / level reload) across all teams. */
   clearRoutes(): void {
-    for (const { congestion, cong } of this.congByTeam.values()) {
+    for (const { count, congestion, cong } of this.congByTeam.values()) {
       const dirty: number[] = [];
       for (let a = 0; a < congestion.length; a++) {
-        if (congestion[a] !== 0) {
+        if (count[a] !== 0) {
+          count[a] = 0;
           congestion[a] = 0;
           dirty.push(a);
         }

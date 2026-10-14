@@ -776,7 +776,7 @@ export function entityFromJSON(def: EntityDef, j: Record<string, any>): any {
 /** Parse a level string into a fresh, self-contained LevelState. */
 export function loadLevel(text: string): LevelState {
   const state: LevelState = {
-    world: { obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], events: [] },
+    world: { obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [] },
     spawns: [],
     playerSpawn: [],
     spawnZones: [],

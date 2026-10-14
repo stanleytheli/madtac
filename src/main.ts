@@ -25,6 +25,7 @@ import { DEFAULT_FIRE_SOUND } from "./entities/gun.ts";
 import { ALL_GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
 import { drawDecals } from "./engine/decal.ts";
+import { drawScorches, SCORCH_IMAGE } from "./engine/scorch.ts";
 import { SoundPlayer, spawnEffects, tickCosmetics } from "./engine/effects.ts";
 import { ClientView } from "./ui/view.ts";
 import { LocalSession, type Session } from "./ui/session.ts";
@@ -1198,6 +1199,11 @@ function render(): void {
         // An obstacle's optional visibleFrom/invisible are purely cosmetic
         // (second-story walls hidden from the ground, invisible barriers) — it
         // still collides either way.
+
+        // Blast scorches are burned INTO the floor: first, under everything —
+        // the walls they ran up against included. Both passes, like the floor.
+        const scorchImg = world.scorches.length ? assetImage(SCORCH_IMAGE) : null;
+        if (scorchImg) drawScorches(ctx, world.scorches, scorchImg, z, pointInView);
 
         // Objective rings are painted ON the ground, so they go under everything
         // that stands on it — corpses included.

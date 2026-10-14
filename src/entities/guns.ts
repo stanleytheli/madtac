@@ -99,6 +99,12 @@ export interface ProjectileSpec {
   /** Detonation sound in /audio (e.g. "Explosion_01.wav", or { file, volume }),
    *  played at the blast. Omitted = the explosion is silent. */
   explosionSound?: SoundRef;
+  /** Width of the scorch mark the blast leaves on the floor, world px (the
+   *  sprite is square). Clipped to the floors under it; fades after a while.
+   *  Omitted = no mark. */
+  scorch?: number;
+  /** The scorch mark's opacity, 0..1 (before its fade-out). Omitted = 1. */
+  scorchOpacity?: number;
 }
 
 /**
@@ -848,7 +854,7 @@ export const MP220: GunSpec = {
     { p0: { f: 60, l: -5 }, p1: { f: 120, l: -5 }, width: 6, color: "#393939", over: false },
 
   ],
-  damage: 10,
+  damage: 11,
   armorPen: DEFAULT_AP_XLOW,
   penetration: 10,
   shotgunPellets: 9,
@@ -926,7 +932,7 @@ export const Mossberg500: GunSpec = {
     { p0: { f: 55, l: -8 }, p1: { f: 100, l: -8}, width: 7, color: "#5a3a1c", over: false }, // pump/forend
     { p0: { f: 35, l: 0 }, p1: { f: 120, l: 0 }, width: 10, color: "#2b2b2b", over: false }, // barrel
   ],
-  damage: 10,
+  damage: 11,
   armorPen: DEFAULT_AP_XLOW,
   penetration: 10,
   shotgunPellets: 9,
@@ -1108,6 +1114,8 @@ export const RPG: GunSpec = {
     spriteScale: 1.0, // 115px art -> ~58px long in world
     explosion: STANDARD_EXPLOSION,
     explosionSound: "Explosion_01.wav",
+    scorch: 250,
+    scorchOpacity: 0.6,
   },
   visualRecoil: 14,
   recoilRecovery: 1,
@@ -1180,6 +1188,8 @@ export const M79: GunSpec = {
     spriteScale: 1.0, // 115px art -> ~58px long in world
     explosion: SMALL_EXPLOSION,
     explosionSound: "Explosion_03.wav",
+    scorch: 175,
+    scorchOpacity: 0.6,
   },
   visualRecoil: 10,
   recoilRecovery: 1,

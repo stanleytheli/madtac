@@ -20,6 +20,7 @@ import { nextEntityId } from "../engine/ids.ts";
 import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 import { add, deg2rad, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import type { Decal } from "../engine/decal.ts";
+import type { Scorch } from "../engine/scorch.ts";
 import { emitSound, type GameEvent } from "../engine/events.ts";
 import type { SoundRef } from "../engine/audio.ts";
 import { METAL_HIT_SOUND, OBSTACLE_HIT_SOUND, WOOD_HIT_SOUND } from "./hitsounds.ts";
@@ -568,6 +569,7 @@ export interface World {
    *  into particles and decals (see engine/effects.ts). Empty on a server. */
   particles: Particle[];
   decals: Decal[];
+  scorches: Scorch[]; // blast marks on the floors (same ownership as decals)
   /** What happened this tick, for whoever runs the sim to react to: sounds,
    *  impacts, hits. Cleared at the start of every Game.update (see engine/events.ts). */
   events: GameEvent[];
@@ -936,7 +938,7 @@ export function createWorld(): World {
     N(-220, 480), N(120, 480, -1), N(280, 480, -1),
   ];
 
-  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], events: [] };
+  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [] };
   sortRenderDepth(world); // bake the render order once (all default depths here)
   return world;
 }
@@ -1486,6 +1488,9 @@ export function explode(
   // Detonation visuals: each burst in the round's blast preset (see ProjectileSpec
   // .explosion). spread is a full circle, so the ejection direction is irrelevant.
   emitParticles(w, at, vec(1, 0), blast, z);
+  // ...and the burn it leaves on the floor, sized on the launcher's spec.
+  const scorch = gun?.projectile?.scorch;
+  if (scorch) w.events.push({ kind: "scorch", pos: at, z, size: scorch, opacity: gun?.projectile?.scorchOpacity ?? 1 });
 }
 
 /**

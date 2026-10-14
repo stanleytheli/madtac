@@ -4,7 +4,7 @@
  * ears. The sim emits; this reacts. Split in two so a headless script can have
  * the debris without the audio:
  *
- *   - spawnEffects: particles and bullet holes into the world's cosmetic arrays
+ *   - spawnEffects: particles, bullet holes and scorches into the world's cosmetic arrays
  *     (pure — no browser needed), and tickCosmetics to age them.
  *   - SoundPlayer: the audio engine, plus the ONE thing that needs to know who
  *     the local player is — turning a "hit" event into their hurt sound or
@@ -12,25 +12,28 @@
  */
 import { playSound, stopSound, type SoundHandle } from "./audio.ts";
 import { stampBulletHole, updateDecals } from "./decal.ts";
+import { stampScorch, updateScorches } from "./scorch.ts";
 import type { GameEvent } from "./events.ts";
 import { spawnParticles, updateParticles } from "./particle.ts";
 import { PLAYER_HIT_SOUND, PLAYER_HURT_SOUND } from "../world/hitsounds.ts";
 import type { World } from "../world/world.ts";
 
-/** Throw this tick's debris and stamp its bullet holes (from w.events into
- *  w.particles / w.decals). Leaves the events in place for the sound side. */
+/** Throw this tick's debris and stamp its bullet holes and scorches (from
+ *  w.events into w.particles / w.decals / w.scorches). Leaves the events in place for the sound side. */
 export function spawnEffects(w: World): void {
   for (const e of w.events) {
     if (e.kind === "particles") spawnParticles(w.particles, e.pos, e.dir, e.burst, e.z, e.heft);
     else if (e.kind === "decal") stampBulletHole(w.decals, e.near, e.on, e.z, e.heft);
+    else if (e.kind === "scorch") stampScorch(w.scorches, w.floors, e.pos, e.z, e.size, e.opacity);
   }
 }
 
-/** Age the debris and the bullet holes one tick. The sim used to do this
+/** Age the debris, the bullet holes and the scorches one tick. The sim used to do this
  *  inside updateBullets; it is the client's now, like the arrays themselves. */
 export function tickCosmetics(w: World): void {
   w.particles = updateParticles(w.particles);
   w.decals = updateDecals(w.decals);
+  w.scorches = updateScorches(w.scorches);
 }
 
 /** A headless script's whole reaction to one sim step it drove itself (an
