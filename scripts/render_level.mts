@@ -4,7 +4,11 @@
  * booting the game — floors, walls/crates/fences/barrels, stairs, spawn zones,
  * spawns, and domination points, each drawn roughly as the game draws it.
  *
- *   npx tsx scripts/render_level.mts src/world/levels/house.json out.svg
+ *   npx tsx scripts/render_level.mts src/world/levels/house.json out.svg [onlyZ|--flat]
+ *
+ * `--flat` composites every level into ONE panel (what you see from the ground:
+ * upper floors over lower ones, roofs translucent) on a square canvas — the
+ * stacked-panel default is cropped by `qlmanage -t`, which thumbnails square.
  *
  * Convert to a PNG with `qlmanage -t -s 1600 -o <dir> out.svg` (macOS) if you
  * want a raster to look at. Purely a dev/authoring aid — not shipped or imported.
@@ -13,7 +17,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 
 interface Ent { kind: string; x: number; y: number; w?: number; h?: number; angle?: number; z?: number; level?: number; [k: string]: any; }
 
-const [, , inPath, outPath = "level.svg", onlyZ] = process.argv; // onlyZ: render just that level
+const [, , inPath, outPath = "level.svg", mode] = process.argv; // mode: a z to render alone, or --flat
+const flat = mode === "--flat";
+const onlyZ = flat ? undefined : mode;
 if (!inPath) { console.error("usage: render_level.mts <level.json> [out.svg]"); process.exit(1); }
 
 const doc = JSON.parse(readFileSync(inPath, "utf8")) as { entities: Ent[] };
@@ -26,9 +32,10 @@ let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 for (const e of ents) {
   if (e.kind === "floor" && e.infinite) continue;
   const hw = (e.w ?? 0) / 2, hh = (e.h ?? 0) / 2;
-  const r = Math.max(hw, hh) || 40; // points get a small halo
-  minX = Math.min(minX, e.x - r); maxX = Math.max(maxX, e.x + r);
-  minY = Math.min(minY, e.y - r); maxY = Math.max(maxY, e.y + r);
+  // Rotated rects get a conservative square halo; points a small one.
+  const rx = e.angle ? Math.max(hw, hh) : hw || 40, ry = e.angle ? Math.max(hw, hh) : hh || 40;
+  minX = Math.min(minX, e.x - rx); maxX = Math.max(maxX, e.x + rx);
+  minY = Math.min(minY, e.y - ry); maxY = Math.max(maxY, e.y + ry);
 }
 const pad = 120;
 minX -= pad; minY -= pad; maxX += pad; maxY += pad;
@@ -47,10 +54,10 @@ function rect(e: Ent, attrs: string, extra = ""): string {
   return `<g${t}><rect x="${e.x - w / 2}" y="${e.y - h / 2}" width="${w}" height="${h}" ${attrs}/>${extra}</g>`;
 }
 
-function panel(z: number): string {
+function panel(z: number, withBg = true): string {
   const parts: string[] = [];
   // Background: the infinite floor's color, else dark.
-  parts.push(`<rect x="${minX}" y="${minY}" width="${W}" height="${H}" fill="${bg?.color ?? "#2b2b2b"}"/>`);
+  if (withBg) parts.push(`<rect x="${minX}" y="${minY}" width="${W}" height="${H}" fill="${bg?.color ?? "#2b2b2b"}"/>`);
 
   // Floors at this level (painter's order = array order).
   for (const e of ents) {
@@ -103,17 +110,23 @@ function panel(z: number): string {
     else if (e.kind === "gun") parts.push(`<rect x="${e.x - 12}" y="${e.y - 12}" width="24" height="24" fill="#e0c24a" stroke="#000" stroke-width="2"/>`);
     else if (e.kind === "armor") parts.push(`<rect x="${e.x - 12}" y="${e.y - 12}" width="24" height="24" fill="#5aa0e0" stroke="#000" stroke-width="2"/>`);
   }
-  const title = `<text x="${minX + 24}" y="${minY + 70}" font-size="60" font-family="sans-serif" font-weight="700" fill="#fff" stroke="#000" stroke-width="2">z = ${z}</text>`;
+  const title = withBg ? `<text x="${minX + 24}" y="${minY + 70}" font-size="60" font-family="sans-serif" font-weight="700" fill="#fff" stroke="#000" stroke-width="2">z = ${z}</text>` : "";
   return `<g>${parts.join("")}${title}</g>`;
 }
 
-// Lay panels out in a column (one row per z-level), top = highest z.
+// Lay panels out in a column (one row per z-level), top = highest z — or, flat,
+// all at one origin on a square canvas, lowest level first (with the only
+// background), so upper floors composite over lower ones like the game.
 const gap = 60;
 const ordered = [...zs].reverse();
-const svgH = ordered.length * H + (ordered.length - 1) * gap;
-const inner = ordered.map((z, i) => `<g transform="translate(${-minX} ${i * (H + gap) - minY})">${panel(z)}</g>`).join("");
+const side = Math.max(W, H);
+const svgW = flat ? side : W;
+const svgH = flat ? side : ordered.length * H + (ordered.length - 1) * gap;
+const inner = flat
+  ? zs.map((z, i) => `<g transform="translate(${(side - W) / 2 - minX} ${(side - H) / 2 - minY})">${panel(z, i === 0)}</g>`).join("")
+  : ordered.map((z, i) => `<g transform="translate(${-minX} ${i * (H + gap) - minY})">${panel(z)}</g>`).join("");
 const svg =
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(W / 2)}" height="${Math.round(svgH / 2)}" viewBox="0 0 ${W} ${svgH}">` +
-  `<rect width="${W}" height="${svgH}" fill="#111"/>${inner}</svg>`;
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${Math.round(svgW / 2)}" height="${Math.round(svgH / 2)}" viewBox="0 0 ${svgW} ${svgH}">` +
+  `<rect width="${svgW}" height="${svgH}" fill="#111"/>${inner}</svg>`;
 writeFileSync(outPath, svg);
 console.log(`wrote ${outPath}  (${zs.length} level(s): ${zs.join(", ")}; bounds ${Math.round(W)}x${Math.round(H)})`);

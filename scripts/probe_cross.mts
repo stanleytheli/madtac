@@ -26,7 +26,7 @@ const ARRIVE = 30; // "made it" radius, px
 const world = (): World => {
   const w: World = {
     obstacles: [], floors: [], stairs: [], nodes: [],
-    items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], events: [],
+    items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
   } as any;
   (w as any).grid = new ObstacleGrid([]);
   return w;

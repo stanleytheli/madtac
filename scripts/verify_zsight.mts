@@ -24,7 +24,7 @@ import { vec } from "../src/engine/vec.ts";
 const floor = (x: number, y: number, w: number, h: number, level: number, extra: Partial<Floor> = {}): Floor =>
   ({ pos: vec(x, y), w, h, color: "#888", level, alpha: 1, ...extra } as Floor);
 const world = (floors: Floor[] = [], obstacles: any[] = []): World => {
-  const w: World = { obstacles, floors, stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], events: [] } as unknown as World;
+  const w: World = { obstacles, floors, stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [] } as unknown as World;
   (w as any).grid = new ObstacleGrid(obstacles);
   return w;
 };

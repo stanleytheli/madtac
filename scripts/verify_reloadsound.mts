@@ -212,7 +212,7 @@ console.log("the bolt cycle is named — but never the shot:");
   const world = (): World => {
     const w = {
       obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-      bullets: [], projectiles: [], particles: [], decals: [], events: [],
+      bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
     } as unknown as World;
     (w as any).grid = new ObstacleGrid([]);
     return w;
