@@ -451,6 +451,12 @@ export class Robot extends Character {
    * exactly as before.
    */
   protected visibility(world: World, target: Character): number {
+    return this.visibilityFrom(world, this.pos, target);
+  }
+
+  /** visibility() as it would read with our head at `from` (on our own level)
+   *  — for weighing a step before taking it. */
+  protected visibilityFrom(world: World, from: Vec2, target: Character): number {
     // Exposure is a same-level quantity: every ray below is cast on OUR z, and
     // rays mean nothing across a floor. Cross-level PERCEPTION is a different
     // question and lives in canSee/drawnAcrossFloors — this stays honest and
@@ -458,12 +464,12 @@ export class Robot extends Character {
     if (target.z !== this.z) return 0;
     const budget = this.wallbangBudget;
     let seen = 0;
-    for (const pt of targetPoints(target, this.pos)) {
+    for (const pt of targetPoints(target, from)) {
       if (budget <= 0) {
-        if (losClear(world, this.pos, pt, this.z)) seen += 1;
+        if (losClear(world, from, pt, this.z)) seen += 1;
         continue;
       }
-      const cost = shotCost(world, this.pos, pt, this.z, budget);
+      const cost = shotCost(world, from, pt, this.z, budget);
       if (cost !== null) seen += this.laneWeight(cost);
     }
     return seen;
@@ -489,7 +495,7 @@ export class Robot extends Character {
 /** How many points across the body sight checks sample. Five, so the count reads
  *  as fifths of a body and the thresholds built on it (LOW_VISIBILITY and
  *  friends) keep meaning what they meant. */
-const TARGET_SAMPLES = 5;
+export const TARGET_SAMPLES = 5;
 /**
  * The sample points sight and exposure checks ray against: five points spread
  * across the target's own body, in a line PERPENDICULAR to whoever is looking.

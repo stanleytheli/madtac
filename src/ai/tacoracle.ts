@@ -76,7 +76,7 @@ import { GunItem } from "../entities/item.ts";
 import { walkable, zAt } from "../world/nav.ts";
 import { Oracle, type OracleOptions } from "./oracle.ts";
 import { profiler } from "../engine/profiler.ts";
-import { targetPoints, type AiContext } from "./robot.ts";
+import { TARGET_SAMPLES, targetPoints, type AiContext } from "./robot.ts";
 import { areHostile } from "../entities/team.ts";
 import { add, angleOf, deg2rad, dist, norm, perp, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import { losClear, shotClear, shotCost, wallbangDamageFor, wallbangSightBudget, type HitMarks, type Hittable } from "../world/world.ts";
@@ -136,6 +136,18 @@ const DEFAULT_SEMI_AUTO_DELAY = 5;
 const DEFAULT_ENGAGE_RANGE = 600;
 /** Seeing only this many target points (or fewer) is a bad lane worth strafing out of. */
 const LOW_VISIBILITY = 2;
+/** Burst-start peek (see burstPeek): how far to each side the bot looks for a
+ *  better view of the target before opening fire, world px. Re-probed every
+ *  tick, so the step continues while it keeps paying. */
+const PEEK_PROBE = 20;
+/** ...and the most ticks one burst start may spend stepping (~0.5 s, ~72 px at
+ *  the default walk speed) before it fires from wherever it got to. Covers the
+ *  walk to the far end of WALLBANG_PEEK_DIST. */
+const PEEK_MAX_TICKS = 30;
+/** When every lane from here runs through material (a wallbang), how far to
+ *  each side the burst-start peek looks for a spot with a clean lane, world px,
+ *  in PEEK_PROBE steps. A clean shot that close beats punching through. */
+const WALLBANG_PEEK_DIST = 60;
 /** Lateral candidate offsets, sampled to both sides of the facing line. Reach
  *  past FRIENDLY_MARGIN's shadow, or a teammate dead in the lane would leave
  *  every near candidate equally blocked and the tie-break saying "stand". */
@@ -634,6 +646,10 @@ export class TacOracle extends Oracle {
   private lastReady = true;
   private reactIn = -1;
   private fireOk = true;
+  /** Holding fire this tick to sidestep into a better view first (burstPeek). */
+  private peeking = false;
+  /** Ticks this burst start has spent sidestepping (see PEEK_MAX_TICKS). */
+  private peekTicks = 0;
   /** Semi-auto trigger cadence: ticks until the next allowed click. */
   private clickIn = 0;
   /** The hostile it's currently locked onto (kept across short sight losses —
@@ -677,6 +693,7 @@ export class TacOracle extends Oracle {
 
   protected override act(ai: AiContext, target: Character | null): void {
     this.vel = vec(0, 0);
+    this.peeking = false;
     // Out of bullets: everything else (fighting, holding, healing) is moot — go
     // fetch a loaded gun. Overrides the whole combat flow while it applies.
     if (this.rearm(ai)) return;
@@ -721,6 +738,9 @@ export class TacOracle extends Oracle {
     this.biasObj = this.biasObjective(ai);
     if (!chase) return;
 
+    // About to open fire with only part of the target showing: a short sidestep
+    // first, if one shows more of them (see burstPeek).
+    if (this.burstPeek(ai, target)) return;
     // Heavy-penalty guns are fired from a stand: while a shot is on, hold
     // position and let strafes/approaches happen between bursts. vel is already
     // zeroed. Only holds when the target is actually in reach (see standToShoot),
@@ -777,6 +797,7 @@ export class TacOracle extends Oracle {
    *  any candidate rescoring or path query. */
   protected override coast(ai: AiContext): void {
     this.vel = vec(0, 0);
+    this.peeking = false;
     if (this.rearm(ai)) return; // keep walking to (or grabbing) the loaded gun between plans
     const target = this.lastTarget && this.lastTarget.hp > 0 ? this.lastTarget : null;
     this.updateMode(target ?? this.focus, target);
@@ -797,7 +818,9 @@ export class TacOracle extends Oracle {
       }
       return;
     }
-    // Mirror act's stand-to-shoot hold so a heavy gunner doesn't creep mid-burst.
+    // Mirror act's burst-start peek and stand-to-shoot hold, so the sidestep
+    // runs every tick and a heavy gunner doesn't creep mid-burst.
+    if (this.burstPeek(ai, target)) return;
     if (this.standToShoot(ai, target)) return;
     if (this.strafeTarget) {
       this.stepToward(ai, this.strafeTarget);
@@ -1963,6 +1986,91 @@ export class TacOracle extends Oracle {
     return this.gun.spec.careful ? this.muzzleLineClear(ai, target) : this.laneClear(ai, target);
   }
 
+  /**
+   * Before the FIRST round of a burst, peek a little further. Sight needs only
+   * one of the target's five silhouette samples (see targetPoints), so at a
+   * corner a bot sees the enemy, and would fire, the moment their outermost edge
+   * clears it, with the line to their centre still through the wall. So
+   * if a step of PEEK_PROBE to either side (across the line to the target) shows
+   * MORE of them than standing here does, take a step that way and hold fire;
+   * re-asked every tick, it keeps edging out while that keeps paying and fires
+   * once it stops (or after PEEK_MAX_TICKS). A target already partly exposed
+   * with no better angle a step away is still shot at, straight away.
+   *
+   * A wallbang is the case to beat: if every lane from here runs through
+   * material, it first looks further (to WALLBANG_PEEK_DIST) for the nearest
+   * spot with a clean lane and walks to that. None in reach = fire through.
+   *
+   * Only at a burst's start (recoil fully settled): once the trigger is down,
+   * walking would drag the spray. Returns true when it stepped this tick.
+   */
+  private burstPeek(ai: AiContext, target: Character | null): boolean {
+    if (!target || this.gun.currentRecoil > 0) {
+      this.peekTicks = 0;
+      return false;
+    }
+    if (
+      this.mode !== "shoot" ||
+      !this.fireOk ||
+      this.preAim ||
+      target.z !== this.z ||
+      this.gun.spec.meleeReach !== undefined ||
+      this.peekTicks >= PEEK_MAX_TICKS ||
+      dist(this.pos, target.pos) > this.gun.feasibleRange
+    ) {
+      return false;
+    }
+    const here = this.visibility(ai.world, target);
+    if (here >= TARGET_SAMPLES) return false; // nothing more to see
+    const side = scale(perp(norm(sub(target.pos, this.pos))), PEEK_PROBE);
+    // Only a wallbang from here: head for the nearest spot a step or three to
+    // the side with a clean lane, rather than punching through.
+    let best = this.cleanLane(ai, this.pos, target) ? null : this.nearestCleanSpot(ai, target, side);
+    if (!best) {
+      let bestVis = here;
+      for (const p of [add(this.pos, side), sub(this.pos, side)]) {
+        if (!walkable(ai.world, this.pos, this.z, p, this.z)) continue;
+        const v = this.visibilityFrom(ai.world, p, target);
+        if (v > bestVis) {
+          bestVis = v;
+          best = p;
+        }
+      }
+    }
+    if (!best) return false;
+    this.peekTicks += 1;
+    this.peeking = true;
+    this.stepToward(ai, best);
+    return true;
+  }
+
+  /** Does any of the target's sample points have a clean (no-material) lane
+   *  from `from`? */
+  private cleanLane(ai: AiContext, from: Vec2, target: Character): boolean {
+    return targetPoints(target, from).some((pt) => losClear(ai.world, from, pt, this.z));
+  }
+
+  /** The nearest spot out to WALLBANG_PEEK_DIST to either side (in `step`
+   *  increments, across the line to the target) we can walk straight to and
+   *  that has a clean lane onto the target, or null. Each side stops at the
+   *  first step it can't walk. */
+  private nearestCleanSpot(ai: AiContext, target: Character, step: Vec2): Vec2 | null {
+    const n = Math.floor(WALLBANG_PEEK_DIST / PEEK_PROBE);
+    const open = [true, true];
+    for (let k = 1; k <= n; k++) {
+      for (let i = 0; i < 2; i++) {
+        if (!open[i]) continue;
+        const p = add(this.pos, scale(step, i === 0 ? k : -k));
+        if (!walkable(ai.world, this.pos, this.z, p, this.z)) {
+          open[i] = false;
+          continue;
+        }
+        if (this.cleanLane(ai, p, target)) return p;
+      }
+    }
+    return null;
+  }
+
   /** The actual-muzzle clearance test a `careful` weapon fires through: cast from
    *  the shot origin (the head centre, where rounds spawn) along the TRUE heading
    *  — `this.forward`, where the round will really go, not the line to target.pos —
@@ -2001,6 +2109,7 @@ export class TacOracle extends Oracle {
    *  trigger finger clicks. */
   protected override shouldFire(ai: AiContext, target: Character | null): boolean {
     if (this.mode !== "shoot" || !this.fireOk || !target) return false;
+    if (this.peeking) return false; // sidestepping into a better view first
     // Rounds are z-bound (updateBullets drops a bullet whose z differs), so a
     // shot at another floor is thrown away. Nothing else on this path checks:
     // visibility() rays on OUR z and never compares the target's, so canSee says
