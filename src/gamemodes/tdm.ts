@@ -1,6 +1,7 @@
 /**
- * Team Deathmatch, ticket style. Two sides — blue (the player + blue bots) and
- * red — spawn from their zones and fight. Each death drains that team's ticket
+ * Team Deathmatch, ticket style. Two sides — blue and red, the humans split
+ * between them (a lone human is blue) and bots filling out the rest — spawn
+ * from their zones and fight. Each death drains that team's ticket
  * bar (killLimit down to 0); a team that reaches 0 loses.
  *
  * All the roster/spawn/respawn/loadout/scoreboard machinery lives in the shared

@@ -191,6 +191,10 @@ function handle(ws: WebSocket, c: Client | undefined, msg: ClientMsg): Client | 
     case "ping":
       send(ws, { t: "pong", at: msg.at });
       break;
+    case "leave":
+      leave(c);
+      ws.close();
+      return undefined;
   }
   return c;
 }

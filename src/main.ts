@@ -31,6 +31,7 @@ import { ClientView } from "./ui/view.ts";
 import { LocalSession, type Session } from "./ui/session.ts";
 import { NetSession } from "./net/client.ts";
 import { LocalControls } from "./ui/controls.ts";
+import { idleInput } from "./engine/command.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
 import { profiler } from "./engine/profiler.ts";
 import { drawHud, HealthBar } from "./ui/ui.ts";
@@ -222,7 +223,8 @@ if (EDIT) {
   editorPlayer.z = start.z;
   editor = new Editor(loaded, editorPlayer, canvas);
 } else if (CONNECT) {
-  net = new NetSession(CONNECT, params.get("name") ?? "Player");
+  // No name: the server's gamemode hands out a callsign.
+  net = new NetSession(CONNECT, params.get("name") ?? "");
 } else {
   game = new Game(loaded, makeMode(meta));
 }
@@ -410,8 +412,17 @@ if (editor) {
 
 // The settings menu (Esc), play mode only: in an editor session Esc already
 // means "stop the playtest" / "cancel", and the editor is a dev tool anyway.
-// The match pauses while it is open — see frame().
-const settingsMenu: SettingsMenu | null = editor ? null : buildSettingsMenu();
+// A local match pauses while it is open — see frame(). Its Main menu button
+// goes back to the landing screen (boot.ts), telling a server we left first so
+// our character goes now rather than standing there for the reconnect grace.
+const settingsMenu: SettingsMenu | null = editor
+  ? null
+  : buildSettingsMenu({
+      onLeave: () => {
+        net?.leave();
+        location.href = location.pathname;
+      },
+    });
 
 // The top-left controls hint, written from the live bindings so it never
 // shows a key the player has moved. Redone whenever the menu closes.
@@ -436,6 +447,9 @@ function renderHint(): void {
 }
 renderHint();
 let settingsWasOpen = false;
+/** Where the player was aiming when the settings menu opened: held while it
+ *  is open over a networked match (see frame()). */
+let menuAim: Vec2 | null = null;
 
 const screenCenter = (): Vec2 => vec(window.innerWidth / 2, window.innerHeight / 2);
 
@@ -1602,10 +1616,14 @@ function frame(now: number): void {
   last = now;
   // Guard against huge jumps (e.g. tab was backgrounded).
   if (accumulator > 250) accumulator = 250;
-  // Settings open: the match is paused. Drop the time rather than bank it, so
-  // closing the menu doesn't replay a burst of catch-up ticks.
+  // Settings open: a local match is paused. Drop the time rather than bank it,
+  // so closing the menu doesn't replay a burst of catch-up ticks. A networked
+  // match can't pause (the server plays on), so it keeps stepping with the
+  // player standing still, aim held, instead of carrying on with whatever keys
+  // were down when the menu opened.
   const settingsOpen = settingsMenu?.isOpen() ?? false;
-  if (settingsOpen) accumulator = 0;
+  if (settingsOpen && !net) accumulator = 0;
+  if (settingsOpen && !settingsWasOpen && session) menuAim = vec(session.player.forward.x, session.player.forward.y);
   if (settingsWasOpen && !settingsOpen) renderHint(); // bindings may have changed
   settingsWasOpen = settingsOpen;
 
@@ -1625,7 +1643,9 @@ function frame(now: number): void {
     setAudioLive(accumulator < STEP * 2.5);
     // A live match (booted-in or a playtest) steps the game; otherwise the editor.
     if (session) {
-      session.step(controls.poll(session.player, window.innerWidth, window.innerHeight));
+      // Polled even under the menu, so key presses made there are spent.
+      const input = controls.poll(session.player, window.innerWidth, window.innerHeight);
+      session.step(settingsOpen ? { ...idleInput(), aim: menuAim ?? input.aim } : input);
       // Then the client's reaction to the tick: ease the view, throw the
       // debris and stamp the holes the sim asked for, play its sounds (the
       // hit feedback is the local player's), and age last tick's debris.

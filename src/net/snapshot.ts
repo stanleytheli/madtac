@@ -8,6 +8,10 @@
  * client draws are simply not sent, so a modified client learns nothing the
  * honest one wouldn't show. Teammates, their corpses and vehicles are always
  * sent, because the client draws those through the mask too.
+ *
+ * Numbers go out rounded to what the eye can tell apart (positions to 0.1 px,
+ * angles to 0.001 rad), which is also what lets a standing character compare
+ * equal from one snapshot to the next and stay off the wire.
  */
 import { BODY_RADIUS } from "../entities/character.ts";
 import type { Character } from "../entities/actor.ts";
@@ -18,6 +22,7 @@ import { areHostile } from "../entities/team.ts";
 import type { GameEvent } from "../engine/events.ts";
 import { vec, type Vec2 } from "../engine/vec.ts";
 import type { Game, PlayerSlot } from "../game.ts";
+import type { GamemodeHud, PlayerRow } from "../gamemodes/gamemode.ts";
 import { visibilityPolygon } from "../world/sight.ts";
 import type { Body } from "../entities/body.ts";
 import type {
@@ -38,6 +43,24 @@ import type {
  *  reach of their sight polygon. Wider than any screen at any zoom. */
 export const CULL_R = 3000;
 
+/** Every this many snapshots each visible character's pose is sent whether it
+ *  changed or not (once a second at the default rate), so a client whose
+ *  local timers drifted from a standing character's is put right. */
+export const POSE_REFRESH = 30;
+
+const r1 = (n: number): number => Math.round(n * 10) / 10;
+const r2 = (n: number): number => Math.round(n * 100) / 100;
+const r3 = (n: number): number => Math.round(n * 1000) / 1000;
+/** A world position, to 0.1 px. */
+const rp = (v: Vec2): Vec2 => ({ x: r1(v.x), y: r1(v.y) });
+/** A unit direction, to 0.001. */
+const rd = (v: Vec2): Vec2 => ({ x: r3(v.x), y: r3(v.y) });
+
+/** A record's JSON with its age zeroed: two sends that differ only in how old
+ *  the thing is compare equal, since the client ages it on its own. */
+const ageless = (r: { ag: number }): string => JSON.stringify({ ...r, ag: 0 });
+const agelessList = (rs: readonly { age: number }[]): string => JSON.stringify(rs.map((r) => ({ ...r, age: 0 })));
+
 /** The registry key a spec is filed under, or null. */
 function keyOf<T>(specs: Record<string, T>, spec: T | null | undefined): string | null {
   if (!spec) return null;
@@ -56,18 +79,21 @@ export function pointInPolygon(p: Vec2, poly: readonly Vec2[]): boolean {
   return inside;
 }
 
-/** Remembers what was last sent for a set of ids, and reports what changed. */
+/** Remembers what was last sent for a set of ids, and reports what changed.
+ *  `key` is what "the same" means (default: the whole record's JSON). */
 class DiffSet<T extends { id: number }> {
   private last = new Map<number, string>();
 
-  /** `changed`: records whose JSON differs from what was sent (or are new);
+  constructor(private readonly key: (r: T) => string = (r) => JSON.stringify(r)) {}
+
+  /** `changed`: records whose key differs from what was sent (or are new);
    *  `gone`: ids sent before and absent now. Updates the memory. */
   diff(records: readonly T[]): { changed: T[]; gone: number[] } {
     const changed: T[] = [];
     const seen = new Set<number>();
     for (const r of records) {
       seen.add(r.id);
-      const j = JSON.stringify(r);
+      const j = this.key(r);
       if (this.last.get(r.id) !== j) {
         this.last.set(r.id, j);
         changed.push(r);
@@ -78,13 +104,52 @@ class DiffSet<T extends { id: number }> {
     for (const id of gone) this.last.delete(id);
     return { changed, gone };
   }
+
+  /** Count everything as unsent: the next diff reports every record still
+   *  present as changed. Ids are kept, so `gone` still sees the ones that left. */
+  forget(): void {
+    for (const id of this.last.keys()) this.last.set(id, "");
+  }
 }
 
-/** A GameEvent as sent: obstacles by index (see WireEvent). */
+/** A GameEvent as sent: obstacles by index (see WireEvent), positions and
+ *  directions rounded. */
 export function toWire(e: GameEvent, obstacleIndex: Map<object, number>): WireEvent | null {
-  if (e.kind !== "decal") return e;
-  const oi = obstacleIndex.get(e.on);
-  return oi === undefined ? null : { kind: "decal", near: e.near, oi, z: e.z, heft: e.heft };
+  switch (e.kind) {
+    case "decal": {
+      const oi = obstacleIndex.get(e.on);
+      return oi === undefined ? null : { kind: "decal", near: rp(e.near), oi, z: e.z, heft: r2(e.heft) };
+    }
+    case "sound":
+      return e.pos ? { ...e, pos: rp(e.pos) } : e;
+    case "particles":
+      return { ...e, pos: rp(e.pos), dir: rd(e.dir), heft: r2(e.heft) };
+    case "scorch":
+      return { ...e, pos: rp(e.pos) };
+    default:
+      return e;
+  }
+}
+
+/** A character's pose as sent (see CharSnap): rounded, resting fields left out. */
+function charSnap(c: Character): CharSnap {
+  const g = c.gun;
+  // Health rounds UP, so a sliver of it never reads as dead.
+  const hp = c.hp > 0 ? Math.ceil(c.hp * 10) / 10 : c.hp;
+  const s: CharSnap = { id: c.id, x: r1(c.pos.x), y: r1(c.pos.y), f: r3(Math.atan2(c.forward.y, c.forward.x)), hp };
+  if (c.z) s.z = c.z;
+  const k = r1(g.kickback);
+  if (k) s.k = k;
+  if (g.flashTicks) s.fl = r1(g.flashTicks);
+  if (g.fireCooldown) s.co = r1(g.fireCooldown);
+  if (g.reloadTicks) s.re = r1(g.reloadTicks);
+  if (g.drawTicks) s.dr = r1(g.drawTicks);
+  if (g.punch) s.pu = g.punch;
+  if (c.useTicks) s.us = c.useTicks;
+  if (c.useTotalTicks) s.ut = c.useTotalTicks;
+  if (c.vehicle) s.vh = c.vehicle.id;
+  if (c.seatIndex !== -1) s.st = c.seatIndex;
+  return s;
 }
 
 function charFull(c: Character): CharFull {
@@ -104,7 +169,7 @@ function charFull(c: Character): CharFull {
 }
 
 function itemSnap(it: GroundItem): ItemSnap | null {
-  const base = { id: it.id, x: it.pos.x, y: it.pos.y, z: it.z, lt: it.lifetime, ag: it.age };
+  const base = { id: it.id, x: r1(it.pos.x), y: r1(it.pos.y), z: it.z, lt: it.lifetime, ag: it.age };
   if (it instanceof GunItem) {
     const key = keyOf(ALL_GUN_SPECS, it.gun.spec);
     return key ? { ...base, kind: "gun", key } : null;
@@ -121,16 +186,25 @@ function itemSnap(it: GroundItem): ItemSnap | null {
 }
 
 function bodySnap(b: Body): BodySnap {
-  return { id: b.id, x: b.pos.x, y: b.pos.y, z: b.z, a: b.angle, skin: b.skin, team: b.team, lt: b.lifetime, ag: b.age };
+  return {
+    id: b.id, x: r1(b.pos.x), y: r1(b.pos.y), z: b.z, a: r3(b.angle), skin: b.skin, team: b.team, lt: b.lifetime, ag: b.age,
+  };
 }
 
 export class ClientMirror {
+  /** Full records (kit, team, name) and poses, diffed separately: a full
+   *  record changes rarely, a pose whenever its character moves. */
   private readonly chars = new DiffSet<{ id: number; full: CharFull }>();
-  private readonly shownChars = new Set<number>();
-  private readonly items = new DiffSet<ItemSnap>();
-  private readonly bodies = new DiffSet<BodySnap>();
+  private readonly poses = new DiffSet<CharSnap>();
+  private readonly items = new DiffSet<ItemSnap>(ageless);
+  private readonly bodies = new DiffSet<BodySnap>(ageless);
   private readonly vehicles = new DiffSet<VehicleSnap>();
+  /** Rounds the last snapshot listed: this client has their look already. */
+  private sentBullets = new Set<number>();
+  private sentProjs = new Set<number>();
+  private snaps = 0;
   private lastHud = "";
+  private lastPlayers = "";
   private lastFeed = "";
   private lastDeaths = "";
   /** Obstacle -> its index in the level, for decal events. */
@@ -181,54 +255,60 @@ export class ClientMirror {
     for (const c of game.characters) {
       if (c === me || friendly(c.team) ? near(c.pos) : seenBody(c.pos, c.z)) visible.push(c);
     }
+    // Each one's pose if it moved, with its full record if that changed (a
+    // character coming into view is new to both, so it gets both).
     const fulls = this.chars.diff(visible.map((c) => ({ id: c.id, full: this.fullOf(game, c) })));
     const fullById = new Map(fulls.changed.map((r) => [r.id, r.full]));
-    const chars: CharSnap[] = visible.map((c) => {
-      const g = c.gun;
-      const s: CharSnap = {
-        id: c.id,
-        x: c.pos.x,
-        y: c.pos.y,
-        fx: c.forward.x,
-        fy: c.forward.y,
-        z: c.z,
-        hp: c.hp,
-        k: g.kickback,
-        fl: g.flashTicks,
-        co: g.fireCooldown,
-        re: g.reloadTicks,
-        dr: g.drawTicks,
-        pu: g.punch,
-        us: c.useTicks,
-        ut: c.useTotalTicks,
-        vh: c.vehicle ? c.vehicle.id : 0,
-        st: c.seatIndex,
-      };
-      const full = fullById.get(c.id);
+    this.snaps += 1;
+    if (this.snaps % POSE_REFRESH === 0) this.poses.forget();
+    const poses = visible.map(charSnap);
+    const moved = new Set(this.poses.diff(poses).changed.map((s) => s.id));
+    const chars: CharSnap[] = poses.filter((s) => moved.has(s.id) || fullById.has(s.id));
+    for (const s of chars) {
+      const full = fullById.get(s.id);
       if (full) s.full = full;
-      return s;
-    });
+    }
     const gone = fulls.gone;
-    for (const id of gone) this.shownChars.delete(id);
-    for (const c of visible) this.shownChars.add(c.id);
 
     // Rounds: complete each time, so a missing one has landed or left view.
+    // Their look goes only with the first listing; a round the last snapshot
+    // listed is one this client already has.
     const bullets: BulletSnap[] = [];
+    const sentBullets = new Set<number>();
     for (const b of w.bullets) {
       if (!seen(b.pos, b.z) && !seen(b.prev, b.z)) continue;
-      bullets.push({
-        id: b.id, x: b.pos.x, y: b.pos.y, vx: b.vel.x, vy: b.vel.y, z: b.z,
-        w: b.tracerWidth, l: b.tracerLength, c: b.tracerColor, ra: b.renderAfter, ox: b.origin.x, oy: b.origin.y,
-      });
+      const s: BulletSnap = { id: b.id, x: r1(b.pos.x), y: r1(b.pos.y), vx: r2(b.vel.x), vy: r2(b.vel.y), z: b.z };
+      if (!this.sentBullets.has(b.id)) {
+        s.w = b.tracerWidth;
+        s.l = b.tracerLength;
+        s.c = b.tracerColor;
+        s.ra = r1(b.renderAfter);
+        s.ox = r1(b.origin.x);
+        s.oy = r1(b.origin.y);
+      }
+      sentBullets.add(b.id);
+      bullets.push(s);
     }
+    this.sentBullets = sentBullets;
     const projs: ProjSnap[] = [];
+    const sentProjs = new Set<number>();
     for (const p of w.projectiles) {
       if (!seen(p.pos, p.z) && !seen(p.prev, p.z)) continue;
-      projs.push({
-        id: p.id, x: p.pos.x, y: p.pos.y, vx: p.vel.x, vy: p.vel.y, z: p.z, ra: p.renderAfter,
-        ox: p.origin.x, oy: p.origin.y, br: p.bodyRadius, c: p.color, tc: p.trailColor, sp: p.sprite, ss: p.spriteScale,
-      });
+      const s: ProjSnap = { id: p.id, x: r1(p.pos.x), y: r1(p.pos.y), vx: r2(p.vel.x), vy: r2(p.vel.y), z: p.z };
+      if (!this.sentProjs.has(p.id)) {
+        s.ra = r1(p.renderAfter);
+        s.ox = r1(p.origin.x);
+        s.oy = r1(p.origin.y);
+        s.br = p.bodyRadius;
+        s.c = p.color;
+        s.tc = p.trailColor;
+        s.sp = p.sprite;
+        s.ss = p.spriteScale;
+      }
+      sentProjs.add(p.id);
+      projs.push(s);
     }
+    this.sentProjs = sentProjs;
 
     // Items, corpses, vehicles: diffs against what this client has.
     const items: ItemSnap[] = [];
@@ -247,7 +327,7 @@ export class ClientMirror {
     for (const v of w.vehicles) {
       if (!near(v.pos)) continue;
       const key = keyOf(VEHICLE_SPECS, v.spec);
-      if (key) vehicles.push({ id: v.id, key, x: v.pos.x, y: v.pos.y, a: v.angle, z: v.z, ta: v.turretAngle.slice() });
+      if (key) vehicles.push({ id: v.id, key, x: r1(v.pos.x), y: r1(v.pos.y), a: r3(v.angle), z: v.z, ta: v.turretAngle.map(r3) });
     }
     const vehDiff = this.vehicles.diff(vehicles);
 
@@ -255,20 +335,17 @@ export class ClientMirror {
     // carries through walls by design), debris and holes only for the eyes.
     const wire: WireEvent[] = [];
     for (const e of events) {
-      if (e.kind === "hit" || e.kind === "stopSound") {
-        wire.push(e);
-      } else if (e.kind === "sound") {
-        if (!e.pos || near(e.pos)) wire.push(e);
-      } else if (e.kind === "particles") {
-        if (seen(e.pos, e.z)) wire.push(e);
-      } else if (e.kind === "scorch") {
-        // In earshot, like the boom that came with it: it tells no more than the
-        // sound did, and the mark is there to find once you walk over to it.
-        if (near(e.pos)) wire.push(e);
-      } else if (seen(e.near, e.z)) {
-        const we = toWire(e, this.obstacleIndex);
-        if (we) wire.push(we);
-      }
+      let send: boolean;
+      if (e.kind === "hit" || e.kind === "stopSound") send = true;
+      else if (e.kind === "sound") send = !e.pos || near(e.pos);
+      else if (e.kind === "particles") send = seen(e.pos, e.z);
+      // In earshot, like the boom that came with it: it tells no more than the
+      // sound did, and the mark is there to find once you walk over to it.
+      else if (e.kind === "scorch") send = near(e.pos);
+      else send = seen(e.near, e.z);
+      if (!send) continue;
+      const we = toWire(e, this.obstacleIndex);
+      if (we) wire.push(we);
     }
 
     const meSnap: MeSnap = {
@@ -304,20 +381,33 @@ export class ClientMirror {
       events: wire,
       me: meSnap,
     };
-    // The HUD, feed and minimap marks only when they differ from last time.
+    // The HUD, its scoreboard rows, the feed and the minimap marks only when
+    // they differ from last time (the feed and marks: ignoring their ages).
     const hud = game.gamemode.hud(game, me);
-    const hudJ = JSON.stringify(hud);
+    let head: GamemodeHud | null = null;
+    let players: PlayerRow[] | null = null;
+    if (hud) {
+      const { players: rows, ...rest } = hud;
+      head = rest;
+      players = rows ?? null;
+    }
+    const hudJ = JSON.stringify(head);
     if (hudJ !== this.lastHud) {
       this.lastHud = hudJ;
-      msg.hud = hud;
+      msg.hud = head;
+    }
+    const playersJ = JSON.stringify(players);
+    if (playersJ !== this.lastPlayers) {
+      this.lastPlayers = playersJ;
+      msg.players = players;
     }
     const feed: WireFeed[] = slot.killFeed.map((f) => ({ ...f, gun: keyOf(ALL_GUN_SPECS, f.gun) }));
-    const feedJ = JSON.stringify(feed);
+    const feedJ = agelessList(feed);
     if (feedJ !== this.lastFeed) {
       this.lastFeed = feedJ;
       msg.feed = feed;
     }
-    const deathsJ = JSON.stringify(slot.minimapDeaths);
+    const deathsJ = agelessList(slot.minimapDeaths);
     if (deathsJ !== this.lastDeaths) {
       this.lastDeaths = deathsJ;
       msg.deaths = slot.minimapDeaths;

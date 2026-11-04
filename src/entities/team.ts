@@ -25,9 +25,9 @@ export const TEAMS: Record<TeamId, Team> = {
   player: { id: "player", label: "Player", color: "#4a9de0", hostile: ["enemy"] },
   ally: { id: "ally", label: "Allies", color: "#3dba6f", hostile: ["enemy"] },
   enemy: { id: "enemy", label: "Enemy", color: "#c94f4f", hostile: ["player", "ally"] },
-  // The two sides of a Team Deathmatch (see gamemodes/tdm.ts). The player joins
-  // "blue"; both sides are AI-filled. Kept separate from player/ally/enemy so
-  // sandbox levels are unaffected.
+  // The two sides of the team modes (see gamemodes/teammatch.ts). Humans split
+  // between them (a lone human is blue); bots fill out both. Kept separate from
+  // player/ally/enemy so sandbox levels are unaffected.
   blue: { id: "blue", label: "Blue", color: "#4a9de0", hostile: ["red"] },
   red: { id: "red", label: "Red", color: "#c94f4f", hostile: ["blue"] },
 };

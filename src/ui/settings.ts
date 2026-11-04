@@ -80,6 +80,7 @@ const SETTINGS_CSS = `
 .st-key { justify-self: start; min-width: 110px; text-align: center; }
 .st-key.is-capturing { background: rgba(255, 200, 61, 0.3); border-color: #ffc83d; color: #fff; }
 .st-actions { display: grid; grid-template-columns: auto 1fr; gap: 10px; margin-top: 4px; }
+.st-actions.has-leave { grid-template-columns: auto auto 1fr; }
 .st-reset {
   padding: 0 16px; font: bold 13px system-ui, sans-serif; letter-spacing: 1px; cursor: pointer;
   color: #dde1e7; background: rgba(255, 255, 255, 0.16);
@@ -147,7 +148,12 @@ function drawStyleAt(ctx: CanvasRenderingContext2D, cx: number, cy: number, styl
  * Nothing here touches the game: the match pauses while the panel is open
  * because main's frame loop asks isOpen(), not because the panel tells it to.
  */
-export function buildSettingsMenu(): SettingsMenu {
+export interface SettingsMenuOptions {
+  /** Shown as a Main menu button: leave the match for the landing screen. */
+  onLeave?: () => void;
+}
+
+export function buildSettingsMenu(opts: SettingsMenuOptions = {}): SettingsMenu {
   installSettingsCss();
   const c: CrosshairStyle = settings.crosshair;
   /** Every control's "read the settings back into the widget" step. */
@@ -500,7 +506,19 @@ export function buildSettingsMenu(): SettingsMenu {
   closeBtn.type = "button";
   closeBtn.className = "st-close";
   closeBtn.textContent = "Resume";
-  actions.append(resetBtn, closeBtn);
+  if (opts.onLeave) {
+    const leave = opts.onLeave;
+    const leaveBtn = document.createElement("button");
+    leaveBtn.type = "button";
+    leaveBtn.className = "st-reset";
+    leaveBtn.textContent = "MAIN MENU";
+    leaveBtn.title = "Leave this match and go back to the start screen";
+    leaveBtn.onclick = () => leave();
+    actions.classList.add("has-leave");
+    actions.append(resetBtn, leaveBtn, closeBtn);
+  } else {
+    actions.append(resetBtn, closeBtn);
+  }
   const hint = document.createElement("div");
   hint.className = "st-hint";
   hint.textContent = "Esc to resume";

@@ -5,10 +5,13 @@
  * Domination both extend `TeamMatchMode`, supplying only their scoring/win rule
  * (the ticket bars, the loss condition, any per-tick objective logic).
  *
- * Humans are blue's first combatants — each takes one of blue's slots, so blue
- * fields `troops - humans` bots (never fewer than none); a human joining a
- * running match retires a blue bot to make room, and one leaving brings a bot
- * back. Both sides are otherwise AI-filled from the per-side `TeamConfig`
+ * Humans are their side's first combatants — each takes one of its slots, so a
+ * side fields `troops - its humans` bots (never fewer than none). Humans are
+ * split between the sides, each joining the one with fewer humans (a lone
+ * human, as in single player, is blue), so a server's match is PvP with bots
+ * filling out the teams. A human joining a running match retires a bot from
+ * their side to make room, and one leaving brings a bot back if the side is
+ * now short. Both sides are otherwise AI-filled from the per-side `TeamConfig`
  * (troop count, skill, equipment tier).
  */
 import type { Character } from "../entities/actor.ts";
@@ -263,26 +266,68 @@ export abstract class TeamMatchMode implements Gamemode {
       return base + dup;
     };
 
-    // The humans ARE blue's first combatants (each fills one slot, so blue also
-    // fields blueTroops - humans bots), wear the blue skin, and start on blue's
+    // The humans ARE their side's first combatants (each fills one slot, so a
+    // side fields troops - its humans bots), wear its skin, and start on its
     // equip tier.
-    for (const h of ctx.humans) this.enlistHuman(ctx, h.char, h.name);
-    this.addBots(ctx, "blue", Math.max(0, this.cfg.blue.troops - ctx.humans.length));
-    this.addBots(ctx, "red", this.cfg.red.troops);
+    const sides = this.sidesAtStart(ctx.humans.map((h) => h.char));
+    for (const h of ctx.humans) this.enlistHuman(ctx, h.char, sides.get(h.char) ?? "blue", h.name);
+    for (const team of ["blue", "red"] as const) {
+      this.addBots(ctx, team, Math.max(0, this.cfg[team].troops - this.countOn(team, true)));
+    }
 
     this.onInit(ctx);
   }
 
-  /** Put a human on blue as a fresh agent and spawn them. `name` = their own
+  /** How many agents are on `team` (only the humans, with `humansOnly`). */
+  private countOn(team: "blue" | "red", humansOnly = false): number {
+    return this.agents.reduce((n, a) => (a.team === team && (!humansOnly || a.isPlayer) ? n + 1 : n), 0);
+  }
+
+  /** The side a human joining a running match goes to: the one with fewer
+   *  humans, blue on a tie. */
+  private sideForJoin(): "blue" | "red" {
+    return this.countOn("red", true) < this.countOn("blue", true) ? "red" : "blue";
+  }
+
+  /** Sides for the humans at a match (re)start, `humans` in join order. A
+   *  restart keeps everyone on the side they just played; anyone new goes to
+   *  the side with fewer humans; then, while one side is two or more humans
+   *  ahead (people left), its latest joiners switch over. */
+  private sidesAtStart(humans: readonly Character[]): Map<Character, "blue" | "red"> {
+    const side = new Map<Character, "blue" | "red">();
+    const n = { blue: 0, red: 0 };
+    for (const c of humans) {
+      if (c.team !== "blue" && c.team !== "red") continue;
+      side.set(c, c.team);
+      n[c.team] += 1;
+    }
+    for (const c of humans) {
+      if (side.has(c)) continue;
+      const t = n.red < n.blue ? "red" : "blue";
+      side.set(c, t);
+      n[t] += 1;
+    }
+    for (const c of [...humans].reverse()) {
+      const t = side.get(c)!;
+      const other = t === "blue" ? "red" : "blue";
+      if (n[t] - n[other] < 2) continue;
+      side.set(c, other);
+      n[t] -= 1;
+      n[other] += 1;
+    }
+    return side;
+  }
+
+  /** Put a human on `team` as a fresh agent and spawn them. `name` = their own
    *  (a joined player's), or a callsign from the pool when they have none. */
-  private enlistHuman(ctx: GameCtx, who: Character, name?: string): Agent {
-    who.team = "blue";
-    const blueSkin = SKINS[TEAM_SKIN.blue];
-    if (blueSkin) who.skin = blueSkin;
+  private enlistHuman(ctx: GameCtx, who: Character, team: "blue" | "red", name?: string): Agent {
+    who.team = team;
+    const skin = SKINS[TEAM_SKIN[team]];
+    if (skin) who.skin = skin;
     const a: Agent = {
       name: name && name.trim() && !name.startsWith("Player ") ? name.trim() : this.nextName(),
-      team: "blue", isPlayer: true, human: who, skill: this.cfg.blue.skill,
-      equip: this.cfg.blue.equip, loadout: {}, random: true, lastDeath: null,
+      team, isPlayer: true, human: who, skill: this.cfg[team].skill,
+      equip: this.cfg[team].equip, loadout: {}, random: true, lastDeath: null,
       kills: 0, deaths: 0, char: who,
     };
     this.agents.push(a);
@@ -302,22 +347,24 @@ export abstract class TeamMatchMode implements Gamemode {
     }
   }
 
-  /** A human joined mid-match: they take a blue slot, and a blue bot (a live
-   *  one, else one waiting to respawn) is retired to keep blue's headcount. */
+  /** A human joined mid-match: they take a slot on the side with fewer humans,
+   *  and one of that side's bots (if it has any left) is retired to keep its
+   *  headcount. */
   onHumanJoin(ctx: GameCtx, who: Character): void {
     const slot = ctx.humans.find((h) => h.char === who);
-    this.enlistHuman(ctx, who, slot?.name);
-    const bot = this.agents.find((a) => a.team === "blue" && !a.isPlayer);
+    const team = this.sideForJoin();
+    this.enlistHuman(ctx, who, team, slot?.name);
+    const bot = this.agents.find((a) => a.team === team && !a.isPlayer);
     if (bot) this.retire(ctx, bot);
   }
 
-  /** A human left: their agent goes (no death, no ticket), and a blue bot
-   *  takes the slot back. */
+  /** A human left: their agent goes (no death, no ticket), and a bot takes the
+   *  slot back if that leaves their side short of its troop count. */
   onHumanLeave(ctx: GameCtx, who: Character): void {
     const a = this.charAgent.get(who);
     if (!a) return;
     this.retire(ctx, a);
-    if (!this.matchOver) this.addBots(ctx, "blue", 1);
+    if (!this.matchOver && this.countOn(a.team) < this.cfg[a.team].troops) this.addBots(ctx, a.team, 1);
   }
 
   /** Drop an agent from the roster and the respawn queue, and its character
@@ -521,10 +568,12 @@ export abstract class TeamMatchMode implements Gamemode {
     const choosingLoadout = dead && (!slot || ctx.tick - slot.diedAt >= MENU_DELAY);
 
     // No death banner while choosing: the respawn menu is centered over the same
-    // space and carries its own "YOU DIED" heading + countdown.
-    const banner = this.matchOver
-      ? `${this.blueLost() ? "Defeat" : "Victory"}\nPress Enter to restart`
-      : undefined;
+    // space and carries its own "YOU DIED" heading + countdown. The result is
+    // the viewer's: with humans on both sides, one side's Victory is the
+    // other's Defeat (and a HUD for nobody in particular just names the winner).
+    const winner = this.blueLost() ? "red" : "blue";
+    const result = me ? (me.team === winner ? "Victory" : "Defeat") : `${TEAMS[winner].label} wins`;
+    const banner = this.matchOver ? `${result}\nPress Enter to restart` : undefined;
 
     return {
       name: this.label,

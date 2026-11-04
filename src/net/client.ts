@@ -5,11 +5,20 @@
  * / GroundItem / Vehicle classes as the local game, so the renderer draws it
  * without knowing; their ids are the SERVER's, so events name them correctly.
  *
- * survev-style: no prediction. The local player is drawn from the server's
- * position like everyone else, one snapshot interval behind, interpolated
- * between the last two snapshots (see interpolate). Rounds are extrapolated
- * per tick from their last known velocity and stopped by the local geometry,
- * and dropped the moment a snapshot no longer lists them.
+ * survev-style: no prediction of movement. The local player is drawn at the
+ * server's position like everyone else, one snapshot interval behind,
+ * interpolated between the last two snapshots (see interpolate). Its FACING is
+ * the exception: the server sets it straight from the aim we send, so while we
+ * are in control we draw our own aim the moment the mouse moves rather than a
+ * round trip later. Rounds are extrapolated per tick from their last known
+ * velocity and stopped by the local geometry, and dropped the moment a
+ * snapshot no longer lists them.
+ *
+ * The server leaves out what we already know (see net/protocol.ts): a standing
+ * character, a round's look after its first listing, and ages. So a mirror
+ * keeps its last pose until told otherwise, the look of each round in flight
+ * is cached by id, and corpses, drops, feed lines and death marks are aged
+ * here by the server ticks between snapshots.
  */
 import { Character } from "../entities/actor.ts";
 import { Armor } from "../entities/armor.ts";
@@ -26,7 +35,7 @@ import { ObstacleGrid } from "../engine/collision.ts";
 import type { PlayerInput } from "../engine/command.ts";
 import type { GameEvent } from "../engine/events.ts";
 import { add, vec, type Vec2 } from "../engine/vec.ts";
-import type { GamemodeHud, KillFeedEntry, PlayerLoadout } from "../gamemodes/gamemode.ts";
+import type { GamemodeHud, KillFeedEntry, PlayerLoadout, PlayerRow } from "../gamemodes/gamemode.ts";
 import type { DeathMark } from "../ui/minimap.ts";
 import type { RespawnHost, Session } from "../ui/session.ts";
 import { loadLevel, type LevelMeta } from "../world/level.ts";
@@ -34,7 +43,7 @@ import type { Bullet, Projectile, World } from "../world/world.ts";
 import {
   DEFAULT_SNAP_HZ,
   PROTOCOL,
-  WS_PATH,
+  serverUrls,
   type CharFull,
   type CharSnap,
   type ClientMsg,
@@ -53,13 +62,16 @@ const RECONNECT_MS = 1500;
 
 const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 
-/** Where a mirror was and is going, for interpolation. */
+/** Where a mirror was and is going, for interpolation. `f` = facing angle. */
 interface Pose {
   x: number;
   y: number;
-  fx: number;
-  fy: number;
+  f: number;
 }
+
+/** How a round in flight looks, from its first listing (see BulletSnap). */
+type BulletLook = Pick<Bullet, "tracerWidth" | "tracerLength" | "tracerColor" | "renderAfter" | "origin">;
+type ProjLook = Pick<Projectile, "renderAfter" | "origin" | "bodyRadius" | "color" | "trailColor" | "sprite" | "spriteScale">;
 interface Track {
   from: Pose;
   to: Pose;
@@ -67,7 +79,7 @@ interface Track {
   at: number;
 }
 
-export type NetStatus = "connecting" | "connected" | "reconnecting" | "rejected";
+export type NetStatus = "connecting" | "connected" | "reconnecting" | "rejected" | "left";
 
 export class NetSession implements Session {
   world: World;
@@ -98,7 +110,13 @@ export class NetSession implements Session {
   private token: string | null;
   private myId = 0;
   private snapMs = 1000 / DEFAULT_SNAP_HZ;
+  /** The HUD as the server last sent it, its scoreboard rows (sent on their
+   *  own), and the two put back together for hud(). */
+  private hudHead: GamemodeHud | null = null;
+  private hudPlayers: PlayerRow[] | null = null;
   private hudState: GamemodeHud | null = null;
+  /** The aim we last sent: our own facing while we are in control. */
+  private aim: Vec2 | null = null;
   private label: string | null = null;
   private view = { zoom: 1, spread: 0, cone: 360 };
   private grid: ObstacleGrid | null = null;
@@ -109,6 +127,10 @@ export class NetSession implements Session {
   private readonly vehicleById = new Map<number, Vehicle>();
   private readonly bulletById = new Map<number, Bullet>();
   private readonly projById = new Map<number, Projectile>();
+  /** The look of every round the last snapshot listed, kept even after the
+   *  local geometry stopped one (a wallbang the server says flies on). */
+  private readonly bulletLook = new Map<number, BulletLook>();
+  private readonly projLook = new Map<number, ProjLook>();
   /** Events from snapshots, waiting for the next step() to hand them to the
    *  effects pipeline in world.events. */
   private pendingEvents: GameEvent[] = [];
@@ -123,7 +145,7 @@ export class NetSession implements Session {
    *  feeds it messages through receive()). */
   constructor(host: string, name: string, connect = true) {
     const secure = typeof location !== "undefined" && location.protocol === "https:";
-    this.url = /^wss?:\/\//.test(host) ? host : `${secure ? "wss" : "ws"}://${host}${WS_PATH}`;
+    this.url = serverUrls(host, secure).ws;
     this.name = name;
     this.token = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(`madtac.token.${this.url}`) : null;
     // A placeholder world and player until the welcome brings the real level,
@@ -154,7 +176,7 @@ export class NetSession implements Session {
     ws.onclose = () => {
       if (this.ws !== ws) return;
       this.ws = null;
-      if (this.status === "rejected") return;
+      if (this.status === "rejected" || this.status === "left") return;
       this.status = "reconnecting";
       this.reconnectTimer = setTimeout(() => this.connect(), RECONNECT_MS) as unknown as number;
     };
@@ -165,6 +187,16 @@ export class NetSession implements Session {
 
   private send(msg: ClientMsg): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+  }
+
+  /** Leave the match for good: the server frees our slot at once instead of
+   *  holding it for a reconnect, and nothing here tries to reconnect. */
+  leave(): void {
+    this.send({ t: "leave" });
+    this.status = "left"; // so the onclose that follows doesn't reconnect
+    if (this.reconnectTimer !== null) clearTimeout(this.reconnectTimer);
+    if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(`madtac.token.${this.url}`);
+    this.ws?.close();
   }
 
   /** Take one server message (the socket's onmessage, or a test's hand). */
@@ -189,12 +221,21 @@ export class NetSession implements Session {
     this.myId = m.id;
     this.meta = m.meta;
     this.tick = m.tick;
-    if (rejoin) return; // same match, same character: keep the mirrors we have
-    // A new match (or our first): rebuild the world from the level and forget
-    // every mirror — the server will re-send whatever we can see.
-    this.world = loadLevel(m.level).world;
-    this.world.grid = new ObstacleGrid(this.world.obstacles);
-    this.grid = this.world.grid;
+    // The server starts every connection from nothing (a fresh ClientMirror),
+    // so it will re-send everything we can see but can't say what went away
+    // while we were gone. Forget every mirror; on a rejoin (same match, same
+    // character) keep the world and our own character, which main.ts holds.
+    if (!rejoin) {
+      // A new match (or our first): the level's geometry. What is on it —
+      // items, vehicles, rounds — is the server's to say, under its ids.
+      this.world = loadLevel(m.level).world;
+      this.world.grid = new ObstacleGrid(this.world.obstacles);
+      this.grid = this.world.grid;
+    }
+    this.world.items.length = 0;
+    this.world.vehicles.length = 0;
+    this.world.bullets.length = 0;
+    this.world.projectiles.length = 0;
     this.characters.length = 0;
     this.bodies.length = 0;
     this.mirrors.clear();
@@ -204,6 +245,13 @@ export class NetSession implements Session {
     this.vehicleById.clear();
     this.bulletById.clear();
     this.projById.clear();
+    this.bulletLook.clear();
+    this.projLook.clear();
+    if (rejoin) {
+      this.mirrors.set(m.id, this.player);
+      this.characters.push(this.player);
+      return;
+    }
     this.player = this.mirror(m.id);
     this.onReady?.();
   }
@@ -248,33 +296,44 @@ export class NetSession implements Session {
   private applyChar(s: CharSnap, now: number): void {
     const c = this.mirror(s.id);
     if (s.full) this.applyFull(c, s.full);
-    // Where it is going: the previous target becomes where it is coming from.
-    const to: Pose = { x: s.x, y: s.y, fx: s.fx, fy: s.fy };
+    // Where it is going: where it reads now becomes where it is coming from
+    // (the previous target, unless it stood still and was left out a while).
+    const to: Pose = { x: s.x, y: s.y, f: s.f };
     const t = this.tracks.get(s.id);
     if (t) {
       this.tracks.set(s.id, { from: t.to, to, at: now });
     } else {
       this.tracks.set(s.id, { from: to, to, at: now });
       c.pos = vec(s.x, s.y);
-      c.forward = vec(s.fx, s.fy);
+      c.forward = vec(Math.cos(s.f), Math.sin(s.f));
     }
-    c.z = s.z;
+    c.z = s.z ?? 0;
     c.hp = s.hp;
     const g = c.gun;
-    g.kickback = s.k;
-    g.flashTicks = s.fl;
-    g.fireCooldown = s.co;
-    g.reloadTicks = s.re;
-    g.drawTicks = s.dr;
-    g.setPunch(s.pu);
-    c.setUseTimer(s.us, s.ut);
+    g.kickback = s.k ?? 0;
+    g.flashTicks = s.fl ?? 0;
+    g.fireCooldown = s.co ?? 0;
+    g.reloadTicks = s.re ?? 0;
+    g.drawTicks = s.dr ?? 0;
+    g.setPunch(s.pu ?? 0);
+    c.setUseTimer(s.us ?? 0, s.ut ?? 0);
     c.vehicle = s.vh ? (this.vehicleById.get(s.vh) ?? null) : null;
-    c.seatIndex = s.st;
+    c.seatIndex = s.st ?? -1;
   }
 
   private applySnapshot(m: SnapMsg): void {
     const now = performance.now();
+    // Age what the server won't re-send just for aging, by the ticks since the
+    // last snapshot (none across a restart, when the tick count starts over).
+    // Anything this snapshot does carry overwrites its age with the server's.
+    const dt = Math.max(0, m.tick - this.tick);
     this.tick = m.tick;
+    if (dt > 0) {
+      for (const it of this.world.items) it.age += dt;
+      for (const b of this.bodies) b.age += dt;
+      for (const f of this.killFeed) f.age += dt;
+      for (const d of this.minimapDeaths) d.age += dt;
+    }
     for (const id of m.gone) {
       const c = this.mirrors.get(id);
       if (!c) continue;
@@ -308,16 +367,26 @@ export class NetSession implements Session {
     }
     for (const s of m.chars) this.applyChar(s, now);
 
-    // Rounds: replace the set.
+    // Rounds: replace the set. A round's look comes with its first listing
+    // and is kept by id for as long as snapshots go on listing it, so one the
+    // local geometry stopped early can be put back when the server says it
+    // flies on.
     const keepB = new Set<number>();
     for (const s of m.bullets) {
       keepB.add(s.id);
+      if (s.w !== undefined) {
+        this.bulletLook.set(s.id, {
+          tracerWidth: s.w, tracerLength: s.l ?? 0, tracerColor: s.c ?? "#fff",
+          renderAfter: s.ra ?? 0, origin: vec(s.ox ?? s.x, s.oy ?? s.y),
+        });
+      }
       let b = this.bulletById.get(s.id);
       if (!b) {
+        const look = this.bulletLook.get(s.id);
+        if (!look) continue; // never told how it looks: nothing to draw
         b = {
           id: s.id, pos: vec(s.x, s.y), prev: vec(s.x, s.y), vel: vec(s.vx, s.vy), z: s.z, life: 600,
-          origin: vec(s.ox, s.oy), renderAfter: s.ra, owner: null, damage: 0, tracerWidth: s.w,
-          tracerLength: s.l, tracerColor: s.c, armorPen: AP, penetration: 0, penUsed: 0, penSkip: 0, gun: null,
+          owner: null, damage: 0, armorPen: AP, penetration: 0, penUsed: 0, penSkip: 0, gun: null, ...look,
         };
         this.bulletById.set(s.id, b);
         this.world.bullets.push(b);
@@ -332,15 +401,23 @@ export class NetSession implements Session {
       this.bulletById.delete(b.id);
       return false;
     });
+    for (const id of this.bulletLook.keys()) if (!keepB.has(id)) this.bulletLook.delete(id);
     const keepP = new Set<number>();
     for (const s of m.projs) {
       keepP.add(s.id);
+      if (s.br !== undefined) {
+        this.projLook.set(s.id, {
+          renderAfter: s.ra ?? 0, origin: vec(s.ox ?? s.x, s.oy ?? s.y), bodyRadius: s.br,
+          color: s.c ?? "#fff", trailColor: s.tc ?? "#fff", sprite: s.sp, spriteScale: s.ss,
+        });
+      }
       let p = this.projById.get(s.id);
       if (!p) {
+        const look = this.projLook.get(s.id);
+        if (!look) continue;
         p = {
           id: s.id, pos: vec(s.x, s.y), prev: vec(s.x, s.y), vel: vec(s.vx, s.vy), z: s.z, life: 600,
-          origin: vec(s.ox, s.oy), renderAfter: s.ra, owner: null, damage: 0, radius: 0, armorPen: AP,
-          bodyRadius: s.br, color: s.c, trailColor: s.tc, sprite: s.sp, spriteScale: s.ss, gun: null,
+          owner: null, damage: 0, radius: 0, armorPen: AP, gun: null, ...look,
         };
         this.projById.set(s.id, p);
         this.world.projectiles.push(p);
@@ -355,6 +432,7 @@ export class NetSession implements Session {
       this.projById.delete(p.id);
       return false;
     });
+    for (const id of this.projLook.keys()) if (!keepP.has(id)) this.projLook.delete(id);
 
     // Items and corpses: diffs.
     for (const id of m.goneItems) {
@@ -436,7 +514,11 @@ export class NetSession implements Session {
     this.interactable = mine.item !== null ? (this.itemById.get(mine.item) ?? null) : null;
     const seat = mine.seat ? this.vehicleById.get(mine.seat.vh) : undefined;
     this.enterable = mine.seat && seat ? { vehicle: seat, seat: mine.seat.st } : null;
-    if (m.hud !== undefined) this.hudState = m.hud;
+    if (m.hud !== undefined || m.players !== undefined) {
+      if (m.hud !== undefined) this.hudHead = m.hud;
+      if (m.players !== undefined) this.hudPlayers = m.players;
+      this.hudState = this.hudHead ? { ...this.hudHead, players: this.hudPlayers ?? undefined } : null;
+    }
     if (m.feed) {
       this.killFeed = m.feed.map((f) => ({ ...f, gun: f.gun ? (ALL_GUN_SPECS[f.gun] ?? null) : null }));
     }
@@ -473,6 +555,7 @@ export class NetSession implements Session {
    *  the rounds along by their last known velocity. */
   step(input: PlayerInput): void {
     this.sendInput(input);
+    this.aim = input.aim;
     this.world.events.length = 0;
     if (this.pendingEvents.length) {
       this.world.events.push(...this.pendingEvents);
@@ -506,13 +589,15 @@ export class NetSession implements Session {
       const a = Math.max(0, Math.min(1, (nowMs - t.at) / this.snapMs));
       c.pos = vec(t.from.x + (t.to.x - t.from.x) * a, t.from.y + (t.to.y - t.from.y) * a);
       // Facing: shortest-way angle blend.
-      const a0 = Math.atan2(t.from.fy, t.from.fx);
-      let d = Math.atan2(t.to.fy, t.to.fx) - a0;
+      let d = t.to.f - t.from.f;
       if (d > Math.PI) d -= Math.PI * 2;
       if (d < -Math.PI) d += Math.PI * 2;
-      const ang = a0 + d * a;
+      const ang = t.from.f + d * a;
       c.forward = vec(Math.cos(ang), Math.sin(ang));
     }
+    // Our own facing is our aim, now: the server would set it to exactly this
+    // (Game.moveHuman) once the input arrived, so there is nothing to wait for.
+    if (this.controllable && this.aim) this.player.forward = this.aim;
   }
 
   private sendInput(input: PlayerInput): void {

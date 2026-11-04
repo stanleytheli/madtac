@@ -3,12 +3,17 @@
  * a ClientMirror encoding what each sees, the JSON round trip, and a
  * NetSession rebuilding the match from those messages. The load-bearing claims:
  *   - a human can be added to a running match and removed again, replacing a bot,
- *   - a snapshot is a full picture the first time and a diff after,
+ *   - humans split between the sides (PvP), keep them across a restart, and
+ *     each reads the result from their own side,
+ *   - a snapshot is a full picture the first time and a diff after: a standing
+ *     character, a round's look and a corpse's age aren't re-sent,
  *   - the sight mask culls enemies the viewer can't see, never teammates,
  *   - the mirror shows the same characters at the same places with the same kit,
  *   - the mirror's own player is the character the server said, so hit events
  *     resolve to the right feedback,
- *   - inputs off the wire drive the character; presses aren't repeated.
+ *   - the local player's facing is its own aim while in control,
+ *   - inputs off the wire drive the character; presses aren't repeated, and
+ *     the single-player debug keys don't pass.
  *
  * Run: node_modules/.bin/esbuild scripts/verify_net.mts --bundle --platform=node
  *   --format=esm --outfile=<tmp>/vn.mjs && node <tmp>/vn.mjs
@@ -17,15 +22,16 @@ import { readFileSync } from "node:fs";
 import { Game } from "../src/game.ts";
 import { GAMEMODES } from "../src/gamemodes/gamemode.ts";
 import { loadLevel } from "../src/world/level.ts";
-import { ClientMirror, CULL_R, pointInPolygon } from "../src/net/snapshot.ts";
+import { ClientMirror, CULL_R, POSE_REFRESH, pointInPolygon } from "../src/net/snapshot.ts";
 import { NetSession } from "../src/net/client.ts";
-import { mergeInputs, sanitizeInput, PROTOCOL, type ServerMsg, type SnapMsg } from "../src/net/protocol.ts";
+import { mergeInputs, sanitizeInput, serverUrls, PROTOCOL, type ServerMsg, type SnapMsg } from "../src/net/protocol.ts";
 import { idleInput } from "../src/engine/command.ts";
 import { dist, vec } from "../src/engine/vec.ts";
 import { areHostile } from "../src/entities/team.ts";
 import { makeWall } from "../src/world/world.ts";
 import { Gun } from "../src/entities/gun.ts";
 import { GUN_SPECS } from "../src/entities/specs.ts";
+import { GunItem } from "../src/entities/item.ts";
 
 let passed = 0;
 let failed = 0;
@@ -49,7 +55,7 @@ console.log("a server game starts with no humans and takes them as they join:");
   check("a human joins as a blue combatant", a.char.team === "blue" && game.characters.includes(a.char));
   check("...replacing a blue bot, so the headcount holds", game.characters.length === before, `${before} -> ${game.characters.length}`);
   const b = game.addHuman("Bob");
-  check("a second human likewise", game.humans.length === 2 && game.characters.length === before);
+  check("a second human joins the other side, replacing a red bot", b.char.team === "red" && game.humans.length === 2 && game.characters.length === before, `team=${b.char.team}`);
   game.update();
   const hudA = game.gamemode.hud(game, a.char)!;
   const rowsA = hudA.players!.filter((r) => r.isPlayer);
@@ -58,8 +64,44 @@ console.log("a server game starts with no humans and takes them as they join:");
   check("a human leaving frees the slot and a bot fills it", game.humans.length === 1 && !game.characters.includes(b.char) && game.characters.length === before, `chars=${game.characters.length}`);
 }
 
+console.log("\nPvP: humans split between the sides and keep them:");
+{
+  const lv = loadLevel(levelText);
+  const m = { ...lv.meta, mode: "tdm" };
+  const g = new Game(lv, GAMEMODES.tdm(m), { humans: 0 });
+  const total = g.characters.length;
+  const [p1, p2, p3, p4] = ["P1", "P2", "P3", "P4"].map((n) => g.addHuman(n));
+  const teams = [p1, p2, p3, p4].map((h) => h.char.team).join(",");
+  check("four joiners alternate blue, red, blue, red", teams === "blue,red,blue,red", teams);
+  check("...each replacing a bot of their side, so the headcount holds", g.characters.length === total, `${total} -> ${g.characters.length}`);
+  check("...and wearing their side's skin", p2.char.skin !== p1.char.skin && p3.char.skin === p1.char.skin);
+  g.removeHuman(p2);
+  const p5 = g.addHuman("P5");
+  check("a joiner fills the side someone left", p5.char.team === "red", p5.char.team);
+  g.reset();
+  check("a restart keeps everyone on their side", p1.char.team === "blue" && p3.char.team === "blue" && p4.char.team === "red" && p5.char.team === "red", [p1, p3, p4, p5].map((h) => h.char.team).join(","));
+  g.removeHuman(p4);
+  g.removeHuman(p5);
+  g.reset();
+  check("...unless it would leave one side two up: then the latest joiner switches", p1.char.team === "blue" && p3.char.team === "red", `${p1.char.team},${p3.char.team}`);
+  // The match decided (blue won: no one has spent a ticket): each human reads
+  // the result from their own side.
+  (g.gamemode as unknown as { phase: string }).phase = "over";
+  const b1 = g.gamemode.hud(g, p1.char)?.banner ?? "";
+  const b3 = g.gamemode.hud(g, p3.char)?.banner ?? "";
+  const nobody = g.gamemode.hud(g)?.banner ?? "";
+  check("the winners read Victory, the losers Defeat", b1.startsWith("Victory") && b3.startsWith("Defeat"), `${JSON.stringify(b1)} / ${JSON.stringify(b3)}`);
+  check("...and a HUD for no one names the winning side", nobody.startsWith("Blue wins"), JSON.stringify(nobody));
+  const solo = new Game(loadLevel(levelText), GAMEMODES.tdm(m));
+  check("single player: the lone human is blue, as before", solo.player.team === "blue", solo.player.team);
+}
+
 console.log("\nsnapshots: full first, diffs after, over JSON:");
 const alice = game.humans[0];
+// A dropped gun beside her, on the despawn clock like a death drop.
+const dropped = new GunItem(vec(alice.char.pos.x + 60, alice.char.pos.y), new Gun(GUN_SPECS.M16), vec(0, 0), alice.char.z);
+dropped.lifetime = 900;
+game.world.items.push(dropped);
 const mirrorA = new ClientMirror(game, false);
 /** What a client with no sight mask is sent: everything within CULL_R. */
 const inRange = <T extends { pos: { x: number; y: number } }>(xs: readonly T[]): T[] => xs.filter((x) => dist(x.pos, alice.char.pos) < CULL_R);
@@ -72,13 +114,54 @@ const inRange = <T extends { pos: { x: number; y: number } }>(xs: readonly T[]):
   check("the viewer's own record carries their name", me.full!.name === "Alice");
   check("...and the private block their ammo", s1.me.mag === alice.char.gun.mag && s1.me.res === alice.char.gun.reserveMags);
   const s2 = roundTrip(mirrorA.encode(game, alice, 0, []));
-  check("nothing changed: the next snapshot repeats no full record", s2.chars.every((c) => !c.full) && s2.hud === undefined && s2.items.length === 0);
-  check("...but still every position", s2.chars.length === s1.chars.length);
+  check("nothing changed: the next snapshot repeats no full record", s2.chars.every((c) => !c.full) && s2.hud === undefined && s2.players === undefined && s2.items.length === 0);
+  check("...and no character at all: none of them moved", s2.chars.length === 0, `n=${s2.chars.length}`);
   // A kit change shows up as a full record for that character only.
   alice.char.equip("hand");
   const s3 = roundTrip(mirrorA.encode(game, alice, 0, []));
   const fulls = s3.chars.filter((c) => c.full);
   check("a weapon switch re-sends that one character's full record", fulls.length === 1 && fulls[0].id === alice.char.id && fulls[0].full!.slot === "hand", `fulls=${fulls.length}`);
+  check("...and only that character", s3.chars.length === 1, `n=${s3.chars.length}`);
+  const other = inRange(game.characters).find((c) => c !== alice.char)!;
+  other.pos = vec(Math.round(other.pos.x * 10) / 10 + 0.01, other.pos.y);
+  mirrorA.encode(game, alice, 0, []);
+  other.pos = vec(other.pos.x + 0.02, other.pos.y);
+  check("a move that rounds to the same 0.1 px isn't sent", roundTrip(mirrorA.encode(game, alice, 0, [])).chars.length === 0);
+  other.pos = vec(other.pos.x + 5, other.pos.y);
+  const moved = roundTrip(mirrorA.encode(game, alice, 0, []));
+  check("a real move sends that character's pose alone, with no full record", moved.chars.length === 1 && moved.chars[0].id === other.id && !moved.chars[0].full);
+  other.hp = 0.04;
+  const sliver = roundTrip(mirrorA.encode(game, alice, 0, [])).chars.find((c) => c.id === other.id);
+  check("a sliver of health is sent as 0.1, never as dead", sliver?.hp === 0.1, `hp=${sliver?.hp}`);
+  other.hp = other.maxHp;
+  check("...rounded to 0.1 px, resting fields left out", moved.chars[0].x === Math.round(other.pos.x * 10) / 10 && !("k" in moved.chars[0]) && !("vh" in moved.chars[0]), JSON.stringify(moved.chars[0]));
+  let refreshed: SnapMsg | null = null;
+  for (let i = 0; i < POSE_REFRESH; i++) {
+    const sn = roundTrip(mirrorA.encode(game, alice, 0, []));
+    if (sn.chars.length) refreshed = sn;
+  }
+  check(`every ${POSE_REFRESH} snapshots, everyone in view is re-sent anyway`, refreshed?.chars.length === inRange(game.characters).length, `n=${refreshed?.chars.length}`);
+
+  // Rounds: their look once, then only where they are.
+  const shooter = inRange(game.characters).find((c) => c !== alice.char)!;
+  game.world.bullets.push({
+    id: 990001, pos: vec(shooter.pos.x, shooter.pos.y), prev: vec(shooter.pos.x, shooter.pos.y), vel: vec(30, 0), z: shooter.z, life: 600,
+    origin: vec(shooter.pos.x, shooter.pos.y), renderAfter: 20, owner: shooter, damage: 10, tracerWidth: 3, tracerLength: 200,
+    tracerColor: "#ffe26b", armorPen: { l1: 1, l2: 1, l3: 1, l4: 1 }, penetration: 0, penUsed: 0, penSkip: 0, gun: null,
+  });
+  const r1 = roundTrip(mirrorA.encode(game, alice, 0, [])).bullets.find((b) => b.id === 990001);
+  const r2 = roundTrip(mirrorA.encode(game, alice, 0, [])).bullets.find((b) => b.id === 990001);
+  check("a round's first listing carries its look", r1?.c === "#ffe26b" && r1.w === 3 && r1.ox !== undefined);
+  check("...and the next only where it is", !!r2 && r2.c === undefined && r2.w === undefined && r2.ox === undefined, JSON.stringify(r2));
+  game.world.bullets = game.world.bullets.filter((b) => b.id !== 990001);
+  const r3 = roundTrip(mirrorA.encode(game, alice, 0, []));
+  check("a round that landed is simply not listed", !r3.bullets.some((b) => b.id === 990001));
+
+  // Aging alone doesn't put a corpse or a drop back on the wire.
+  dropped.age += 10;
+  check("an item that only aged isn't re-sent", roundTrip(mirrorA.encode(game, alice, 0, [])).items.length === 0);
+  dropped.pos = vec(dropped.pos.x + 3, dropped.pos.y);
+  check("...but one that slid is", roundTrip(mirrorA.encode(game, alice, 0, [])).items.some((x) => x.id === dropped.id));
 }
 
 console.log("\nthe sight mask culls what the viewer can't see:");
@@ -138,7 +221,8 @@ console.log("\na NetSession rebuilds the match from the messages:");
   let kit = 0;
   for (const c of expected) {
     const m = net.characters.find((x) => x.id === c.id)!;
-    if (Math.abs(m.pos.x - c.pos.x) < 1e-6 && Math.abs(m.pos.y - c.pos.y) < 1e-6 && m.z === c.z && m.hp === c.hp) placed++;
+    // To the wire's 0.1 px / 0.1 hp (health rounded up).
+    if (Math.abs(m.pos.x - c.pos.x) <= 0.051 && Math.abs(m.pos.y - c.pos.y) <= 0.051 && m.z === c.z && m.hp >= c.hp && m.hp - c.hp <= 0.1) placed++;
     if (m.gun.spec === c.gun.spec && m.team === c.team && m.equippedSlot === c.equippedSlot && (m.armor?.spec ?? null) === (c.armor?.spec ?? null)) kit++;
   }
   check("...at the same place, level and health", placed === expected.length, `${placed}/${expected.length}`);
@@ -162,7 +246,7 @@ console.log("\na NetSession rebuilds the match from the messages:");
   const mid = m.pos.x;
   net.interpolate(t0 + 1000);
   const late = m.pos.x;
-  check("a moved character interpolates from where it was to where it is", Math.abs(early - x0) < 1 && Math.abs(mid - (x0 + 50)) < 2 && Math.abs(late - (x0 + 100)) < 1e-6, `${early.toFixed(1)} ${mid.toFixed(1)} ${late.toFixed(1)}`);
+  check("a moved character interpolates from where it was to where it is", Math.abs(early - x0) < 1 && Math.abs(mid - (x0 + 50)) < 2 && Math.abs(late - (x0 + 100)) <= 0.051, `${early.toFixed(1)} ${mid.toFixed(1)} ${late.toFixed(1)}`);
 
   // Events reach the effects pipeline once, on the next step.
   const withEvents = roundTrip(mirror.encode(game, alice, 0, [{ kind: "hit", victim: alice.char.id, attacker: bot.id }, { kind: "decal", near: vec(1, 2), on: game.world.obstacles[0], z: 0, heft: 1 }]));
@@ -173,6 +257,70 @@ console.log("\na NetSession rebuilds the match from the messages:");
   check("...and comes back as an obstacle on the client", kinds.includes("hit") && kinds.includes("decal") && (net.world.events.find((e) => e.kind === "decal") as any).on === net.world.obstacles[0], kinds.join(","));
   net.step(idleInput());
   check("events play once: the next step has none", net.world.events.length === 0);
+
+  // The HUD arrives in two parts (rows on their own) and reads as one.
+  check("the HUD's scoreboard rows are put back on it", (net.hud()?.players?.length ?? 0) > 0, `rows=${net.hud()?.players?.length}`);
+
+  // Our own facing: the aim we send, at once, while we're in control.
+  const aim = vec(Math.SQRT1_2, Math.SQRT1_2);
+  net.step({ ...idleInput(), aim });
+  net.interpolate(performance.now());
+  check("in control, our facing is our aim before the server has heard", net.controllable && net.player.forward.x === aim.x && net.player.forward.y === aim.y, `ctrl=${net.controllable} f=${JSON.stringify(net.player.forward)}`);
+  net.controllable = false;
+  net.interpolate(performance.now() + 1000);
+  const srv = alice.char.forward;
+  check("...and out of control (dead, match over), the server's facing", Math.abs(net.player.forward.x - srv.x) < 0.002 && Math.abs(net.player.forward.y - srv.y) < 0.002);
+
+  // Ages run on here between the snapshots that carry them.
+  const it = net.world.items.find((x) => x.id === dropped.id)!;
+  const age0 = it.age;
+  game.tick += 8;
+  net.receive(roundTrip(mirror.encode(game, alice, 0, [])));
+  check("an item ages by the server ticks between snapshots", it.age === age0 + 8, `${age0} -> ${it.age}`);
+
+  // A round the local geometry stopped comes back when the server lists it
+  // again, its look from the cache (the listing carries only where it is).
+  const shooter = expected.find((c) => c !== alice.char && dist(c.pos, alice.char.pos) < CULL_R - 500)!;
+  game.world.bullets.push({
+    id: 990002, pos: vec(shooter.pos.x, shooter.pos.y), prev: vec(shooter.pos.x, shooter.pos.y), vel: vec(30, 0), z: shooter.z, life: 600,
+    origin: vec(shooter.pos.x, shooter.pos.y), renderAfter: 20, owner: shooter, damage: 10, tracerWidth: 3, tracerLength: 200,
+    tracerColor: "#abcdef", armorPen: { l1: 1, l2: 1, l3: 1, l4: 1 }, penetration: 0, penUsed: 0, penSkip: 0, gun: null,
+  });
+  net.receive(roundTrip(mirror.encode(game, alice, 0, [])));
+  check("a round is mirrored with its look", net.world.bullets.some((b) => b.id === 990002 && b.tracerColor === "#abcdef"));
+  net.world.bullets = net.world.bullets.filter((b) => b.id !== 990002); // as if it hit a wall here
+  (net as unknown as { bulletById: Map<number, unknown> }).bulletById.delete(990002);
+  const again = roundTrip(mirror.encode(game, alice, 0, []));
+  check("...the server's next listing of it is position only", again.bullets.find((b) => b.id === 990002)?.c === undefined);
+  net.receive(again);
+  check("...and the client puts it back looking the same", net.world.bullets.some((b) => b.id === 990002 && b.tracerColor === "#abcdef" && b.tracerWidth === 3));
+  game.world.bullets = game.world.bullets.filter((b) => b.id !== 990002);
+}
+
+console.log("\nthe level's own items and vehicles are the server's to say:");
+{
+  const text = readFileSync("src/world/levels/tdm-arena.json", "utf8");
+  check("(the level ships items)", loadLevel(text).world.items.length > 0);
+  const g = new Game(loadLevel(text), GAMEMODES.tdm({ ...loadLevel(text).meta, mode: "tdm" }), { humans: 0 });
+  const me = g.addHuman("Viewer");
+  const net = new NetSession("localhost:1", "Viewer", false);
+  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: text, meta: g.level.meta, tick: g.tick, snapHz: 30 }));
+  check("the welcome builds the map with none of the level's items on it", net.world.items.length === 0, `items=${net.world.items.length}`);
+  net.receive(roundTrip(new ClientMirror(g, false).encode(g, me, 0, [])));
+  const near = g.world.items.filter((x) => dist(x.pos, me.char.pos) < CULL_R).length;
+  check("...so after a snapshot there is exactly one of each", net.world.items.length === near, `${net.world.items.length} vs ${near}`);
+}
+
+console.log("\nserver addresses:");
+{
+  const a = serverUrls("example.com:7777", false);
+  check("host:port on an http page: ws, and /info over http", a.ws === "ws://example.com:7777/play" && a.info === "http://example.com:7777/info", JSON.stringify(a));
+  const b = serverUrls("game.example.com", true);
+  check("a bare host on an https page: wss on 443", b.ws === "wss://game.example.com/play" && b.info === "https://game.example.com/info", JSON.stringify(b));
+  const c = serverUrls("wss://x.trycloudflare.com/play", true);
+  const d = serverUrls("https://abc.trycloudflare.com/", true);
+  check("the https link a tunnel prints works as pasted", d.ws === "wss://abc.trycloudflare.com/play" && d.info === "https://abc.trycloudflare.com/info", JSON.stringify(d));
+  check("a full wss URL is kept, /info beside it", c.ws === "wss://x.trycloudflare.com/play" && c.info === "https://x.trycloudflare.com/info", JSON.stringify(c));
 }
 
 console.log("\ninputs off the wire drive the character:");
@@ -181,6 +329,8 @@ console.log("\ninputs off the wire drive the character:");
   const inp = sanitizeInput(raw);
   check("sanitizeInput bounds and normalizes", inp.move.x === 1 && Math.abs(Math.hypot(inp.aim.x, inp.aim.y) - 1) < 1e-9 && inp.firePressed && !inp.reload && inp.equip === "primary" && !inp.cancel && inp.restart);
   check("...and garbage becomes idle", sanitizeInput(null).aim.y === -1 && sanitizeInput("x").move.x === 0);
+  const cheat = sanitizeInput({ debugDamage: true, debugHeal: true });
+  check("the single-player debug keys (hurt / heal yourself) never pass", !cheat.debugDamage && !cheat.debugHeal);
   const a = { ...idleInput(), interact: true, fire: true };
   const b = { ...idleInput(), drop: true, fire: false };
   const merged = mergeInputs(a, b);
