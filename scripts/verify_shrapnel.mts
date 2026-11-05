@@ -20,6 +20,7 @@ import {
   SHRAPNEL_TRACER_WIDTH,
   WALL_SHRAPNEL,
   impactBurst,
+  roundHeft,
   spawnParticles,
   updateParticles,
   type Particle,
@@ -199,8 +200,8 @@ function shootInto(o: Obstacle, tracerWidth = SHRAPNEL_TRACER_WIDTH): Particle[]
 }
 
 // ------------------------------------------------- size vs. the round ---------
-// Debris scales with the bullet's tracer width, calibrated so the authored sizes
-// are what a width-4 round throws.
+// Debris scales with the square root of the bullet's tracer width (roundHeft),
+// calibrated so the authored sizes are what a width-4 round throws.
 console.log("\nheavier rounds throw bigger, faster debris:");
 {
   check("the reference width is 4", SHRAPNEL_TRACER_WIDTH === 4);
@@ -237,7 +238,10 @@ console.log("\nheavier rounds throw bigger, faster debris:");
 
   // End to end, through a real bullet. Every particle in a burst spawns at the
   // same size, and they have all been ticked once, so the ratio between two
-  // widths is exactly the ratio of the widths.
+  // widths is exactly the square root of the ratio of the widths.
+  check("heft goes as the square root of the width",
+    near(roundHeft(4), 1) && near(roundHeft(16), 2) && near(roundHeft(9), 1.5) && roundHeft(0) === 0,
+    `${roundHeft(16)} ${roundHeft(9)}`);
   const sizeAt = (tracerWidth: number): number => {
     const ps = shootInto(metalWall, tracerWidth).filter((p) => p.trail !== undefined);
     return ps.length ? ps[0].size : 0;
@@ -245,8 +249,9 @@ console.log("\nheavier rounds throw bigger, faster debris:");
   const ref = sizeAt(SHRAPNEL_TRACER_WIDTH);
   check("a width-4 round throws the authored size",
     near(ref, METAL_SPARKS.size + METAL_SPARKS.sizeChange!), `${ref}`);
-  check("the AWM's width-8 round throws double", near(sizeAt(8), ref * 2), `${sizeAt(8)} vs ${ref}`);
-  check("the M9's width-3 round throws three quarters", near(sizeAt(3), ref * 0.75), `${sizeAt(3)} vs ${ref}`);
+  check("a width-16 round throws double (4x the area, for 4x the width)", near(sizeAt(16), ref * 2), `${sizeAt(16)} vs ${ref}`);
+  check("the AWM's width-9 round throws 1.5x", near(sizeAt(9), ref * 1.5), `${sizeAt(9)} vs ${ref}`);
+  check("the M9's width-3 round throws sqrt(3/4) of it", near(sizeAt(3), ref * Math.sqrt(0.75)), `${sizeAt(3)} vs ${ref}`);
   check("a punch (no tracer at all) throws no debris", shootInto(metalWall, 0).length === 0);
 
   // ...and the same round throws it further, because speed scales but life does not.
@@ -257,14 +262,14 @@ console.log("\nheavier rounds throw bigger, faster debris:");
         far = Math.max(far, Math.hypot(p.vel.x, p.vel.y));
     return far;
   };
-  check("the width-8 round also throws its sparks twice as fast",
-    Math.abs(reachAt(8) / reachAt(4) - 2) < 0.05, `${reachAt(8).toFixed(1)} vs ${reachAt(4).toFixed(1)} px/tick`);
+  check("the width-16 round also throws its sparks twice as fast",
+    Math.abs(reachAt(16) / reachAt(4) - 2) < 0.05, `${reachAt(16).toFixed(1)} vs ${reachAt(4).toFixed(1)} px/tick`);
   check("lifetime is untouched — heavier means further, not longer",
-    shootInto(metalWall, 8).filter((p) => p.trail !== undefined)
+    shootInto(metalWall, 16).filter((p) => p.trail !== undefined)
       .every((p) => p.maxLife <= METAL_SPARKS.life));
-  const chip8 = debrisOf(shootInto(makeWall(vec(0, 0), 64, 64, 0), 8))[0];
+  const chip16 = debrisOf(shootInto(makeWall(vec(0, 0), 64, 64, 0), 16))[0];
   check("a plain wall's chips scale the same way",
-    near(chip8.size, WALL_SHRAPNEL.size * 2), `${chip8.size} vs ${WALL_SHRAPNEL.size}`);
+    near(chip16.size, WALL_SHRAPNEL.size * 2), `${chip16.size} vs ${WALL_SHRAPNEL.size}`);
 }
 
 // ------------------------------------------------------- layered bursts -------
@@ -340,9 +345,9 @@ console.log("\nbullet impacts also puff smoke, under the debris:");
   const ref = smokeSizeAt(SHRAPNEL_TRACER_WIDTH);
   check("a width-4 round raises the authored puff",
     near(ref, IMPACT_SMOKE.size + IMPACT_SMOKE.sizeChange!), `${ref}`);
-  check("the AWM's width-8 round raises twice as much", near(smokeSizeAt(8), ref * 2),
-    `${smokeSizeAt(8)} vs ${ref}`);
-  check("the M9's width-3 round three quarters as much", near(smokeSizeAt(3), ref * 0.75),
+  check("a width-16 round raises a puff twice the size", near(smokeSizeAt(16), ref * 2),
+    `${smokeSizeAt(16)} vs ${ref}`);
+  check("the M9's width-3 round sqrt(3/4) the size", near(smokeSizeAt(3), ref * Math.sqrt(0.75)),
     `${smokeSizeAt(3)} vs ${ref}`);
   check("a punch (no tracer) raises none", smokeSizeAt(0) === 0);
 
@@ -381,8 +386,8 @@ console.log("\nblood scales with the round, but never to nothing:");
   const ref = shootAt(SHRAPNEL_TRACER_WIDTH);
   check("a width-4 round draws the authored puff", ref.length === BLOOD.count &&
     near(ref[0].size, BLOOD.size), `${ref[0]?.size} vs ${BLOOD.size}`);
-  const heavy = shootAt(8);
-  check("the AWM draws twice the puff", near(heavy[0].size, ref[0].size * 2),
+  const heavy = shootAt(16);
+  check("a width-16 round draws twice the puff", near(heavy[0].size, ref[0].size * 2),
     `${heavy[0].size} vs ${ref[0].size}`);
   check("...thrown twice as hard, too",
     Math.max(...heavy.map((p) => Math.hypot(p.vel.x, p.vel.y))) >
@@ -395,7 +400,7 @@ console.log("\nblood scales with the round, but never to nothing:");
   check("...at the floor's weight", near(punch[0].size, BLOOD.size * BLOOD_MIN_HEFT),
     `${punch[0].size} vs ${BLOOD.size * BLOOD_MIN_HEFT}`);
   check("the floor is the lightest real gun's weight, so no firearm is clamped by it",
-    near(BLOOD_MIN_HEFT, 3 / SHRAPNEL_TRACER_WIDTH) && near(shootAt(3)[0].size, BLOOD.size * 0.75),
+    near(BLOOD_MIN_HEFT, roundHeft(3)) && near(shootAt(3)[0].size, BLOOD.size * BLOOD_MIN_HEFT),
     `${BLOOD_MIN_HEFT}`);
   check("wall debris is NOT floored — a punch still chips nothing",
     shootInto(makeWall(vec(0, 0), 64, 64, 0), 0).length === 0);

@@ -6,8 +6,8 @@ import {
   CRATE_SHRAPNEL,
   METAL_SPARKS,
   impactBurst,
+  roundHeft,
   SHRAPNEL_STYLES,
-  SHRAPNEL_TRACER_WIDTH,
   STANDARD_EXPLOSION,
   WALL_SHRAPNEL,
   type Particle,
@@ -1003,10 +1003,10 @@ export const WALLBANG_MAX_DAMAGE = 0.75;
  *  chip damage through geometry they can barely punch. See wallbangSightBudget. */
 export const WALLBANG_AI_MIN_DAMAGE = 0.35;
 
-/** Raw damage from a blast that sprays as much blood as the heaviest rifle round
- *  does. The AWM's tracer is 8 px against SHRAPNEL_TRACER_WIDTH's 4, so its hits
- *  throw blood at heft 2 — a blast doing this much damage matches it, and
- *  anything either side of it scales in proportion. */
+/** Raw damage from a blast that throws blood at heft 2, and anything either side
+ *  of it scales in proportion. Pinned back when bullet heft was linear in the
+ *  tracer, to match the AWM; bullets now go by roundHeft (an AWM hit is 1.5) and
+ *  blasts were left where they were. */
 export const BLAST_BLOOD_REFERENCE_DAMAGE = 80;
 /** The heft BLAST_BLOOD_REFERENCE_DAMAGE maps to (see above). */
 const BLAST_BLOOD_REFERENCE_HEFT = 2;
@@ -1167,7 +1167,7 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
     // How big a bite this round takes out of whatever it hits: debris comes off
     // bigger AND faster the heavier the round, scaled by the tracer — the one
     // number that already says how heavy a bullet looks.
-    const grit = b.tracerWidth / SHRAPNEL_TRACER_WIDTH;
+    const grit = roundHeft(b.tracerWidth);
 
     let consumed = false;
     for (let i = 1; i <= n && !consumed; i++) {

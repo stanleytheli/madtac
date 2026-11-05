@@ -118,10 +118,20 @@ export const METAL_SPARKS: ParticleStyle = {
 /**
  * The tracer width the debris styles above are authored against: a round this fat
  * throws shrapnel at exactly the size and speed its style names, and anything
- * thinner or fatter scales in proportion — a rifle chips a wall, a .50 takes a
+ * thinner or fatter scales by roundHeft — a rifle chips a wall, a .50 takes a
  * bite out of it. See spawnParticles' `heft` and the impact call in updateBullets.
  */
 export const SHRAPNEL_TRACER_WIDTH = 4;
+
+/**
+ * The heft a round of this tracer width hits with: 1 at SHRAPNEL_TRACER_WIDTH,
+ * going as the SQUARE ROOT of the width. Heft multiplies a particle's size (and a
+ * hole's width and height), so what tracks the tracer is the AREA a hit covers —
+ * a round twice as wide leaves twice the ink, not four times. 0 = nothing thrown.
+ */
+export function roundHeft(tracerWidth: number): number {
+  return Math.sqrt(Math.max(0, tracerWidth) / SHRAPNEL_TRACER_WIDTH);
+}
 
 /**
  * The impact debris an obstacle can be given BY NAME, instead of the one its kind
@@ -177,10 +187,10 @@ export function impactBurst(debris: ParticleStyle): readonly ParticleStyle[] {
  *  the game's ONLY hit confirmation, so unlike wall debris it must never scale
  *  away to nothing: a punch (no tracer at all) still draws a puff, at the weight
  *  the lightest firearm would. See the character-hit call in updateBullets. */
-export const BLOOD_MIN_HEFT = 0.75;
+export const BLOOD_MIN_HEFT = roundHeft(3);
 
 /** Stylized red "blood" hitmarker when a character is struck. Sized and thrown
- *  by the weight of the round that landed it (see SHRAPNEL_TRACER_WIDTH), floored
+ *  by the weight of the round that landed it (see roundHeft), floored
  *  at BLOOD_MIN_HEFT. */
 export const BLOOD: ParticleStyle = {
   color: "#d11a1a",

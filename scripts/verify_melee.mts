@@ -13,7 +13,7 @@
 import { spawnEffects } from "../src/engine/effects.ts";
 import { makeWall, type Obstacle, type World } from "../src/world/world.ts";
 import { ObstacleGrid } from "../src/engine/collision.ts";
-import { SHRAPNEL_TRACER_WIDTH, BLOOD, BLOOD_MIN_HEFT } from "../src/engine/particle.ts";
+import { SHRAPNEL_TRACER_WIDTH, BLOOD, BLOOD_MIN_HEFT, roundHeft } from "../src/engine/particle.ts";
 import { AWM, UNARMED } from "../src/entities/guns.ts";
 import { Gun } from "../src/entities/gun.ts";
 import { Character } from "../src/entities/actor.ts";
@@ -123,7 +123,7 @@ console.log("\nfists throw debris again, on the tracer-width scale:");
 {
   const hit = punch({ targetAt: vec(60, 0) });
   check("landing on a body draws blood", hit.blood.length > 0, `${hit.blood.length} particles`);
-  const expected = Math.max(BLOOD_MIN_HEFT, UNARMED.particleScale! / SHRAPNEL_TRACER_WIDTH);
+  const expected = Math.max(BLOOD_MIN_HEFT, roundHeft(UNARMED.particleScale!));
   check("...at the weight particleScale asks for",
     near(hit.blood[0].size, BLOOD.size * expected), `${hit.blood[0].size} vs ${BLOOD.size * expected}`);
   check("particleScale is stated in tracer-width units",

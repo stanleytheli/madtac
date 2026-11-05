@@ -1,5 +1,5 @@
 import { DEFAULT_PARAMS, drawMuzzleFlash, FLASH_TICKS } from "./character.ts";
-import { SHRAPNEL_TRACER_WIDTH } from "../engine/particle.ts";
+import { roundHeft } from "../engine/particle.ts";
 import { GunItem, type Droppable, type GroundItem } from "./item.ts";
 import { interpGrip, NOSCOPE_SPEED_RATIO, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
@@ -431,7 +431,7 @@ export class Gun implements Droppable {
         coneDeg: this.spec.meleeConeDeg ?? 0,
         damage: this.damage,
         armorPen: this.spec.armorPen,
-        heft: (this.spec.particleScale ?? 0) / SHRAPNEL_TRACER_WIDTH,
+        heft: roundHeft(this.spec.particleScale ?? 0),
         stagger: this.spec.stagger,
         gun: this.spec,
       });
