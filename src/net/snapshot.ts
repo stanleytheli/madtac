@@ -126,6 +126,8 @@ export function toWire(e: GameEvent, obstacleIndex: Map<object, number>): WireEv
       return { ...e, pos: rp(e.pos), dir: rd(e.dir), heft: r2(e.heft) };
     case "scorch":
       return { ...e, pos: rp(e.pos) };
+    case "blood":
+      return { ...e, pos: rp(e.pos), dir: rd(e.dir), damage: r1(e.damage) };
     default:
       return e;
   }
@@ -339,6 +341,8 @@ export class ClientMirror {
       if (e.kind === "hit" || e.kind === "stopSound") send = true;
       else if (e.kind === "sound") send = !e.pos || near(e.pos);
       else if (e.kind === "particles") send = seen(e.pos, e.z);
+      // For the eyes, like the puff that came with it: it says someone was hit.
+      else if (e.kind === "blood") send = seen(e.pos, e.z);
       // In earshot, like the boom that came with it: it tells no more than the
       // sound did, and the mark is there to find once you walk over to it.
       else if (e.kind === "scorch") send = near(e.pos);

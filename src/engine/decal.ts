@@ -39,7 +39,7 @@ const DECAL_FADE = 60;
 const MAX_DECALS = 400;
 
 /** The sprite's native size in world px at heft 1 (the file is 40x20). Scaled by
- *  the round's heft the same way its debris is — see SHRAPNEL_TRACER_WIDTH. */
+ *  the round's heft the same way its debris is — see roundHeft. */
 export const HOLE_W = 20;
 export const HOLE_H = 10;
 

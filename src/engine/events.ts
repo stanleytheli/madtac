@@ -32,7 +32,10 @@ export type GameEvent =
   /** A bullet hole on `on`, for a round that reached `near` (see stampBulletHole). */
   | { kind: "decal"; near: Vec2; on: Obstacle; z: number; heft: number }
   /** A blast's scorch mark, `size` px wide at `opacity`, on the floors at `pos` (see stampScorch). */
-  | { kind: "scorch"; pos: Vec2; z: number; size: number; opacity: number };
+  | { kind: "scorch"; pos: Vec2; z: number; size: number; opacity: number }
+  /** Blood on the ground from a hit of raw `damage` that landed at `pos`,
+   *  sprayed along `dir` (see stampBloodSplatter). */
+  | { kind: "blood"; pos: Vec2; dir: Vec2; z: number; damage: number };
 
 /** Append a positioned (or flat) sound event. */
 export function emitSound(

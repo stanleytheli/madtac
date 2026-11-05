@@ -33,7 +33,7 @@ const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 function world(obstacles: Obstacle[]): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
   } as unknown as World;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;
@@ -68,8 +68,8 @@ console.log("a stopped round stamps one hole on the face it hit:");
   check("it is the wall's decal", d.on === wall);
   // fire() keeps ticking after the strike, so the life has already begun to count.
   check("fresh life (less the ticks since), sized by the round", d.life > DECAL_LIFE - 40 && d.life <= DECAL_LIFE && d.w === HOLE_W && d.h === HOLE_H, `life=${d.life} w=${d.w} h=${d.h}`);
-  const fat = fire([wall], vec(-300, 10), vec(1, 0), 0, 8).decals[0];
-  check("a heavier round leaves a bigger hole (2x at an 8px tracer)", fat.w === 2 * HOLE_W && fat.h === 2 * HOLE_H, `w=${fat.w} h=${fat.h}`);
+  const fat = fire([wall], vec(-300, 10), vec(1, 0), 0, 16).decals[0];
+  check("a heavier round leaves a bigger hole (2x at a 16px tracer)", fat.w === 2 * HOLE_W && fat.h === 2 * HOLE_H, `w=${fat.w} h=${fat.h}`);
 }
 
 console.log("\nthe normal is the obstacle's real one:");

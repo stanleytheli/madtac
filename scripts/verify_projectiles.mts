@@ -58,7 +58,7 @@ function emptyWorld(obstacles: any[] = []): World {
     vehicles: [],
     bullets: [],
     projectiles: [],
-    particles: [], decals: [], scorches: [], events: [],
+    particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
   };
   if (obstacles.length) w.grid = new ObstacleGrid(obstacles);
   return w;

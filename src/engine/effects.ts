@@ -13,6 +13,7 @@
 import { playSound, stopSound, type SoundHandle } from "./audio.ts";
 import { stampBulletHole, updateDecals } from "./decal.ts";
 import { stampScorch, updateScorches } from "./scorch.ts";
+import { stampBloodSplatter, updateBloodSplats } from "./bloodsplat.ts";
 import type { GameEvent } from "./events.ts";
 import { spawnParticles, updateParticles } from "./particle.ts";
 import { PLAYER_HIT_SOUND, PLAYER_HURT_SOUND } from "../world/hitsounds.ts";
@@ -24,7 +25,8 @@ export function spawnEffects(w: World): void {
   for (const e of w.events) {
     if (e.kind === "particles") spawnParticles(w.particles, e.pos, e.dir, e.burst, e.z, e.heft);
     else if (e.kind === "decal") stampBulletHole(w.decals, e.near, e.on, e.z, e.heft);
-    else if (e.kind === "scorch") stampScorch(w.scorches, w.floors, e.pos, e.z, e.size, e.opacity);
+    else if (e.kind === "scorch") stampScorch(w.scorches, w.floors, w.stairs, e.pos, e.z, e.size, e.opacity);
+    else if (e.kind === "blood") stampBloodSplatter(w.bloodSplats, w.floors, w.stairs, e.pos, e.dir, e.z, e.damage);
   }
 }
 
@@ -34,6 +36,7 @@ export function tickCosmetics(w: World): void {
   w.particles = updateParticles(w.particles);
   w.decals = updateDecals(w.decals);
   w.scorches = updateScorches(w.scorches);
+  w.bloodSplats = updateBloodSplats(w.bloodSplats);
 }
 
 /** A headless script's whole reaction to one sim step it drove itself (an

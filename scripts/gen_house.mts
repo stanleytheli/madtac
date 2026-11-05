@@ -25,7 +25,7 @@ import { vec, type Vec2 } from "../src/engine/vec.ts";
 
 /** A fresh, empty world (createWorld() ships the hand-coded demo map). */
 const emptyWorld = (): World => ({
-  obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+  obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
 });
 
 const T = 26; // wall thickness
