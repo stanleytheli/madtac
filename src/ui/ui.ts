@@ -443,8 +443,13 @@ const HUD_MARGIN = 24;
 
 /** The low-health overlay: a blood blur around the screen's edges (transparent
  *  in the middle), stretched to the screen. It fades in from nothing at
- *  LOW_HP_START hp to LOW_HP_MAX_ALPHA at 0, linearly. */
-const LOW_HP_IMAGE = "Blood_Blur_1_edited.png";
+ *  LOW_HP_START hp to LOW_HP_MAX_ALPHA at 0, linearly.
+ *
+ *  Kept at 960x540 as WebP (62 KB) rather than the 1920x1080 PNG it was made
+ *  from (8.3 MB): the blur is so soft that, stretched over a 1080p or 4K
+ *  screen, no pixel lands more than 3/255 from the full-size original. A
+ *  re-edit can start from the original in git history (commit ae8d57a). */
+const LOW_HP_IMAGE = "Blood_Blur_1_edited.webp";
 const LOW_HP_START = 75;
 const LOW_HP_MAX_ALPHA = 1.0;
 
@@ -468,7 +473,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   const mouse = { x: o.mouse.x / UI_SCALE, y: o.mouse.y / UI_SCALE };
 
   // Low-health blood, under every other HUD element. Asked for every frame so the
-  // (large) image is already decoded by the time it's first needed.
+  // image is already decoded by the time it's first needed.
   const bloodImg = assetImage(LOW_HP_IMAGE);
   const bloodAlpha = LOW_HP_MAX_ALPHA * Math.min(1, Math.max(0, 1 - player.hp / LOW_HP_START));
   if (bloodImg && bloodAlpha > 0) {
