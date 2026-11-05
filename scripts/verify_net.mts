@@ -24,7 +24,9 @@ import { GAMEMODES } from "../src/gamemodes/gamemode.ts";
 import { loadLevel } from "../src/world/level.ts";
 import { ClientMirror, CULL_R, POSE_REFRESH, pointInPolygon } from "../src/net/snapshot.ts";
 import { NetSession } from "../src/net/client.ts";
-import { mergeInputs, sanitizeInput, serverUrls, PROTOCOL, type ServerMsg, type SnapMsg } from "../src/net/protocol.ts";
+import { mergeInputs, parseClientMsg, sanitizeInput, serverUrls, PROTOCOL, type ServerMsg, type SnapMsg } from "../src/net/protocol.ts";
+import { ARMOR_SPECS, GUN_SPECS as SPECS, SKINS } from "../src/entities/specs.ts";
+import { TEAMS } from "../src/entities/team.ts";
 import { idleInput } from "../src/engine/command.ts";
 import { dist, vec } from "../src/engine/vec.ts";
 import { areHostile } from "../src/entities/team.ts";
@@ -354,6 +356,58 @@ console.log("\ninputs off the wire drive the character:");
   alice.input = { ...idleInput(), cancel: true };
   game.update();
   check("a press is consumed after one tick", !alice.input.cancel && !alice.char.gun.reloading);
+}
+
+console.log("\nhostile input is refused before it reaches the game:");
+{
+  const ok = (m: unknown) => parseClientMsg(JSON.parse(JSON.stringify(m))) !== null;
+  check("what the client really sends parses: join, input (every field), loadout, ping, the rest",
+    ok({ t: "join", protocol: PROTOCOL, name: "Alice", token: "ab12", password: "pw" }) && ok({ t: "join", protocol: PROTOCOL, name: "" }) &&
+    ok({ t: "input", seq: 3, in: idleInput() }) && ok({ t: "input", seq: 4, in: { ...idleInput(), equip: "primary", dropHud: "armor" } }) &&
+    ok({ t: "loadout", loadout: { primary: "M16", armor: "ARMOR_L2" } }) && ok({ t: "loadout", loadout: {} }) &&
+    ok({ t: "ping", at: 1234.5 }) && ok({ t: "random" }) && ok({ t: "respawn" }) && ok({ t: "leave" }));
+  const bad: [string, string][] = [
+    ["not an object", `[1,2]`],
+    ["no type", `{"name":"x"}`],
+    ["an unknown type", `{"t":"admin"}`],
+    ["an extra field", `{"t":"respawn","x":1}`],
+    ["a __proto__ key", `{"t":"leave","__proto__":{"polluted":true}}`],
+    ["a non-numeric protocol", `{"t":"join","protocol":"2","name":"x"}`],
+    ["an over-long name", `{"t":"join","protocol":2,"name":"${"n".repeat(65)}"}`],
+    ["an over-long password", `{"t":"join","protocol":2,"name":"x","password":"${"p".repeat(129)}"}`],
+    ["input with a stranger's field", `{"t":"input","seq":1,"in":{"teleport":true}}`],
+    ["input with a string flag", `{"t":"input","seq":1,"in":{"fire":"yes"}}`],
+    ["input with a vector that isn't one", `{"t":"input","seq":1,"in":{"aim":{"x":"1","y":0}}}`],
+    ["input with no seq", `{"t":"input","in":{}}`],
+    ["a loadout that's a string", `{"t":"loadout","loadout":"M16"}`],
+    ["a loadout with an object slot", `{"t":"loadout","loadout":{"primary":{"name":"M16"}}}`],
+    ["a ping at Infinity", `{"t":"ping","at":1e999}`],
+  ];
+  const leaked = bad.filter(([, j]) => parseClientMsg(JSON.parse(j)) !== null).map(([w]) => w);
+  check(`${bad.length} malformed messages are all refused`, leaked.length === 0, leaked.join(", "));
+  check("...and nothing polluted Object.prototype on the way", ({} as Record<string, unknown>).polluted === undefined);
+
+  check("the lookup tables have only their own names: \"constructor\", \"__proto__\", \"toString\" aren't weapons, armor, skins or teams",
+    ["constructor", "__proto__", "toString"].every((k) => !(k in SPECS) && SPECS[k] === undefined && !(k in ARMOR_SPECS) && SKINS[k] === undefined && TEAMS[k] === undefined && !areHostile(k, "blue")));
+  // The crash a hostile client could cause: a kit of built-in names, then a respawn.
+  const lv = loadLevel(levelText);
+  const g = new Game(lv, GAMEMODES.tdm({ ...lv.meta, mode: "tdm" }), { humans: 0 });
+  const h = g.addHuman("Mallory");
+  let threw = "";
+  try {
+    g.gamemode.setPlayerLoadout!(h.char, { primary: "constructor", secondary: "__proto__", armor: "toString" });
+    h.char.hp = 0;
+    let back = false;
+    for (let i = 0; i < 3000 && !back; i++) {
+      g.update();
+      back = g.gamemode.requestRespawn!(g, h.char);
+    }
+    for (let i = 0; i < 60; i++) g.update();
+    check("a kit of built-in names respawns with empty slots", back && !h.char.slots.primary && !h.char.slots.secondary && !h.char.armor);
+  } catch (e) {
+    threw = (e as Error).message;
+  }
+  check("...instead of crashing the match (it used to)", threw === "", threw);
 }
 
 console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);

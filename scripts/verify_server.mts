@@ -3,11 +3,19 @@
  * on a spare port, connects with Node's WebSocket, joins, and checks the
  * things a player would notice — a welcome with the level, snapshots flowing,
  * the character moving when told to, /info answering, and a dropped socket
- * reconnecting to the same character with its token.
+ * reconnecting to the same character with its token. Then it attacks it: an
+ * oversized frame, garbage, strangers' fields, a flood, a socket that never
+ * joins, too many sockets from one address, wrong passwords; after each, the
+ * server must still be up.
+ *
+ * The server runs with the same Node flags `npm run server` gives it (read
+ * from package.json), so the lockdown is what gets tested.
  *
  * Run: node scripts/verify_server.mts   (no bundling: it spawns esbuild itself)
  */
 import { spawn, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import RawSocket from "ws";
 import { PROTOCOL } from "../src/net/protocol.ts";
 
 let passed = 0;
@@ -27,12 +35,31 @@ if (built.status !== 0) {
   console.error(String(built.stderr));
   process.exit(1);
 }
-const srv = spawn("node", ["dist-server/server.mjs", "--level", "tdm-arena-big", "--port", String(PORT), "--blueTroops", "3", "--redTroops", "3"], { stdio: ["ignore", "pipe", "pipe"] });
+// The Node flags npm run server uses: `... && node <flags> dist-server/server.mjs`.
+const script: string = JSON.parse(readFileSync("package.json", "utf8")).scripts.server;
+const NODE_FLAGS = (/&& node (.*?) dist-server\/server\.mjs/.exec(script)?.[1] ?? "").split(/\s+/).filter(Boolean);
+check("npm run server locks Node down (no eval, file reads allow-listed)", NODE_FLAGS.includes("--disallow-code-generation-from-strings") && NODE_FLAGS.includes("--permission"), NODE_FLAGS.join(" "));
+
+/** Start a server; resolves once it is listening. `env` adds to the environment. */
+async function start(port: number, extra: string[], env: Record<string, string> = {}) {
+  const proc = spawn("node", [...NODE_FLAGS, "dist-server/server.mjs", "--level", "tdm-arena-big", "--port", String(port), "--blueTroops", "3", "--redTroops", "3", ...extra], {
+    stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env },
+  });
+  const out = { log: "", exited: null as number | null, proc };
+  proc.stdout.on("data", (d) => (out.log += String(d)));
+  proc.stderr.on("data", (d) => (out.log += String(d)));
+  proc.on("exit", (code) => (out.exited = code ?? -1));
+  for (let i = 0; i < 100 && !out.log.includes("on ws://"); i++) await sleep(50);
+  return out;
+}
+const main = await start(PORT, []);
+const srv = main.proc;
+const logOf = () => main.log;
 let log = "";
 srv.stdout.on("data", (d) => (log += String(d)));
 srv.stderr.on("data", (d) => (log += String(d)));
-for (let i = 0; i < 100 && !log.includes("on ws://"); i++) await sleep(50);
-check("the server starts and announces its port", log.includes(`ws://localhost:${PORT}/play`), log.trim().split("\n")[0]);
+log = logOf();
+check("the server starts on loopback only and announces its port", log.includes(`ws://127.0.0.1:${PORT}/play`) && !log.includes("listening on"), log.trim().split("\n")[0]);
 
 const info = await fetch(`http://localhost:${PORT}/info`).then((r) => r.json());
 check("/info describes the match", info.level === "tdm-arena-big" && info.mode === "tdm" && info.players === 0, JSON.stringify(info));
@@ -108,8 +135,14 @@ const wb = await b.next((m) => m.t === "welcome");
 await sleep(100);
 const info2 = await fetch(`http://localhost:${PORT}/info`).then((r) => r.json());
 check("a second player joins and is counted", info2.players === 2 && wb.id !== welcome.id);
-const seesBob = await a.next((m) => m.t === "snap" && m.chars.some((c: any) => c.id === wb.id && c.full)).then(() => true, () => false);
-check("the first player's snapshots include the second (no sight mask on this level)", seesBob);
+// Bob is on the other side (PvP) and spawned at its base, which can be past
+// the 3000 px a client is sent anything within. So: Alice is sent Bob exactly
+// when he is in reach.
+const bobPose = (await b.next((m) => m.t === "snap" && m.chars.some((c: any) => c.id === wb.id))).chars.find((c: any) => c.id === wb.id);
+const alicePose = lastMe(a.msgs);
+const apart = Math.hypot(bobPose.x - alicePose.x, bobPose.y - alicePose.y);
+const seesBob = await a.next((m) => m.t === "snap" && m.chars.some((c: any) => c.id === wb.id && c.full), 1500).then(() => true, () => false);
+check("the second player joins the other side, and the first is sent him exactly when he's within 3000 px", wb.id !== welcome.id && (Math.abs(apart - 3000) < 50 || seesBob === apart < 3000), `${Math.round(apart)} px apart, sent=${seesBob}`);
 
 // Drop and reconnect with the token: same character.
 a.ws.close();
@@ -146,6 +179,125 @@ b.ws.close();
 await sleep(100);
 check("a drop is logged and the slot held", log.includes("Bob dropped"));
 
+// ------------------------------------------------------------- attacks ----
+console.log("\nattacks (after each, the server must still answer):");
+/** A raw socket (the ws package: it can set headers and send anything). */
+function raw(port: number, headers: Record<string, string> = {}) {
+  const ws = new RawSocket(`ws://127.0.0.1:${port}/play`, { headers });
+  ws.on("error", () => {});
+  const msgs: any[] = [];
+  ws.on("message", (d) => msgs.push(JSON.parse(String(d))));
+  const opened = new Promise<boolean>((r) => { ws.on("open", () => r(true)); ws.on("close", () => r(false)); });
+  const closed = new Promise<number>((r) => ws.on("close", (code) => r(code)));
+  return { ws, msgs, opened, closed };
+}
+const alive = async (port = PORT): Promise<boolean> =>
+  fetch(`http://127.0.0.1:${port}/info`).then((r) => r.ok, () => false);
+/** Hang up within `ms`? The close code, or null if the socket stayed open. */
+const closedWithin = (r: { closed: Promise<number> }, ms: number): Promise<number | null> =>
+  Promise.race([r.closed, sleep(ms).then(() => null)]);
+
+// A socket that never joins: started first, checked last (the timeout is 5 s).
+const lurker = raw(PORT);
+await lurker.opened;
+
+{
+  const r = raw(PORT);
+  await r.opened;
+  r.ws.send("x".repeat(5000));
+  const code = await closedWithin(r, 2000);
+  check("a 5 KB message closes that socket (it used to kill the server)", code === 1009, `code=${code}`);
+  check("...and the server is still up", await alive());
+}
+for (const [what, payload] of [
+  ["not JSON", "{{{"],
+  ["an unknown message type", JSON.stringify({ t: "sudo" })],
+  ["a stranger's field", JSON.stringify({ t: "join", protocol: PROTOCOL, name: "x", admin: true })],
+  ["a __proto__ key", `{"t":"join","protocol":${PROTOCOL},"name":"x","__proto__":{"polluted":1}}`],
+  ["a name that's an object", JSON.stringify({ t: "join", protocol: PROTOCOL, name: { toString: 1 } })],
+  ["a 100-char name", JSON.stringify({ t: "join", protocol: PROTOCOL, name: "n".repeat(100) })],
+  ["an input before joining", JSON.stringify({ t: "input", seq: 1, in: {} })],
+] as const) {
+  const r = raw(PORT);
+  await r.opened;
+  r.ws.send(payload);
+  const code = await closedWithin(r, 2000);
+  check(`${what}: hung up on`, code === 1008, `code=${code}`);
+}
+{
+  // Joined, then a malformed input and a hostile loadout.
+  const r = raw(PORT);
+  await r.opened;
+  r.ws.send(JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Eve" }));
+  await sleep(150);
+  r.ws.send(JSON.stringify({ t: "loadout", loadout: { primary: "constructor", secondary: "__proto__", armor: "toString" } }));
+  r.ws.send(JSON.stringify({ t: "respawn" }));
+  await sleep(150);
+  check("a loadout of built-in names is taken as no kit, not a crash", r.ws.readyState === r.ws.OPEN && (await alive()));
+  r.ws.send(JSON.stringify({ t: "input", seq: 2, in: { fire: "yes" } }));
+  check("an input with a wrong-typed field: hung up on", (await closedWithin(r, 2000)) === 1008);
+}
+{
+  // Joined first, so it is the rate limit that answers, not "join first".
+  const r = raw(PORT);
+  await r.opened;
+  r.ws.send(JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Flood" }));
+  for (let i = 0; i < 40 && !r.msgs.some((x) => x.t === "welcome"); i++) await sleep(25);
+  const m = JSON.stringify({ t: "ping", at: 1 });
+  for (let i = 0; i < 2000; i++) r.ws.send(m);
+  const code = await closedWithin(r, 3000);
+  const pongs = r.msgs.filter((x) => x.t === "pong").length;
+  check("a flood (2000 messages at once) is cut off at the burst allowance", code === 1006 && pongs <= 241, `code=${code}, answered ${pongs}`);
+  check("...and the server is still up", await alive());
+}
+{
+  const code = await closedWithin(lurker, 6000);
+  check("a socket that never joins is dropped after 5 s", code !== null, `code=${code}`);
+}
+check("the server never logged an error through all of it", !/error in/.test(logOf()), logOf().split("\n").find((l) => l.includes("error in")) ?? "");
+
 srv.kill();
+
+// ------------------------------------------------- a password server ----
+console.log("\na server with a password and a per-address cap:");
+{
+  const port = PORT + 1;
+  const locked = await start(port, ["--maxPerAddr", "3"], { MADTAC_PASSWORD: "hunter2" });
+  check("it announces that it needs one", locked.log.includes("password required"), locked.log.trim().split("\n")[0]);
+  const linfo = await fetch(`http://127.0.0.1:${port}/info`).then((r) => r.json());
+  check("/info says so", linfo.locked === true);
+  check("the password isn't on its command line (ps shows those)", !locked.proc.spawnargs.join(" ").includes("hunter2"));
+  const tryJoin = async (password: string | undefined, headers: Record<string, string> = {}) => {
+    const r = raw(port, headers);
+    await r.opened;
+    r.ws.send(JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Guest", ...(password === undefined ? {} : { password }) }));
+    for (let i = 0; i < 40 && !r.msgs.length; i++) await sleep(25);
+    return r;
+  };
+  const none = await tryJoin(undefined);
+  check("no password: refused, saying one is needed", none.msgs[0]?.reason === "this server needs a password", JSON.stringify(none.msgs[0]));
+  const good = await tryJoin("hunter2");
+  check("the right one: welcomed", good.msgs[0]?.t === "welcome");
+  good.ws.close();
+  // Wrong guesses from one address (as the tunnel reports it) lock it out.
+  const reasons: string[] = [];
+  for (let i = 0; i < 6; i++) reasons.push((await tryJoin(`guess${i}`, { "cf-connecting-ip": "203.0.113.9" })).msgs[0]?.reason);
+  check("wrong ones are refused", reasons.slice(0, 5).every((r) => r === "wrong password"), reasons.join(" | "));
+  const after = await tryJoin("hunter2", { "cf-connecting-ip": "203.0.113.9" });
+  check("...and after five, even the right one is locked out for a minute", /too many wrong passwords/.test(after.msgs[0]?.reason ?? "") && reasons[5] !== "wrong password", after.msgs[0]?.reason);
+  const other = await tryJoin("hunter2", { "cf-connecting-ip": "198.51.100.4" });
+  check("...but only that address: another gets in", other.msgs[0]?.t === "welcome");
+  other.ws.close();
+  await sleep(100);
+  // Sockets per address.
+  const socks = [0, 1, 2, 3].map(() => raw(port, { "cf-connecting-ip": "192.0.2.77" }));
+  const opens = await Promise.all(socks.map((r) => r.opened));
+  await sleep(200);
+  const stillOpen = socks.filter((r) => r.ws.readyState === r.ws.OPEN).length;
+  check("a fourth socket from one address (cap 3) is refused", opens.length === 4 && stillOpen === 3, `open=${stillOpen}`);
+  for (const r of socks) r.ws.close();
+  check("...and the server is still up", await alive(port));
+  locked.proc.kill();
+}
 console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

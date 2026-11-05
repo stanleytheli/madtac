@@ -31,6 +31,7 @@ import { SoundPlayer, spawnEffects, tickCosmetics } from "./engine/effects.ts";
 import { ClientView } from "./ui/view.ts";
 import { LocalSession, type Session } from "./ui/session.ts";
 import { NetSession } from "./net/client.ts";
+import { PASSWORD_KEY } from "./ui/landing.ts";
 import { LocalControls } from "./ui/controls.ts";
 import { idleInput } from "./engine/command.ts";
 import { disjointPolys, rectCorners, type Poly } from "./engine/poly.ts";
@@ -224,8 +225,10 @@ if (EDIT) {
   editorPlayer.z = start.z;
   editor = new Editor(loaded, editorPlayer, canvas);
 } else if (CONNECT) {
-  // No name: the server's gamemode hands out a callsign.
-  net = new NetSession(CONNECT, params.get("name") ?? "");
+  // No name: the server's gamemode hands out a callsign. The join password,
+  // if any, the landing screen left in this tab's sessionStorage: never on
+  // the URL, where it would land in history and the host's request logs.
+  net = new NetSession(CONNECT, params.get("name") ?? "", true, sessionStorage.getItem(PASSWORD_KEY) ?? undefined);
 } else {
   game = new Game(loaded, makeMode(meta));
 }

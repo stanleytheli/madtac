@@ -15,6 +15,7 @@
  */
 import { vec } from "../engine/vec.ts";
 import type { VehicleSpec } from "./vehicle.ts";
+import { registry } from "../engine/registry.ts";
 
 export const JEEP: VehicleSpec = {
   name: "Jeep",
@@ -65,7 +66,7 @@ export const TANK: VehicleSpec = {
 };
 
 /** Every exported VehicleSpec, keyed by export name. */
-export const VEHICLE_SPECS: Record<string, VehicleSpec> = {};
+export const VEHICLE_SPECS: Record<string, VehicleSpec> = registry();
 for (const [k, v] of Object.entries({ JEEP, TANK } as Record<string, VehicleSpec>)) {
   VEHICLE_SPECS[k] = v;
 }

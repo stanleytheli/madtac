@@ -21,6 +21,7 @@ import type { PlayerSlot } from "../game.ts";
 import { SandboxMode } from "./sandbox.ts";
 import { TeamDeathmatchMode } from "./tdm.ts";
 import { DominationMode } from "./domination.ts";
+import { registry } from "../engine/registry.ts";
 
 /** Seconds each kill-feed bar lives before it ages out (also see KILLFEED_MAX). */
 export const KILLFEED_TTL = 6 * 60; // 6 s at 60 tps
@@ -197,11 +198,11 @@ export interface Gamemode {
 }
 
 /** Every mode, keyed by the id levels put in `meta.mode`. */
-export const GAMEMODES: Record<string, (meta: LevelMeta) => Gamemode> = {
+export const GAMEMODES: Record<string, (meta: LevelMeta) => Gamemode> = registry<(meta: LevelMeta) => Gamemode>({
   sandbox: () => new SandboxMode(),
   tdm: (meta) => new TeamDeathmatchMode(meta.tdm),
   domination: (meta) => new DominationMode(meta.domination),
-};
+});
 
 /** Used when a level names no mode (and for unknown ids). */
 export const DEFAULT_MODE = "sandbox";

@@ -13,6 +13,7 @@ import type { UtilitySpec } from "./consumable.ts";
 import * as Consumables from "./consumable.ts";
 import type { GunSpec } from "./guns.ts";
 import * as Guns from "./guns.ts";
+import { registry } from "../engine/registry.ts";
 import * as Oracles from "../ai/oracle.ts";
 import * as Robots from "../ai/robot.ts";
 import * as TacOracles from "../ai/tacoracle.ts";
@@ -20,10 +21,10 @@ import * as TacOracles from "../ai/tacoracle.ts";
 /** Every exported GunSpec, icon-less ones (fists) included. They can't lie on the
  *  ground, but they still fire and make noise — so anything about the weapon
  *  itself (sounds to warm, say) reads this, not GUN_SPECS. */
-export const ALL_GUN_SPECS: Record<string, GunSpec> = {};
+export const ALL_GUN_SPECS: Record<string, GunSpec> = registry();
 /** Every exported GunSpec with a ground icon (icon-less specs like fists can't
  *  lie on the ground anyway). */
-export const GUN_SPECS: Record<string, GunSpec> = {};
+export const GUN_SPECS: Record<string, GunSpec> = registry();
 for (const [k, v] of Object.entries(Guns)) {
   if (v && typeof v === "object" && "armorPen" in v) {
     ALL_GUN_SPECS[k] = v as GunSpec;
@@ -32,7 +33,7 @@ for (const [k, v] of Object.entries(Guns)) {
 }
 
 /** Every exported UtilitySpec (belt/slot-4 consumables), keyed by export name. */
-export const UTILITY_SPECS: Record<string, UtilitySpec> = {};
+export const UTILITY_SPECS: Record<string, UtilitySpec> = registry();
 for (const [k, v] of Object.entries(Consumables)) {
   if (v && typeof v === "object" && "useTime" in v && "maxCarry" in v && "apply" in v) {
     UTILITY_SPECS[k] = v as UtilitySpec;
@@ -40,7 +41,7 @@ for (const [k, v] of Object.entries(Consumables)) {
 }
 
 /** Every exported ArmorSpec. */
-export const ARMOR_SPECS: Record<string, ArmorSpec> = {};
+export const ARMOR_SPECS: Record<string, ArmorSpec> = registry();
 for (const [k, v] of Object.entries(Armors)) {
   if (v && typeof v === "object" && "border" in v && "level" in v) {
     ARMOR_SPECS[k] = v as ArmorSpec;
@@ -49,7 +50,7 @@ for (const [k, v] of Object.entries(Armors)) {
 
 /** Every exported Skin across the character + AI modules (DEFAULT_SKIN,
  *  ROBOT_SKIN, ORACLE_SKIN, ...), so any spawn can wear any look. */
-export const SKINS: Record<string, Skin> = {};
+export const SKINS: Record<string, Skin> = registry();
 for (const mod of [Characters, Robots, Oracles, TacOracles]) {
   for (const [k, v] of Object.entries(mod)) {
     if (v && typeof v === "object" && "head" in v && "rightForearm" in v) {

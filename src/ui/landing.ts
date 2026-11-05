@@ -6,7 +6,9 @@
  * made, so this screen costs no more than its own few kilobytes.
  *
  * The PvP card asks the server's GET /info whether it is up, and what it is
- * running, as the address is typed. The name and address are remembered.
+ * running, as the address is typed; a server that takes a password gets a
+ * password box. The name and address are remembered; the password only for
+ * this tab (sessionStorage), and never put on the URL.
  */
 import { PROTOCOL, serverUrls, type ServerInfo } from "../net/protocol.ts";
 
@@ -31,6 +33,7 @@ const LANDING_CSS = `
 .ld-card h2 { margin: 0; font: bold 15px system-ui, sans-serif; letter-spacing: 3px; text-transform: uppercase; }
 .ld-card .ld-blurb { margin: 0; line-height: 1.5; opacity: 0.7; flex: 1; }
 .ld-field { display: flex; flex-direction: column; gap: 5px; }
+.ld-field[hidden] { display: none; }
 .ld-field label { font-size: 11px; font-weight: bold; letter-spacing: 1.5px; text-transform: uppercase; opacity: 0.55; }
 .ld-field input {
   padding: 9px 10px; font: 13px ui-monospace, Menlo, Consolas, monospace; color: #fff;
@@ -56,6 +59,8 @@ const LANDING_CSS = `
 
 const NAME_KEY = "madtac.name";
 const SERVER_KEY = "madtac.server";
+/** sessionStorage: the join password for the server being joined (main.ts reads it). */
+export const PASSWORD_KEY = "madtac.password";
 /** Longest name the server keeps (see server/server.ts). */
 const NAME_MAX = 24;
 
@@ -124,6 +129,9 @@ export function showLanding(choose: LandingChoice): void {
   const server = el("input", {
     type: "text", placeholder: "host:port", value: defaultServer(), spellcheck: false, autocomplete: "off",
   });
+  const password = el("input", { type: "password", maxLength: 128, placeholder: "this server needs one", autocomplete: "off" });
+  const passwordField = field("Password", password);
+  passwordField.hidden = true;
   const status = el("div", { className: "ld-status" });
   const join = el("button", { type: "button", className: "ld-go", textContent: "Join" });
 
@@ -154,10 +162,11 @@ export function showLanding(choose: LandingChoice): void {
       const res = await fetch(serverUrls(address, location.protocol === "https:").info, { signal: ctl.signal });
       const info = (await res.json()) as ServerInfo;
       if (mine !== asked) return;
+      passwordField.hidden = !info.locked;
       if (info.protocol !== PROTOCOL) {
         setStatus("warn", `Online, but it runs version ${info.protocol} of the game and this page is version ${PROTOCOL}.`);
       } else {
-        setStatus("up", `Online: ${info.level} (${info.mode}), ${info.players}/${info.maxPlayers} players`);
+        setStatus("up", `Online: ${info.level} (${info.mode}), ${info.players}/${info.maxPlayers} players${info.locked ? ", password needed" : ""}`);
       }
     } catch {
       if (mine !== asked) return;
@@ -180,12 +189,14 @@ export function showLanding(choose: LandingChoice): void {
     localStorage.setItem(SERVER_KEY, address);
     if (who) localStorage.setItem(NAME_KEY, who);
     else localStorage.removeItem(NAME_KEY);
+    if (!passwordField.hidden && password.value) sessionStorage.setItem(PASSWORD_KEY, password.value);
+    else sessionStorage.removeItem(PASSWORD_KEY);
     pending?.abort();
     close();
     choose.join(address, who);
   };
   join.onclick = go;
-  for (const input of [name, server]) {
+  for (const input of [name, server, password]) {
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") go();
     });
@@ -198,6 +209,7 @@ export function showLanding(choose: LandingChoice): void {
     el("p", { className: "ld-blurb", textContent: "Players split between blue and red, with bots filling out both teams." }),
     field("Name", name),
     field("Server", server),
+    passwordField,
     status,
     join,
   );

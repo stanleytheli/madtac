@@ -21,6 +21,7 @@ import { TacOracle, type TacOracleOptions } from "./tacoracle.ts";
 import { DominationOracle } from "./domoracle.ts";
 import { TEAMS, type TeamId } from "../entities/team.ts";
 import { vec, type Vec2 } from "../engine/vec.ts";
+import { registry } from "../engine/registry.ts";
 
 export interface EnemyTypeDef {
   /** Human-readable name (editor palette / inspector dropdown). */
@@ -37,7 +38,7 @@ export interface EnemyTypeDef {
  *  ROBOT_DEFAULTS.gun in robot.ts. */
 export const DEFAULT_ENEMY_GUN = "M16";
 
-export const ENEMY_TYPES: Record<string, EnemyTypeDef> = {
+export const ENEMY_TYPES: Record<string, EnemyTypeDef> = registry<EnemyTypeDef>({
   robot: {
     label: "Robot",
     options: {},
@@ -62,14 +63,14 @@ export const ENEMY_TYPES: Record<string, EnemyTypeDef> = {
     make: (pos, opts) => new TacOracle(pos, opts),
     color: "#d9a441",
   },
-};
+});
 
 /** Pre-loadout type names from old level strings, mapped onto the new
  *  type + per-spawn gun scheme so those levels keep loading. */
-export const LEGACY_ENEMY_TYPES: Record<string, { type: string; gun?: string }> = {
+export const LEGACY_ENEMY_TYPES: Record<string, { type: string; gun?: string }> = registry({
   grunt: { type: "robot", gun: "M16" },
   pistol: { type: "robot", gun: "M9" },
-};
+});
 
 /** Options for a gamemode-generated combatant (see makeTroop). Unlike an
  *  EnemySpawn these carry the fine AI knobs a gamemode derives from "skill". */

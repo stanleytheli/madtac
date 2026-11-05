@@ -107,6 +107,7 @@ export class NetSession implements Session {
   private ws: WebSocket | null = null;
   private readonly url: string;
   private readonly name: string;
+  private readonly password: string | undefined;
   private token: string | null;
   private myId = 0;
   private snapMs = 1000 / DEFAULT_SNAP_HZ;
@@ -140,13 +141,15 @@ export class NetSession implements Session {
   private lastPingAt = 0;
   private reconnectTimer: number | null = null;
 
-  /** `host` is "host:port" or a full ws:// URL; `name` is what to join as.
-   *  `connect` = false builds the mirror without a socket (a headless test
-   *  feeds it messages through receive()). */
-  constructor(host: string, name: string, connect = true) {
+  /** `host` is "host:port" or a full ws:// URL; `name` is what to join as;
+   *  `password` the server's join password, if it has one. `connect` = false
+   *  builds the mirror without a socket (a headless test feeds it messages
+   *  through receive()). */
+  constructor(host: string, name: string, connect = true, password?: string) {
     const secure = typeof location !== "undefined" && location.protocol === "https:";
     this.url = serverUrls(host, secure).ws;
     this.name = name;
+    this.password = password || undefined;
     this.token = typeof sessionStorage !== "undefined" ? sessionStorage.getItem(`madtac.token.${this.url}`) : null;
     // A placeholder world and player until the welcome brings the real level,
     // so the renderer has something to draw on the first frames.
@@ -162,7 +165,7 @@ export class NetSession implements Session {
     const ws = new WebSocket(this.url);
     this.ws = ws;
     ws.onopen = () => {
-      this.send({ t: "join", protocol: PROTOCOL, name: this.name, token: this.token ?? undefined });
+      this.send({ t: "join", protocol: PROTOCOL, name: this.name, token: this.token ?? undefined, password: this.password });
     };
     ws.onmessage = (ev) => {
       let msg: ServerMsg;

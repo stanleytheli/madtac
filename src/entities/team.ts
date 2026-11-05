@@ -9,6 +9,8 @@
  * enemy inspector (the team field's options are read from this registry).
  */
 
+import { registry } from "../engine/registry.ts";
+
 export type TeamId = string;
 
 export interface Team {
@@ -21,7 +23,7 @@ export interface Team {
   hostile: readonly TeamId[];
 }
 
-export const TEAMS: Record<TeamId, Team> = {
+export const TEAMS: Record<TeamId, Team> = registry<Team>({
   player: { id: "player", label: "Player", color: "#4a9de0", hostile: ["enemy"] },
   ally: { id: "ally", label: "Allies", color: "#3dba6f", hostile: ["enemy"] },
   enemy: { id: "enemy", label: "Enemy", color: "#c94f4f", hostile: ["player", "ally"] },
@@ -30,7 +32,7 @@ export const TEAMS: Record<TeamId, Team> = {
   // player/ally/enemy so sandbox levels are unaffected.
   blue: { id: "blue", label: "Blue", color: "#4a9de0", hostile: ["red"] },
   red: { id: "red", label: "Red", color: "#c94f4f", hostile: ["blue"] },
-};
+});
 
 /** Does team `a` attack team `b`? Unknown teams are hostile to no one. */
 export function areHostile(a: TeamId, b: TeamId): boolean {

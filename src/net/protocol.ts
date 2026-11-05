@@ -72,14 +72,17 @@ export interface ServerInfo {
   tick: number;
   protocol: number;
   path: string;
+  /** Joining takes a password. */
+  locked?: boolean;
 }
 
 // ------------------------------------------------------- client -> server ----
 
 export type ClientMsg =
   /** First message on a socket. `token` re-attaches to a slot the server is
-   *  still holding for a dropped connection (see WelcomeMsg.token). */
-  | { t: "join"; protocol: number; name: string; token?: string }
+   *  still holding for a dropped connection (see WelcomeMsg.token);
+   *  `password` is the server's join password, when it has one. */
+  | { t: "join"; protocol: number; name: string; token?: string; password?: string }
   /** The player's intent for the coming tick(s). `seq` climbs by one per
    *  message and comes back in snapshots, so the client can measure lag. */
   | { t: "input"; seq: number; in: PlayerInput }
@@ -359,4 +362,84 @@ export function mergeInputs(a: PlayerInput, b: PlayerInput): PlayerInput {
     debugDamage: a.debugDamage || b.debugDamage,
     debugHeal: a.debugHeal || b.debugHeal,
   };
+}
+
+// ------------------------------------------------------- strict parsing -----
+
+/** Longest strings a client may send: a name (the server keeps 24 chars), a
+ *  reconnect token (24 hex chars), a join password, a spec key. */
+const MAX_NAME = 64;
+const MAX_TOKEN = 64;
+const MAX_PASSWORD = 128;
+const MAX_KEY = 40;
+
+/** Every PlayerInput field, and nothing else. */
+const INPUT_KEYS: readonly string[] = [
+  "move", "aim", "fire", "firePressed", "reload", "equip", "cancel",
+  "interact", "drop", "dropHud", "restart", "debugDamage", "debugHeal",
+];
+const INPUT_FLAGS: readonly string[] = [
+  "fire", "firePressed", "reload", "cancel", "interact", "drop", "restart", "debugDamage", "debugHeal",
+];
+
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+/** Every key of `o` is one of `allowed` (JSON.parse makes "__proto__" an own
+ *  key, so it is caught here like any other stranger). */
+const onlyKeys = (o: Obj, allowed: readonly string[]): boolean => Object.keys(o).every((k) => allowed.includes(k));
+const isStr = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
+const optStr = (v: unknown, max: number): boolean => v === undefined || isStr(v, max);
+const isNum = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const isVec = (v: unknown): boolean => isObj(v) && onlyKeys(v, ["x", "y"]) && isNum(v.x) && isNum(v.y);
+
+/** A PlayerInput's shape: only its fields, each of its type. (The values are
+ *  then bounded by sanitizeInput.) */
+function isInput(v: unknown): boolean {
+  if (!isObj(v) || !onlyKeys(v, INPUT_KEYS)) return false;
+  if (v.move !== undefined && !isVec(v.move)) return false;
+  if (v.aim !== undefined && !isVec(v.aim)) return false;
+  for (const k of INPUT_FLAGS) if (v[k] !== undefined && typeof v[k] !== "boolean") return false;
+  for (const k of ["equip", "dropHud"]) if (v[k] !== undefined && v[k] !== null && !isStr(v[k], MAX_KEY)) return false;
+  return true;
+}
+
+/**
+ * A client message from parsed JSON, or null if it is anything but exactly
+ * one of the shapes in ClientMsg: a known `t`, only that message's fields,
+ * each of the right type and within its length. The server treats null as a
+ * reason to hang up, so nothing past this point sees a field it didn't expect.
+ */
+export function parseClientMsg(raw: unknown): ClientMsg | null {
+  if (!isObj(raw)) return null;
+  switch (raw.t) {
+    case "join":
+      if (!onlyKeys(raw, ["t", "protocol", "name", "token", "password"])) return null;
+      if (!isNum(raw.protocol) || !isStr(raw.name, MAX_NAME)) return null;
+      if (!optStr(raw.token, MAX_TOKEN) || !optStr(raw.password, MAX_PASSWORD)) return null;
+      return {
+        t: "join", protocol: raw.protocol, name: raw.name,
+        token: raw.token as string | undefined, password: raw.password as string | undefined,
+      };
+    case "input":
+      if (!onlyKeys(raw, ["t", "seq", "in"]) || !isNum(raw.seq) || !isInput(raw.in)) return null;
+      return { t: "input", seq: raw.seq, in: sanitizeInput(raw.in) };
+    case "loadout": {
+      const l = raw.loadout;
+      if (!onlyKeys(raw, ["t", "loadout"]) || !isObj(l) || !onlyKeys(l, ["primary", "secondary", "armor"])) return null;
+      if (!optStr(l.primary, MAX_KEY) || !optStr(l.secondary, MAX_KEY) || !optStr(l.armor, MAX_KEY)) return null;
+      return {
+        t: "loadout",
+        loadout: { primary: l.primary as string | undefined, secondary: l.secondary as string | undefined, armor: l.armor as string | undefined },
+      };
+    }
+    case "ping":
+      if (!onlyKeys(raw, ["t", "at"]) || !isNum(raw.at)) return null;
+      return { t: "ping", at: raw.at };
+    case "random":
+    case "respawn":
+    case "leave":
+      return onlyKeys(raw, ["t"]) ? { t: raw.t } : null;
+    default:
+      return null;
+  }
 }
