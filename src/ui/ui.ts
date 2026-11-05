@@ -441,6 +441,13 @@ export interface HudOptions {
  *  up; nudging it moves the column as a unit. */
 const HUD_MARGIN = 24;
 
+/** The low-health overlay: a blood blur around the screen's edges (transparent
+ *  in the middle), stretched to the screen. It fades in from nothing at
+ *  LOW_HP_START hp to LOW_HP_MAX_ALPHA at 0, linearly. */
+const LOW_HP_IMAGE = "Blood_Blur_1_edited.png";
+const LOW_HP_START = 75;
+const LOW_HP_MAX_ALPHA = 1.0;
+
 /**
  * Draw the whole screen-space HUD: pickup prompt, the bottom health bar with the
  * ammo readout above it, the crosshair (at the mouse) with the reload/draw timer
@@ -459,6 +466,16 @@ export function drawHud(ctx: CanvasRenderingContext2D, o: HudOptions): void {
   const h = o.h / UI_SCALE;
   const center = { x: o.center.x / UI_SCALE, y: o.center.y / UI_SCALE };
   const mouse = { x: o.mouse.x / UI_SCALE, y: o.mouse.y / UI_SCALE };
+
+  // Low-health blood, under every other HUD element. Asked for every frame so the
+  // (large) image is already decoded by the time it's first needed.
+  const bloodImg = assetImage(LOW_HP_IMAGE);
+  const bloodAlpha = LOW_HP_MAX_ALPHA * Math.min(1, Math.max(0, 1 - player.hp / LOW_HP_START));
+  if (bloodImg && bloodAlpha > 0) {
+    ctx.globalAlpha = bloodAlpha;
+    ctx.drawImage(bloodImg, 0, 0, w, h);
+    ctx.globalAlpha = 1;
+  }
 
   // Interaction prompts, just above the player (who is at screen center). The
   // pickup (E) prompt and the cancel (X) prompt can both be live at once — a

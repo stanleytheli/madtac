@@ -24,7 +24,7 @@ export function spawnEffects(w: World): void {
   for (const e of w.events) {
     if (e.kind === "particles") spawnParticles(w.particles, e.pos, e.dir, e.burst, e.z, e.heft);
     else if (e.kind === "decal") stampBulletHole(w.decals, e.near, e.on, e.z, e.heft);
-    else if (e.kind === "scorch") stampScorch(w.scorches, w.floors, e.pos, e.z, e.size, e.opacity);
+    else if (e.kind === "scorch") stampScorch(w.scorches, w.floors, w.stairs, e.pos, e.z, e.size, e.opacity);
   }
 }
 
