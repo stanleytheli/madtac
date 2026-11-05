@@ -41,7 +41,7 @@ import { circleIntersectsObstacle } from "../src/engine/collision.ts";
 import { BODY_RADIUS } from "../src/entities/character.ts";
 
 const emptyWorld = (): World => ({
-  obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+  obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
 });
 
 const T = 26; // wall thickness

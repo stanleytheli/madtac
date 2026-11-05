@@ -21,6 +21,7 @@ import type { ArmorPen, GunSpec } from "../entities/guns.ts";
 import { add, deg2rad, dist, len, norm, rotate, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import type { Decal } from "../engine/decal.ts";
 import type { Scorch } from "../engine/scorch.ts";
+import type { BloodSplat } from "../engine/bloodsplat.ts";
 import { emitSound, type GameEvent } from "../engine/events.ts";
 import type { SoundRef } from "../engine/audio.ts";
 import { METAL_HIT_SOUND, OBSTACLE_HIT_SOUND, WOOD_HIT_SOUND } from "./hitsounds.ts";
@@ -570,6 +571,7 @@ export interface World {
   particles: Particle[];
   decals: Decal[];
   scorches: Scorch[]; // blast marks on the floors (same ownership as decals)
+  bloodSplats: BloodSplat[]; // hits' blood on the floors (likewise)
   /** What happened this tick, for whoever runs the sim to react to: sounds,
    *  impacts, hits. Cleared at the start of every Game.update (see engine/events.ts). */
   events: GameEvent[];
@@ -602,6 +604,12 @@ function emitParticles(w: World, pos: Vec2, dir: Vec2, burst: ParticleBurst, z =
  *  client stamps the decal — see stampBulletHole). */
 function emitDecal(w: World, near: Vec2, on: Obstacle, z: number, heft = 1): void {
   w.events.push({ kind: "decal", near, on, z, heft });
+}
+
+/** Blood on the ground for a hit of raw `damage` that landed at `at`, sprayed
+ *  along `dir`, as an event (the client stamps it — see stampBloodSplatter). */
+function emitBlood(w: World, at: Vec2, dir: Vec2, z: number, damage: number): void {
+  w.events.push({ kind: "blood", pos: at, dir, z, damage });
 }
 
 /** Damage landed: say who was hit and by whom. The client turns this into its
@@ -938,7 +946,7 @@ export function createWorld(): World {
     N(-220, 480), N(120, 480, -1), N(280, 480, -1),
   ];
 
-  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [] };
+  const world: World = { obstacles, floors, stairs, nodes, items: [], vehicles: [], bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [] };
   sortRenderDepth(world); // bake the render order once (all default depths here)
   return world;
 }
@@ -1242,7 +1250,8 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         if (t === b.owner || t.z !== b.z) continue;
         if (dist(sample, t.pos) < BODY_RADIUS) {
           // A round that came through a wall arrives with less left in it.
-          t.registerHit(fwd, sample, b.damage * wallbangDamageMul(b), b.armorPen, b.owner, b.gun, {
+          const damage = b.damage * wallbangDamageMul(b);
+          t.registerHit(fwd, sample, damage, b.armorPen, b.owner, b.gun, {
             throughWall: (b.penUsed || 0) > 0, // came through a wall: the feed says so
             noscope: b.noscope,
           });
@@ -1252,6 +1261,8 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           // Blood scales with the round like everything else, but floored: it is
           // the only sign you connected, so a tracerless punch still shows one.
           emitParticles(w, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit));
+          // ...and leaves some on the ground, sprayed on the way the round was going.
+          emitBlood(w, at, fwd, b.z, damage);
           consumed = true;
           break;
         }
@@ -1328,6 +1339,7 @@ export function meleeSwing(
     hitFeedback(w, struck, owner);
     emitParticles(w, at, scale(dir, -1), BLOOD, owner.z,
       Math.max(BLOOD_MIN_HEFT, opts.heft));
+    emitBlood(w, at, dir, owner.z, opts.damage);
     return true;
   }
 
@@ -1473,14 +1485,10 @@ export function explode(
     // Blood off the side facing the blast, thrown back toward it — the same way a
     // bullet's sprays back toward the shooter — and sized by what it actually did.
     const toBlast = scale(dir, -1);
-    emitParticles(
-      w,
-      add(t.pos, scale(toBlast, BODY_RADIUS)),
-      toBlast,
-      BLOOD,
-      z,
-      blastBloodHeft(dealt),
-    );
+    const facing = add(t.pos, scale(toBlast, BODY_RADIUS));
+    emitParticles(w, facing, toBlast, BLOOD, z, blastBloodHeft(dealt));
+    // On the ground it sprays outward from the blast, the way it threw the body.
+    emitBlood(w, facing, dir, z, dealt);
     // Anyone the blast damaged at all (any distance in range, any sliver of
     // visibility) is staggered — this is past the frac<=0 / v===0 discards above.
     if (stagger) t.applyStagger?.(stagger.mul, stagger.ticks);

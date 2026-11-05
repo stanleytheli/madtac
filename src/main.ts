@@ -26,6 +26,7 @@ import { ALL_GUN_SPECS } from "./entities/specs.ts";
 import { drawParticles } from "./engine/particle.ts";
 import { drawDecals } from "./engine/decal.ts";
 import { drawScorches, SCORCH_IMAGE } from "./engine/scorch.ts";
+import { BLOOD_SPLAT_IMAGES, drawBloodSplats } from "./engine/bloodsplat.ts";
 import { SoundPlayer, spawnEffects, tickCosmetics } from "./engine/effects.ts";
 import { ClientView } from "./ui/view.ts";
 import { LocalSession, type Session } from "./ui/session.ts";
@@ -1204,6 +1205,13 @@ function render(): void {
         // the walls they ran up against included. Both passes, like the floor.
         const scorchImg = world.scorches.length ? assetImage(SCORCH_IMAGE) : null;
         if (scorchImg) drawScorches(ctx, world.scorches, scorchImg, z, pointInView);
+
+        // Blood on the ground, over the burns and under everything standing in
+        // it — corpses included. Live only, like an enemy's corpse: it gives away
+        // that someone was hit there.
+        if (live && world.bloodSplats.length) {
+          drawBloodSplats(ctx, world.bloodSplats, BLOOD_SPLAT_IMAGES.map(assetImage), z, pointInView);
+        }
 
         // Objective rings are painted ON the ground, so they go under everything
         // that stands on it — corpses included.

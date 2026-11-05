@@ -18,7 +18,7 @@ import { norm, sub, vec, add, scale, dist } from "../src/engine/vec.ts";
 function world(obstacles: any[] = []): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
   } as any;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;

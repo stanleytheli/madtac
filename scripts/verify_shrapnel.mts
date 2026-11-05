@@ -159,7 +159,7 @@ console.log("\nshooting one: a real bullet into a wall set to `sparks`:");
 function shootInto(o: Obstacle, tracerWidth = SHRAPNEL_TRACER_WIDTH): Particle[] {
   const w: World = {
     obstacles: [o], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
   } as unknown as World;
   (w as any).grid = new ObstacleGrid(w.obstacles);
   const pen = { l1: 1, l2: 1, l3: 1, l4: 1 };
@@ -372,7 +372,7 @@ console.log("\nblood scales with the round, but never to nothing:");
   const shootAt = (tracerWidth: number): Particle[] => {
     const w: World = {
       obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-      bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+      bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
     } as unknown as World;
     const target = dummy(vec(0, 0));
     const pen = { l1: 1, l2: 1, l3: 1, l4: 1 };
@@ -467,7 +467,7 @@ console.log("\nexplosions draw blood, sized by what they did:");
   const hurt = (at: Vec2, damage: number, radius = 250) => {
     const w: World = {
       obstacles: [], floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-      bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+      bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
     } as unknown as World;
     const took: number[] = [];
     const victim = {

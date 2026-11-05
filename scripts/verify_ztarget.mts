@@ -40,7 +40,7 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 const world = (obstacles: any[] = []): World => {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
   } as unknown as World;
   (w as any).grid = new ObstacleGrid(obstacles);
   return w;

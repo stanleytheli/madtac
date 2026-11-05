@@ -261,6 +261,9 @@ export class ClientMirror {
         if (!e.pos || near(e.pos)) wire.push(e);
       } else if (e.kind === "particles") {
         if (seen(e.pos, e.z)) wire.push(e);
+      } else if (e.kind === "blood") {
+        // For the eyes, like the puff that came with it: it says someone was hit.
+        if (seen(e.pos, e.z)) wire.push(e);
       } else if (e.kind === "scorch") {
         // In earshot, like the boom that came with it: it tells no more than the
         // sound did, and the mark is there to find once you walk over to it.

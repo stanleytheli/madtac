@@ -33,7 +33,7 @@ const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 function world(obstacles: Obstacle[]): World {
   const w: World = {
     obstacles, floors: [], stairs: [], nodes: [], items: [], vehicles: [],
-    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], events: [],
+    bullets: [], projectiles: [], particles: [], decals: [], scorches: [], bloodSplats: [], events: [],
   } as unknown as World;
   if (obstacles.length) (w as any).grid = new ObstacleGrid(obstacles);
   return w;
