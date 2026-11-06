@@ -19,8 +19,11 @@ import type { Obstacle } from "../world/world.ts";
 export type GameEvent =
   /** A one-shot sound. `pos`/`z` place it in the world; omitted = flat, in the
    *  listener's ears. `voice` names an ONGOING sound (a reload clip, a bolt
-   *  cycle) so a later `stopSound` can cut it short — e.g. "reload:<gun id>". */
-  | { kind: "sound"; sound: SoundRef; pos?: Vec2; z?: number; pitchVar?: number; voice?: string }
+   *  cycle) so a later `stopSound` can cut it short — e.g. "reload:<gun id>".
+   *  `by` is the character whose own action made it (a shot, a reload, a
+   *  footstep): a networked client that plays its own player's actions the
+   *  moment they happen skips the server's copy of those. */
+  | { kind: "sound"; sound: SoundRef; pos?: Vec2; z?: number; pitchVar?: number; voice?: string; by?: number }
   /** Cut a named ongoing sound short (see `voice` above). */
   | { kind: "stopSound"; voice: string }
   /** Damage landed on `victim` from `attacker` (entity ids; null = no one, e.g.
@@ -41,7 +44,7 @@ export type GameEvent =
 export function emitSound(
   events: GameEvent[],
   sound: SoundRef,
-  opts: { pos?: Vec2; z?: number; pitchVar?: number; voice?: string } = {},
+  opts: { pos?: Vec2; z?: number; pitchVar?: number; voice?: string; by?: number } = {},
 ): void {
   events.push({ kind: "sound", sound, ...opts });
 }

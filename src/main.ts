@@ -241,6 +241,9 @@ if (EDIT) {
 // The match this client draws and drives, from the local human's point of
 // view (see ui/session.ts): the Game in this process, or null in the editor.
 let session: Session | null = game ? new LocalSession(game) : net;
+// Development builds only (compiled out of production): a handle on the live
+// session for a test driving the page.
+if (import.meta.env.DEV) (window as unknown as { __madtac: object }).__madtac = { session: () => session };
 let world = session ? session.world : loaded.world;
 let player = session ? session.player : editorPlayer!;
 let characters = session ? session.characters : [editorPlayer!];

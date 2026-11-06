@@ -555,7 +555,7 @@ export class Character {
       this.gun.reloadPulse = false;
       if (this.gun.spec.reloadSound) {
         // Named by the gun's voice so an abort can stop it — see Gun.reloadVoice.
-        emitSound(this.events, this.gun.spec.reloadSound, { pos: this.pos, z: this.z, voice: this.gun.reloadVoice });
+        emitSound(this.events, this.gun.spec.reloadSound, { pos: this.pos, z: this.z, voice: this.gun.reloadVoice, by: this.id });
       }
     }
   }
@@ -576,6 +576,13 @@ export class Character {
       this.regenTicks -= 1;
       this._heal(this.regenRate);
     }
+    this.tickStagger();
+  }
+
+  /** Count a stagger down (part of tickStatus). On its own for a networked
+   *  client predicting its player's movement, which needs the slowdown to wear
+   *  off on time but must leave healing to the server. */
+  tickStagger(): void {
     if (this.staggerTicks > 0) {
       this.staggerTicks -= 1;
       if (this.staggerTicks === 0) this.staggerMul = 1; // effect over: back to full speed

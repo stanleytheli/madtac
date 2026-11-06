@@ -27,7 +27,7 @@ import type { DeathMark } from "../ui/minimap.ts";
 import { vec } from "../engine/vec.ts";
 
 /** Bumped whenever a message shape changes; a mismatch is rejected at join. */
-export const PROTOCOL = 2;
+export const PROTOCOL = 3;
 /** Sim ticks per second, both sides. */
 export const SIM_HZ = 60;
 /** Snapshots per second the server sends by default (every other tick). */
@@ -83,8 +83,10 @@ export type ClientMsg =
    *  still holding for a dropped connection (see WelcomeMsg.token);
    *  `password` is the server's join password, when it has one. */
   | { t: "join"; protocol: number; name: string; token?: string; password?: string }
-  /** The player's intent for the coming tick(s). `seq` climbs by one per
-   *  message and comes back in snapshots, so the client can measure lag. */
+  /** The player's intent for one tick: sent every client tick, `seq` climbing
+   *  by one each time. The server applies exactly one per tick, in order, and
+   *  each snapshot names the last it applied (SnapMsg.seq): what lets a client
+   *  predict its own player and replay the rest (see net/client.ts). */
   | { t: "input"; seq: number; in: PlayerInput }
   /** Respawn-screen picks (see Gamemode.setPlayerLoadout / randomize / respawn). */
   | { t: "loadout"; loadout: PlayerLoadout }
@@ -163,6 +165,23 @@ export interface MeSnap {
   label: string | null;
   item: number | null;
   seat: { vh: number; st: number } | null;
+  /** Our own character as of the last input the server applied (SnapMsg.seq):
+   *  where a predicting client rewinds to before replaying the inputs it has
+   *  sent since. Position (0.01 px) and velocity (0.001 px/tick), level,
+   *  stagger (ticks left, speed factor), the slot in hand, the held gun's fire
+   *  cooldown / reload / draw ticks, and the utility use ticks left. */
+  px: number;
+  py: number;
+  vx: number;
+  vy: number;
+  pz: number;
+  stg: number;
+  stm: number;
+  sl: EquipSlot;
+  co: number;
+  re: number;
+  dr: number;
+  us: number;
 }
 
 /** A ground item, sent when it appears or moves. `ag` is its age when sent;
@@ -220,6 +239,8 @@ export interface BulletSnap {
   ra?: number;
   ox?: number;
   oy?: number;
+  /** 1 = this client's own round (drawn without the interpolation delay). */
+  o?: 1;
 }
 
 /** A projectile in flight, like a BulletSnap: its look only the first time
@@ -239,6 +260,8 @@ export interface ProjSnap {
   tc?: string;
   sp?: string;
   ss?: number;
+  /** 1 = this client's own (see BulletSnap.o). */
+  o?: 1;
 }
 
 /** A GameEvent as sent: a decal names its obstacle by index into the level's
@@ -253,7 +276,8 @@ export type WireFeed = Omit<KillFeedEntry, "gun"> & { gun: string | null };
 export interface SnapMsg {
   t: "snap";
   tick: number;
-  /** The last input seq the server had applied when this was built. */
+  /** The last input seq the server had applied when this was built (MeSnap's
+   *  own state is as of that input). */
   seq: number;
   chars: CharSnap[];
   /** Characters this client was shown before and can't see now. */

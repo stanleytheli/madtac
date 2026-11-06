@@ -5,22 +5,38 @@
  * / GroundItem / Vehicle classes as the local game, so the renderer draws it
  * without knowing; their ids are the SERVER's, so events name them correctly.
  *
- * survev-style: no prediction of movement. The local player is drawn at the
- * server's position like everyone else, one snapshot interval behind,
- * interpolated between the last two snapshots (see interpolate). Its FACING is
- * the exception: the server sets it straight from the aim we send, so while we
- * are in control we draw our own aim the moment the mouse moves rather than a
- * round trip later. Rounds are extrapolated per tick from their last known
- * velocity and stopped by the local geometry, and dropped the moment a
- * snapshot no longer lists them.
+ * Two clocks, the way shooters do it:
+ *
+ * EVERYONE ELSE is drawn a little in the past, on the server's clock. Each
+ * snapshot is stamped with its tick; it is held in a buffer and applied when
+ * render time reaches that tick, and characters and vehicles are interpolated
+ * between it and the next one. Render time runs `delay` behind the newest
+ * snapshot, enough to cover the gap to the next plus however unevenly they have
+ * been arriving (measured as it goes), so a late or an early packet changes
+ * nothing on screen. Rounds fly on the same clock (linear from their last
+ * position), and the world's events — shots, impacts, blood, footsteps — play
+ * when render time reaches them, so a muzzle flash and its tracer line up with
+ * the shooter you see. Our own rounds are drawn without the delay.
+ *
+ * OUR OWN PLAYER is drawn in the present, predicted. Every tick we send one
+ * input (numbered) and run it here at once through the same steps the server
+ * will (a weapon switch, a reload, walking against the same walls and stairs
+ * in world/locomotion.ts, the gun's timers, the trigger as Gun.fireCosmetic:
+ * flash, kick, sound, ammo), so moving and shooting answer the keys
+ * immediately. Each snapshot says which of our inputs the server has applied
+ * and where that left us (MeSnap): we rewind to that, replay the inputs it
+ * hasn't seen yet, and if the result differs from what we showed (a shove, a
+ * hit's stagger) the difference is melted away over a few ticks rather than
+ * jumped. The server's copies of the sounds we already played are skipped
+ * (`by`). Seated in a vehicle, dead, or with the match decided, we are drawn
+ * from the snapshots like everyone else.
  *
  * The server leaves out what we already know (see net/protocol.ts): a standing
  * character, a round's look after its first listing, and ages. So a mirror
- * keeps its last pose until told otherwise, the look of each round in flight
- * is cached by id, and corpses, drops, feed lines and death marks are aged
- * here by the server ticks between snapshots.
+ * keeps its last pose until told otherwise, the look of each round is cached
+ * by id, and corpses, drops, feed lines and death marks are aged here.
  */
-import { Character } from "../entities/actor.ts";
+import { Character, type EquipSlot } from "../entities/actor.ts";
 import { Armor } from "../entities/armor.ts";
 import { Body } from "../entities/body.ts";
 import { DEFAULT_SKIN } from "../entities/character.ts";
@@ -34,50 +50,117 @@ import { VEHICLE_SPECS } from "../entities/vehicles.ts";
 import { ObstacleGrid } from "../engine/collision.ts";
 import type { PlayerInput } from "../engine/command.ts";
 import type { GameEvent } from "../engine/events.ts";
-import { add, vec, type Vec2 } from "../engine/vec.ts";
+import { add, len, scale, sub, vec, type Vec2 } from "../engine/vec.ts";
 import type { GamemodeHud, KillFeedEntry, PlayerLoadout, PlayerRow } from "../gamemodes/gamemode.ts";
 import type { DeathMark } from "../ui/minimap.ts";
 import type { RespawnHost, Session } from "../ui/session.ts";
 import { loadLevel, type LevelMeta } from "../world/level.ts";
+import { footsteps, stairDirAt, walk } from "../world/locomotion.ts";
 import type { Bullet, Projectile, World } from "../world/world.ts";
 import {
   DEFAULT_SNAP_HZ,
   PROTOCOL,
+  SIM_HZ,
   serverUrls,
+  type BulletSnap,
   type CharFull,
   type CharSnap,
   type ClientMsg,
+  type MeSnap,
+  type ProjSnap,
   type ServerMsg,
   type SnapMsg,
+  type VehicleSnap,
   type WelcomeMsg,
 } from "./protocol.ts";
 
-/** Send the held input state at least this often even when unchanged (ticks),
- *  so a dropped message can't leave a key stuck on the server. */
-const INPUT_KEEPALIVE_TICKS = 6;
 /** How often the RTT is measured (ms). */
 const PING_MS = 2000;
 /** Retry a dropped connection after this long (ms). */
 const RECONNECT_MS = 1500;
+const TICK_MS = 1000 / SIM_HZ;
+
+// --- the delayed clock --------------------------------------------------------
+/** The interpolation delay is one snapshot interval plus a margin for uneven
+ *  arrival: JITTER_MARGIN times the average lateness, at least MIN_MARGIN_MS,
+ *  and never past MAX_DELAY_MS in all. */
+const JITTER_MARGIN = 2.5;
+const MIN_MARGIN_MS = 10;
+const MAX_DELAY_MS = 250;
+/** The clock follows the fastest arrivals: a faster one moves it at once, and
+ *  otherwise it creeps this fraction per snapshot toward the latest, so drift
+ *  between the two machines' clocks (or a slower route) is followed too. */
+const CLOCK_CREEP = 0.01;
+/** Smoothing of the average lateness, per snapshot. */
+const LATENESS_EASE = 0.05;
+/** Render time runs at real speed and is steered toward where the clock says
+ *  it should be by this fraction of the gap per frame, so a new estimate never
+ *  jolts what is drawn; more than RENDER_JUMP_TICKS off (a restart, a tab
+ *  coming back) and it jumps. */
+const RENDER_STEER = 0.02;
+const RENDER_JUMP_TICKS = 10;
+/** Applied this many ticks behind render time, a snapshot is stale (a
+ *  backgrounded tab catching up): its events are dropped, not played in a heap. */
+const STALE_TICKS = 30;
+/** The server's tick count going back this far means the match restarted. */
+const RESTART_TICKS = 60;
+
+// --- prediction ---------------------------------------------------------------
+/** Inputs kept for replay at most (2 s): beyond this the server isn't hearing us. */
+const MAX_PENDING = 120;
+/** A correction bigger than this (px) is a jump (a respawn, a vehicle shove),
+ *  not drift: taken at once. */
+const SNAP_DIST = 80;
+/** Fraction of a correction still showing after each tick (gone in ~100 ms). */
+const SMOOTH_KEEP = 0.85;
 
 const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 
-/** Where a mirror was and is going, for interpolation. `f` = facing angle. */
+/** A pose as of the last applied snapshot. `f` = facing angle. */
 interface Pose {
   x: number;
   y: number;
   f: number;
 }
+/** A vehicle's pose likewise. */
+interface VehiclePose {
+  x: number;
+  y: number;
+  a: number;
+  ta: number[];
+}
 
 /** How a round in flight looks, from its first listing (see BulletSnap). */
 type BulletLook = Pick<Bullet, "tracerWidth" | "tracerLength" | "tracerColor" | "renderAfter" | "origin">;
 type ProjLook = Pick<Projectile, "renderAfter" | "origin" | "bodyRadius" | "color" | "trailColor" | "sprite" | "spriteScale">;
-interface Track {
-  from: Pose;
-  to: Pose;
-  /** When `to` arrived (ms); the mirror reads from->to over one snapshot interval after it. */
-  at: number;
+/** A round in flight: what is drawn, and where it was at which server tick,
+ *  from which it flies on in a straight line. `own` = ours, drawn on the
+ *  present clock rather than the delayed one. */
+interface Round<T> {
+  r: T;
+  tick: number;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  own: boolean;
 }
+
+/** A received snapshot waiting for render time, with its characters and
+ *  vehicles by id for the interpolation to look ahead into. */
+interface Buffered {
+  m: SnapMsg;
+  chars: Map<number, CharSnap>;
+  vehicles: Map<number, VehicleSnap>;
+}
+
+const angleLerp = (a: number, b: number, t: number): number => {
+  let d = b - a;
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+};
+const PREDICTED_SLOTS: readonly EquipSlot[] = ["primary", "secondary", "hand"];
 
 export type NetStatus = "connecting" | "connected" | "reconnecting" | "rejected" | "left";
 
@@ -86,12 +169,11 @@ export class NetSession implements Session {
   player: Character;
   readonly characters: Character[] = [];
   readonly bodies: Body[] = [];
+  /** The server tick of the last snapshot applied (the delayed clock). */
   tick = 0;
   controllable = false;
   killFeed: KillFeedEntry[] = [];
   minimapDeaths: DeathMark[] = [];
-  interactable: GroundItem | null = null;
-  enterable: { vehicle: Vehicle; seat: number } | null = null;
 
   /** The match's meta (mode, sight mask, minimap size), from the welcome. */
   meta: LevelMeta | null = null;
@@ -103,6 +185,9 @@ export class NetSession implements Session {
   ping = 0;
   /** Why the server refused us, if it did. */
   rejectReason = "";
+  /** Where outgoing messages go instead of the socket, if set (a headless
+   *  test carrying them to a server itself). */
+  outbox: ((msg: ClientMsg) => void) | null = null;
 
   private ws: WebSocket | null = null;
   private readonly url: string;
@@ -116,30 +201,49 @@ export class NetSession implements Session {
   private hudHead: GamemodeHud | null = null;
   private hudPlayers: PlayerRow[] | null = null;
   private hudState: GamemodeHud | null = null;
-  /** The aim we last sent: our own facing while we are in control. */
-  private aim: Vec2 | null = null;
   private label: string | null = null;
+  private interactableId: number | null = null;
+  private seat: { vh: number; st: number } | null = null;
   private view = { zoom: 1, spread: 0, cone: 360 };
   private grid: ObstacleGrid | null = null;
-  private readonly tracks = new Map<number, Track>();
   private readonly mirrors = new Map<number, Character>();
   private readonly bodyById = new Map<number, Body>();
   private readonly itemById = new Map<number, GroundItem>();
   private readonly vehicleById = new Map<number, Vehicle>();
-  private readonly bulletById = new Map<number, Bullet>();
-  private readonly projById = new Map<number, Projectile>();
-  /** The look of every round the last snapshot listed, kept even after the
-   *  local geometry stopped one (a wallbang the server says flies on). */
+  private readonly bullets = new Map<number, Round<Bullet>>();
+  private readonly projs = new Map<number, Round<Projectile>>();
+  /** The look of every round we've been told about and still draw. */
   private readonly bulletLook = new Map<number, BulletLook>();
   private readonly projLook = new Map<number, ProjLook>();
-  /** Events from snapshots, waiting for the next step() to hand them to the
-   *  effects pipeline in world.events. */
+  /** Events waiting for the next step() to hand them to the effects pipeline. */
   private pendingEvents: GameEvent[] = [];
-  private seq = 0;
-  private lastSent: string | null = null;
-  private sinceSent = 0;
   private lastPingAt = 0;
   private reconnectTimer: number | null = null;
+
+  // The delayed clock (see the file comment).
+  private readonly buffer: Buffered[] = [];
+  /** performance.now() minus server time, from the fastest recent arrivals. */
+  private clockOffset: number | null = null;
+  /** Average lateness of a snapshot past the fastest (ms). */
+  private lateness = 0;
+  private lastReceivedTick = -1;
+  /** Render time (server ticks) and the wall time it was last advanced to. */
+  private renderAt: number | null = null;
+  private renderNow = 0;
+  /** Poses as of the last applied snapshot, interpolated from toward the next. */
+  private readonly poses = new Map<number, Pose>();
+  private readonly vehiclePoses = new Map<number, VehiclePose>();
+
+  // Prediction (see the file comment).
+  private seq = 0;
+  /** Inputs sent and not yet applied by the server, oldest first. */
+  private pending: { seq: number; input: PlayerInput }[] = [];
+  private predicting = false;
+  /** Our predicted position and level; `player.pos` is this plus `smooth`. */
+  private predPos: Vec2 = vec(0, 0);
+  private smooth: Vec2 = vec(0, 0);
+  /** Where our own simulation's events go while replaying (heard by no one). */
+  private readonly muted: GameEvent[] = [];
 
   /** `host` is "host:port" or a full ws:// URL; `name` is what to join as;
    *  `password` the server's join password, if it has one. `connect` = false
@@ -189,7 +293,8 @@ export class NetSession implements Session {
   }
 
   private send(msg: ClientMsg): void {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
+    if (this.outbox) this.outbox(msg);
+    else if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
 
   /** Leave the match for good: the server frees our slot at once instead of
@@ -202,10 +307,11 @@ export class NetSession implements Session {
     this.ws?.close();
   }
 
-  /** Take one server message (the socket's onmessage, or a test's hand). */
-  receive(msg: ServerMsg): void {
+  /** Take one server message (the socket's onmessage, or a test's hand, with
+   *  the arrival time it wants). */
+  receive(msg: ServerMsg, nowMs = performance.now()): void {
     if (msg.t === "welcome") this.welcome(msg);
-    else if (msg.t === "snap") this.applySnapshot(msg);
+    else if (msg.t === "snap") this.onSnapshot(msg, nowMs);
     else if (msg.t === "pong") this.ping = Math.round(performance.now() - msg.at);
     else if (msg.t === "reject") {
       this.status = "rejected";
@@ -237,43 +343,174 @@ export class NetSession implements Session {
     }
     this.world.items.length = 0;
     this.world.vehicles.length = 0;
-    this.world.bullets.length = 0;
-    this.world.projectiles.length = 0;
+    this.world.bullets = [];
+    this.world.projectiles = [];
     this.characters.length = 0;
     this.bodies.length = 0;
     this.mirrors.clear();
-    this.tracks.clear();
     this.bodyById.clear();
     this.itemById.clear();
     this.vehicleById.clear();
-    this.bulletById.clear();
-    this.projById.clear();
+    this.bullets.clear();
+    this.projs.clear();
     this.bulletLook.clear();
     this.projLook.clear();
+    this.poses.clear();
+    this.vehiclePoses.clear();
+    this.buffer.length = 0;
+    this.pendingEvents.length = 0;
+    this.clockOffset = null;
+    this.renderAt = null;
+    this.lastReceivedTick = -1;
+    // Inputs sent into a dead socket were never heard: nothing to replay.
+    this.pending = [];
+    this.predicting = false;
     if (rejoin) {
       this.mirrors.set(m.id, this.player);
       this.characters.push(this.player);
       return;
     }
+    // A new match: a fresh character, none of the last match's state on it.
+    this.player = new Character(vec(0, 0), DEFAULT_SKIN, { hand: new Gun(UNARMED) });
     this.player = this.mirror(m.id);
     this.onReady?.();
   }
 
-  // ----------------------------------------------------------- snapshots ----
+  // ------------------------------------------------------ the snapshot ----
 
+  /** A snapshot arrives. What is ours applies now (our character, the private
+   *  block, the HUD, hits); the world waits in the buffer for render time. */
+  private onSnapshot(m: SnapMsg, now: number): void {
+    // The match restarted (its tick count started over): nothing buffered from
+    // before applies to the new one; show it all now and start the clock again.
+    if (this.lastReceivedTick >= 0 && m.tick < this.lastReceivedTick - RESTART_TICKS) {
+      this.flush();
+      this.clockOffset = null;
+      this.renderAt = null;
+    }
+    this.lastReceivedTick = m.tick;
+    this.observeArrival(m.tick, now);
+
+    // Hits are feedback (a hit marker, our own hurt), not scenery: at once.
+    for (const e of m.events) if (e.kind === "hit") this.pendingEvents.push(e);
+
+    // Our own character, all but its pose (which is predicted, or else drawn
+    // on the delayed clock with everyone's).
+    if (m.gone.includes(this.myId)) {
+      const c = this.mirrors.get(this.myId);
+      if (c) {
+        this.mirrors.delete(this.myId);
+        this.poses.delete(this.myId);
+        const i = this.characters.indexOf(c);
+        if (i >= 0) this.characters.splice(i, 1);
+        // We are always in our own view, so our own character going means it
+        // left the roster: we died. Read as dead until it comes back (the last
+        // pose before the death may still have shown some health).
+        c.hp = 0;
+      }
+    }
+    const mine = m.chars.find((s) => s.id === this.myId);
+    if (mine) this.applyOwn(mine);
+    this.applyPrivate(m);
+    this.reconcile(m.me, m.seq);
+
+    // Rounds: the look of each comes with its first listing; ours fly now.
+    for (const s of m.bullets) {
+      if (s.w !== undefined) {
+        this.bulletLook.set(s.id, {
+          tracerWidth: s.w, tracerLength: s.l ?? 0, tracerColor: s.c ?? "#fff",
+          renderAfter: s.ra ?? 0, origin: vec(s.ox ?? s.x, s.oy ?? s.y),
+        });
+      }
+    }
+    for (const s of m.projs) {
+      if (s.br !== undefined) {
+        this.projLook.set(s.id, {
+          renderAfter: s.ra ?? 0, origin: vec(s.ox ?? s.x, s.oy ?? s.y), bodyRadius: s.br,
+          color: s.c ?? "#fff", trailColor: s.tc ?? "#fff", sprite: s.sp, spriteScale: s.ss,
+        });
+      }
+    }
+    this.syncRounds(m, true);
+
+    this.buffer.push({ m, chars: new Map(m.chars.map((s) => [s.id, s])), vehicles: new Map(m.vehicles.map((s) => [s.id, s])) });
+  }
+
+  /** Track the server's clock from a snapshot of `tick` arriving at `now`. */
+  private observeArrival(tick: number, now: number): void {
+    const sample = now - tick * TICK_MS;
+    if (this.clockOffset === null) {
+      this.clockOffset = sample;
+      this.lateness = 0;
+      return;
+    }
+    if (sample < this.clockOffset) this.clockOffset = sample;
+    else this.clockOffset += (sample - this.clockOffset) * CLOCK_CREEP;
+    this.lateness += (sample - this.clockOffset - this.lateness) * LATENESS_EASE;
+  }
+
+  /** How far behind the newest snapshot everyone else is drawn (ms). */
+  get delay(): number {
+    return Math.min(MAX_DELAY_MS, this.snapMs + Math.max(MIN_MARGIN_MS, JITTER_MARGIN * this.lateness));
+  }
+
+  /** The server tick to draw everyone else at, at `now` (fractional): real
+   *  time's pace, steered gently toward the clock's estimate (see RENDER_STEER). */
+  renderTick(now: number): number {
+    if (this.clockOffset === null) return this.tick;
+    const target = (now - this.clockOffset - this.delay) / TICK_MS;
+    if (this.renderAt === null || Math.abs(target - this.renderAt) > RENDER_JUMP_TICKS) {
+      this.renderAt = target;
+    } else if (now > this.renderNow) {
+      this.renderAt += (now - this.renderNow) / TICK_MS;
+      this.renderAt += (target - this.renderAt) * RENDER_STEER;
+    }
+    this.renderNow = Math.max(this.renderNow, now);
+    return this.renderAt;
+  }
+
+  /** The server tick it is "now", as far as we know (our own rounds' clock):
+   *  render time plus the delay, so it is as smooth. */
+  private presentTick(now: number): number {
+    return this.renderTick(now) + this.delay / TICK_MS;
+  }
+
+  /** Apply every buffered snapshot render time has reached. */
+  private advance(now: number): void {
+    const r = this.renderTick(now);
+    while (this.buffer.length && this.buffer[0].m.tick <= r) this.applyWorld(this.buffer.shift()!.m, r);
+  }
+
+  /** Apply everything buffered at once (a restart; a test that wants the
+   *  world as the server last described it). */
+  flush(): void {
+    while (this.buffer.length) {
+      const m = this.buffer.shift()!.m;
+      this.applyWorld(m, m.tick);
+    }
+  }
+
+  // ---------------------------------------------------------- mirrors ----
+
+  /** The mirror for character `id`, made on first sight. Our own is the one
+   *  object `player` for the whole session, as in a local Game (where a
+   *  human is revived in place): main.ts holds that reference, so a respawn
+   *  (our character leaving the snapshots, then coming back) must bring back
+   *  the same object, not a new one the screen never sees. */
   private mirror(id: number): Character {
     let c = this.mirrors.get(id);
     if (!c) {
-      c = new Character(vec(0, 0), DEFAULT_SKIN, { hand: new Gun(UNARMED) });
+      c = id === this.myId ? this.player : new Character(vec(0, 0), DEFAULT_SKIN, { hand: new Gun(UNARMED) });
       c.id = id;
       this.mirrors.set(id, c);
       this.characters.push(c);
-      if (id === this.myId) this.player = c;
     }
     return c;
   }
 
-  private applyFull(c: Character, f: CharFull): void {
+  /** A full record: kit, team, look. `equip` = also take its slot in hand
+   *  (not for our predicted player, whose slot follows our own inputs). */
+  private applyFull(c: Character, f: CharFull, equip: boolean): void {
     c.skin = f.skin;
     c.team = f.team;
     c.maxHp = f.maxHp;
@@ -290,26 +527,15 @@ export class NetSession implements Session {
     const utilSpec = f.util ? UTILITY_SPECS[f.util] : undefined;
     c.utilities = utilSpec ? [new UtilityStack(utilSpec, f.utilN)] : [];
     c.utilityIndex = 0;
-    if (c.equippedSlot !== f.slot) {
+    if (equip && c.equippedSlot !== f.slot) {
       c.equip(f.slot);
       c.gun.drawTicks = 0; // the snapshot's own draw timer follows
     }
   }
 
-  private applyChar(s: CharSnap, now: number): void {
-    const c = this.mirror(s.id);
-    if (s.full) this.applyFull(c, s.full);
-    // Where it is going: where it reads now becomes where it is coming from
-    // (the previous target, unless it stood still and was left out a while).
-    const to: Pose = { x: s.x, y: s.y, f: s.f };
-    const t = this.tracks.get(s.id);
-    if (t) {
-      this.tracks.set(s.id, { from: t.to, to, at: now });
-    } else {
-      this.tracks.set(s.id, { from: to, to, at: now });
-      c.pos = vec(s.x, s.y);
-      c.forward = vec(Math.cos(s.f), Math.sin(s.f));
-    }
+  /** A character's state besides its pose: health, the held gun's timers, the
+   *  utility timer, its seat. */
+  private applyState(c: Character, s: CharSnap): void {
     c.z = s.z ?? 0;
     c.hp = s.hp;
     const g = c.gun;
@@ -324,24 +550,41 @@ export class NetSession implements Session {
     c.seatIndex = s.st ?? -1;
   }
 
-  private applySnapshot(m: SnapMsg): void {
-    const now = performance.now();
+  /** Our own character's record, on arrival. Predicting, our gun's timers,
+   *  slot and position are ours to run (see reconcile); the rest is the
+   *  server's. Not predicting, it is everyone's treatment, but on arrival. */
+  private applyOwn(s: CharSnap): void {
+    const c = this.mirror(s.id);
+    const predicting = this.canPredict();
+    if (s.full) this.applyFull(c, s.full, !predicting);
+    if (predicting) {
+      c.hp = s.hp;
+      c.vehicle = s.vh ? (this.vehicleById.get(s.vh) ?? null) : null;
+      c.seatIndex = s.st ?? -1;
+    } else {
+      this.applyState(c, s);
+    }
+  }
+
+  /** A snapshot's world, once render time reaches it: who is where (the
+   *  starting poses for the interpolation), what changed, what happened. `r`
+   *  is the render tick it is applied at. */
+  private applyWorld(m: SnapMsg, r: number): void {
     // Age what the server won't re-send just for aging, by the ticks since the
-    // last snapshot (none across a restart, when the tick count starts over).
-    // Anything this snapshot does carry overwrites its age with the server's.
+    // last snapshot applied (none across a restart). Anything this snapshot
+    // does carry overwrites its age with the server's.
     const dt = Math.max(0, m.tick - this.tick);
     this.tick = m.tick;
     if (dt > 0) {
       for (const it of this.world.items) it.age += dt;
       for (const b of this.bodies) b.age += dt;
-      for (const f of this.killFeed) f.age += dt;
-      for (const d of this.minimapDeaths) d.age += dt;
     }
     for (const id of m.gone) {
+      if (id === this.myId) continue; // ours went on arrival
       const c = this.mirrors.get(id);
       if (!c) continue;
       this.mirrors.delete(id);
-      this.tracks.delete(id);
+      this.poses.delete(id);
       const i = this.characters.indexOf(c);
       if (i >= 0) this.characters.splice(i, 1);
     }
@@ -350,6 +593,7 @@ export class NetSession implements Session {
       const v = this.vehicleById.get(id);
       if (!v) continue;
       this.vehicleById.delete(id);
+      this.vehiclePoses.delete(id);
       const i = this.world.vehicles.indexOf(v);
       if (i >= 0) this.world.vehicles.splice(i, 1);
     }
@@ -367,75 +611,29 @@ export class NetSession implements Session {
       v.angle = s.a;
       v.z = s.z;
       for (let i = 0; i < s.ta.length && i < v.turretAngle.length; i++) v.turretAngle[i] = s.ta[i];
+      this.vehiclePoses.set(s.id, { x: s.x, y: s.y, a: s.a, ta: s.ta.slice() });
     }
-    for (const s of m.chars) this.applyChar(s, now);
+    for (const s of m.chars) {
+      const own = s.id === this.myId;
+      if (own && this.predicting) {
+        // Ours is in the present. Forget its last delayed pose, so when we
+        // stop predicting (a seat, a death) it starts from where it is drawn.
+        this.poses.delete(s.id);
+        continue;
+      }
+      const c = this.mirror(s.id);
+      if (!own) {
+        if (s.full) this.applyFull(c, s.full, true);
+        this.applyState(c, s);
+      }
+      if (!this.poses.has(s.id)) {
+        c.pos = vec(s.x, s.y);
+        c.forward = vec(Math.cos(s.f), Math.sin(s.f));
+      }
+      this.poses.set(s.id, { x: s.x, y: s.y, f: s.f });
+    }
 
-    // Rounds: replace the set. A round's look comes with its first listing
-    // and is kept by id for as long as snapshots go on listing it, so one the
-    // local geometry stopped early can be put back when the server says it
-    // flies on.
-    const keepB = new Set<number>();
-    for (const s of m.bullets) {
-      keepB.add(s.id);
-      if (s.w !== undefined) {
-        this.bulletLook.set(s.id, {
-          tracerWidth: s.w, tracerLength: s.l ?? 0, tracerColor: s.c ?? "#fff",
-          renderAfter: s.ra ?? 0, origin: vec(s.ox ?? s.x, s.oy ?? s.y),
-        });
-      }
-      let b = this.bulletById.get(s.id);
-      if (!b) {
-        const look = this.bulletLook.get(s.id);
-        if (!look) continue; // never told how it looks: nothing to draw
-        b = {
-          id: s.id, pos: vec(s.x, s.y), prev: vec(s.x, s.y), vel: vec(s.vx, s.vy), z: s.z, life: 600,
-          owner: null, damage: 0, armorPen: AP, penetration: 0, penUsed: 0, penSkip: 0, gun: null, ...look,
-        };
-        this.bulletById.set(s.id, b);
-        this.world.bullets.push(b);
-      } else {
-        b.pos = vec(s.x, s.y);
-        b.vel = vec(s.vx, s.vy);
-        b.z = s.z;
-      }
-    }
-    this.world.bullets = this.world.bullets.filter((b) => {
-      if (keepB.has(b.id)) return true;
-      this.bulletById.delete(b.id);
-      return false;
-    });
-    for (const id of this.bulletLook.keys()) if (!keepB.has(id)) this.bulletLook.delete(id);
-    const keepP = new Set<number>();
-    for (const s of m.projs) {
-      keepP.add(s.id);
-      if (s.br !== undefined) {
-        this.projLook.set(s.id, {
-          renderAfter: s.ra ?? 0, origin: vec(s.ox ?? s.x, s.oy ?? s.y), bodyRadius: s.br,
-          color: s.c ?? "#fff", trailColor: s.tc ?? "#fff", sprite: s.sp, spriteScale: s.ss,
-        });
-      }
-      let p = this.projById.get(s.id);
-      if (!p) {
-        const look = this.projLook.get(s.id);
-        if (!look) continue;
-        p = {
-          id: s.id, pos: vec(s.x, s.y), prev: vec(s.x, s.y), vel: vec(s.vx, s.vy), z: s.z, life: 600,
-          owner: null, damage: 0, radius: 0, armorPen: AP, gun: null, ...look,
-        };
-        this.projById.set(s.id, p);
-        this.world.projectiles.push(p);
-      } else {
-        p.pos = vec(s.x, s.y);
-        p.vel = vec(s.vx, s.vy);
-        p.z = s.z;
-      }
-    }
-    this.world.projectiles = this.world.projectiles.filter((p) => {
-      if (keepP.has(p.id)) return true;
-      this.projById.delete(p.id);
-      return false;
-    });
-    for (const id of this.projLook.keys()) if (!keepP.has(id)) this.projLook.delete(id);
+    this.syncRounds(m, false);
 
     // Items and corpses: diffs.
     for (const id of m.goneItems) {
@@ -492,8 +690,13 @@ export class NetSession implements Session {
       b.age = s.ag;
     }
 
-    // Events, for the next step() to play.
+    // The scenery's events, now that it is time for them: not hits (they went
+    // on arrival), not the sounds of our own actions we already played, and
+    // nothing at all from a snapshot render time left far behind.
+    if (r - m.tick > STALE_TICKS) return;
     for (const e of m.events) {
+      if (e.kind === "hit") continue;
+      if (e.kind === "sound" && e.by === this.myId && this.predicting) continue;
       if (e.kind !== "decal") {
         this.pendingEvents.push(e);
       } else {
@@ -501,12 +704,67 @@ export class NetSession implements Session {
         if (on) this.pendingEvents.push({ kind: "decal", near: e.near, on, z: e.z, heft: e.heft });
       }
     }
+  }
 
-    // The private block.
+  /** Bring the rounds in line with snapshot `m`: ours on arrival (`arrival`),
+   *  everyone else's when render time reaches it. A round that snapshot no
+   *  longer lists has landed or left view. */
+  private syncRounds(m: SnapMsg, arrival: boolean): void {
+    const sync = <T extends Bullet | Projectile, S extends BulletSnap | ProjSnap>(
+      list: S[],
+      rounds: Map<number, Round<T>>,
+      looks: Map<number, object>,
+      make: (s: S) => T | null,
+    ): void => {
+      const listed = new Set<number>();
+      for (const s of list) {
+        if (!!s.o !== arrival) continue;
+        listed.add(s.id);
+        let rd = rounds.get(s.id);
+        if (!rd) {
+          const r = make(s);
+          if (!r) continue; // never told how it looks: nothing to draw
+          rd = { r, tick: m.tick, x: s.x, y: s.y, vx: s.vx, vy: s.vy, own: !!s.o };
+          rounds.set(s.id, rd);
+        }
+        rd.tick = m.tick;
+        rd.x = s.x;
+        rd.y = s.y;
+        rd.vx = s.vx;
+        rd.vy = s.vy;
+        rd.r.vel = vec(s.vx, s.vy);
+        rd.r.z = s.z;
+      }
+      for (const [id, rd] of rounds) {
+        if (rd.own !== arrival || listed.has(id)) continue;
+        rounds.delete(id);
+        looks.delete(id);
+      }
+    };
+    sync(m.bullets, this.bullets, this.bulletLook, (s) => {
+      const look = this.bulletLook.get(s.id);
+      if (!look) return null;
+      return {
+        id: s.id, pos: vec(s.x, s.y), prev: vec(s.x, s.y), vel: vec(s.vx, s.vy), z: s.z, life: 600,
+        owner: null, damage: 0, armorPen: AP, penetration: 0, penUsed: 0, penSkip: 0, gun: null, ...look,
+      };
+    });
+    sync(m.projs, this.projs, this.projLook, (s) => {
+      const look = this.projLook.get(s.id);
+      if (!look) return null;
+      return {
+        id: s.id, pos: vec(s.x, s.y), prev: vec(s.x, s.y), vel: vec(s.vx, s.vy), z: s.z, life: 600,
+        owner: null, damage: 0, radius: 0, armorPen: AP, gun: null, ...look,
+      };
+    });
+  }
+
+  /** The private block, the HUD, the feed and the death marks, on arrival. */
+  private applyPrivate(m: SnapMsg): void {
+    // The feed and the marks are HUD, on the present clock: aged by the ticks
+    // between snapshots received.
     const me = this.player;
     const mine = m.me;
-    me.gun.mag = mine.mag;
-    me.gun.reserveMags = mine.res;
     if (me.armor) me.armor.hp = mine.armorHp;
     me.regenTicks = mine.regenTicks;
     me.regenRate = mine.regenRate;
@@ -514,9 +772,8 @@ export class NetSession implements Session {
     this.view = { zoom: mine.zoom, spread: mine.spread, cone: mine.cone };
     this.controllable = mine.ctrl;
     this.label = mine.label;
-    this.interactable = mine.item !== null ? (this.itemById.get(mine.item) ?? null) : null;
-    const seat = mine.seat ? this.vehicleById.get(mine.seat.vh) : undefined;
-    this.enterable = mine.seat && seat ? { vehicle: seat, seat: mine.seat.st } : null;
+    this.interactableId = mine.item;
+    this.seat = mine.seat;
     if (m.hud !== undefined || m.players !== undefined) {
       if (m.hud !== undefined) this.hudHead = m.hud;
       if (m.players !== undefined) this.hudPlayers = m.players;
@@ -528,8 +785,116 @@ export class NetSession implements Session {
     if (m.deaths) this.minimapDeaths = m.deaths;
   }
 
+  // ------------------------------------------------------- prediction ----
+
+  /** Our player can be predicted: alive, in control, on foot, in the roster. */
+  private canPredict(): boolean {
+    const c = this.player;
+    return this.meta !== null && this.controllable && c.hp > 0 && !c.vehicle && this.mirrors.get(this.myId) === c;
+  }
+
+  /** The server has applied our inputs up to `acked`, leaving us as `me` says:
+   *  rewind there, replay the inputs it hasn't seen, and keep what we showed
+   *  as a correction to melt away. */
+  private reconcile(me: MeSnap, acked: number): void {
+    this.pending = this.pending.filter((p) => p.seq > acked);
+    const was = this.predicting;
+    this.predicting = this.canPredict();
+    const c = this.player;
+    if (!this.predicting) {
+      c.gun.mag = me.mag;
+      c.gun.reserveMags = me.res;
+      return;
+    }
+    const shown = was ? this.predPos : null;
+
+    // Rewind. The gun's look (kick, flash, a punch) stays as it is: replaying a
+    // shot must not show it twice.
+    const g0 = c.gun;
+    const look = { kick: g0.kickback, flash: g0.flashTicks, punch: g0.punch };
+    c.pos = vec(me.px, me.py);
+    c.vel = vec(me.vx, me.vy);
+    c.z = me.pz;
+    c.staggerTicks = me.stg;
+    c.staggerMul = me.stm;
+    if (c.equippedSlot !== me.sl) this.quietly(() => c.equip(me.sl));
+    const g = c.gun;
+    g.fireCooldown = me.co;
+    g.reloadTicks = me.re;
+    g.drawTicks = me.dr;
+    g.mag = me.mag;
+    g.reserveMags = me.res;
+    c.setUseTimer(me.us, Math.max(me.us, c.useTotalTicks));
+
+    // Replay what the server hasn't seen yet, silently.
+    for (const p of this.pending) this.simulate(p.input, false);
+
+    const now = c.gun;
+    if (now === g0) {
+      now.kickback = look.kick;
+      now.flashTicks = look.flash;
+      now.setPunch(look.punch);
+    }
+    const after = c.pos;
+    this.predPos = after;
+    if (shown) {
+      const err = sub(shown, after);
+      this.smooth = len(add(this.smooth, err)) > SNAP_DIST ? vec(0, 0) : add(this.smooth, err);
+    } else {
+      this.smooth = vec(0, 0); // just started predicting: take the server's word
+    }
+    c.pos = add(this.predPos, this.smooth);
+  }
+
+  /** Run `f` with our character's events going nowhere. */
+  private quietly(f: () => void): void {
+    const c = this.player;
+    const events = c.events;
+    c.events = this.muted;
+    f();
+    c.events = events;
+    this.muted.length = 0;
+  }
+
+  /**
+   * One tick of our own player, as the server's Game.update runs it for a
+   * human (prepareHuman's one-shots on our own kit, moveHuman, tickWeapon, the
+   * stagger part of tickStatus, fireHuman), as far as this side can know it:
+   * pickups, drops, utility use and healing stay the server's. `live` = the
+   * tick being played now (heard and seen); otherwise a silent replay.
+   */
+  private simulate(input: PlayerInput, live: boolean): void {
+    const c = this.player;
+    const events = live ? this.world.events : this.muted;
+    const saved = c.events;
+    c.events = events;
+    if (input.equip && PREDICTED_SLOTS.includes(input.equip)) c.equip(input.equip);
+    if (input.reload) c.reload();
+    if (input.cancel) c.cancelAction();
+    c.forward = input.aim;
+    c.onStairs = stairDirAt(this.world, c);
+    walk(this.world, c, input.move);
+    c.tickWeapon();
+    if (c.useTicks > 0) c.setUseTimer(c.useTicks - 1, c.useTotalTicks);
+    c.tickStagger();
+    const f = c.gun.spec.fire;
+    if (f && !c.holdingUtility && (f.auto ? input.fire : input.firePressed)) {
+      c.gun.fireCosmetic(events, c.pos, c, c.speedRatio);
+    }
+    if (live) footsteps(c, events);
+    c.events = saved;
+    if (!live) this.muted.length = 0;
+  }
+
   // ------------------------------------------------------------- Session ----
 
+  get interactable(): GroundItem | null {
+    return this.interactableId !== null ? (this.itemById.get(this.interactableId) ?? null) : null;
+  }
+  get enterable(): { vehicle: Vehicle; seat: number } | null {
+    const v = this.seat ? this.vehicleById.get(this.seat.vh) : undefined;
+    return this.seat && v ? { vehicle: v, seat: this.seat.st } : null;
+  }
   hud(): GamemodeHud | null {
     return this.hudState;
   }
@@ -554,65 +919,107 @@ export class NetSession implements Session {
     };
   }
 
-  /** One client tick: send the input, hand the snapshot events on, and move
-   *  the rounds along by their last known velocity. */
-  step(input: PlayerInput): void {
-    this.sendInput(input);
-    this.aim = input.aim;
+  /** One client tick: send this tick's input and play it on our own player,
+   *  apply the snapshots render time has reached, and hand their events on. */
+  step(input: PlayerInput, nowMs = performance.now()): void {
+    this.seq += 1;
+    this.send({ t: "input", seq: this.seq, in: input });
+    this.pending.push({ seq: this.seq, input });
+    if (this.pending.length > MAX_PENDING) this.pending.shift();
+
     this.world.events.length = 0;
+    this.advance(nowMs);
     if (this.pendingEvents.length) {
       this.world.events.push(...this.pendingEvents);
       this.pendingEvents.length = 0;
     }
-    // Gun timers run between snapshots so kick, flash and reloads animate
-    // smoothly; the next snapshot re-syncs them.
-    for (const c of this.characters) c.gun.tick();
-    for (const c of this.characters) c.tickStatus();
-    const flight = (r: { pos: Vec2; prev: Vec2; vel: Vec2; z: number }): boolean => {
-      r.prev = r.pos;
-      r.pos = add(r.pos, r.vel);
-      // Stopped by a wall we can see the shape of; the server's word follows.
-      return !(this.grid && this.grid.hit(r.pos, r.z));
-    };
-    this.world.bullets = this.world.bullets.filter((b) => flight(b) || (this.bulletById.delete(b.id), false));
-    this.world.projectiles = this.world.projectiles.filter((p) => flight(p) || (this.projById.delete(p.id), false));
-    const now = performance.now();
-    if (now - this.lastPingAt > PING_MS && this.status === "connected") {
-      this.lastPingAt = now;
-      this.send({ t: "ping", at: now });
+
+    // Everyone else's gun and status timers run between snapshots so kick,
+    // flash and reloads animate smoothly; the next snapshot re-syncs them.
+    for (const c of this.characters) {
+      if (c === this.player && this.predicting) continue;
+      c.gun.tick();
+      c.tickStatus();
+    }
+
+    this.predicting = this.canPredict();
+    if (this.predicting) {
+      const c = this.player;
+      c.pos = this.predPos;
+      const from = this.world.events.length;
+      this.simulate(input, true);
+      // Our own sounds' voices, apart from the server's: a "stop reload:7" for
+      // someone else's gun 7 mustn't cut ours.
+      for (let i = from; i < this.world.events.length; i++) {
+        const e = this.world.events[i];
+        if ((e.kind === "sound" && e.voice) || e.kind === "stopSound") this.world.events[i] = { ...e, voice: `me:${e.voice}` };
+      }
+      this.predPos = c.pos;
+      this.smooth = len(this.smooth) < 0.05 ? vec(0, 0) : scale(this.smooth, SMOOTH_KEEP);
+      c.pos = add(this.predPos, this.smooth);
+    }
+
+    if (nowMs - this.lastPingAt > PING_MS && this.status === "connected") {
+      this.lastPingAt = nowMs;
+      this.send({ t: "ping", at: nowMs });
     }
   }
 
-  /** Move every mirror to where it should read now: between the two latest
-   *  snapshots, one interval behind the newest. */
+  /** Before a frame: everyone else where render time puts them (between the
+   *  last applied snapshot and the next), the rounds where they have flown. */
   interpolate(nowMs: number): void {
-    for (const [id, t] of this.tracks) {
+    this.advance(nowMs);
+    const r = this.renderTick(nowMs);
+    const next = this.buffer[0];
+    const a = next ? Math.max(0, Math.min(1, (r - this.tick) / Math.max(1, next.m.tick - this.tick))) : 0;
+    for (const [id, p] of this.poses) {
       const c = this.mirrors.get(id);
-      if (!c) continue;
-      const a = Math.max(0, Math.min(1, (nowMs - t.at) / this.snapMs));
-      c.pos = vec(t.from.x + (t.to.x - t.from.x) * a, t.from.y + (t.to.y - t.from.y) * a);
-      // Facing: shortest-way angle blend.
-      let d = t.to.f - t.from.f;
-      if (d > Math.PI) d -= Math.PI * 2;
-      if (d < -Math.PI) d += Math.PI * 2;
-      const ang = t.from.f + d * a;
-      c.forward = vec(Math.cos(ang), Math.sin(ang));
+      if (!c || (c === this.player && this.predicting)) continue;
+      const n = next?.chars.get(id);
+      const x = n ? p.x + (n.x - p.x) * a : p.x;
+      const y = n ? p.y + (n.y - p.y) * a : p.y;
+      const f = n ? angleLerp(p.f, n.f, a) : p.f;
+      c.pos = vec(x, y);
+      c.forward = vec(Math.cos(f), Math.sin(f));
     }
-    // Our own facing is our aim, now: the server would set it to exactly this
-    // (Game.moveHuman) once the input arrived, so there is nothing to wait for.
-    if (this.controllable && this.aim) this.player.forward = this.aim;
+    for (const [id, p] of this.vehiclePoses) {
+      const v = this.vehicleById.get(id);
+      if (!v) continue;
+      const n = next?.vehicles.get(id);
+      v.pos = n ? vec(p.x + (n.x - p.x) * a, p.y + (n.y - p.y) * a) : vec(p.x, p.y);
+      v.angle = n ? angleLerp(p.a, n.a, a) : p.a;
+      for (let i = 0; i < v.turretAngle.length && i < p.ta.length; i++) {
+        v.turretAngle[i] = n && i < n.ta.length ? angleLerp(p.ta[i], n.ta[i], a) : p.ta[i];
+      }
+    }
+    // Rounds fly on in a straight line from where they last were: everyone
+    // else's on the delayed clock, ours on the present one. One that would
+    // have crossed a wall since is out of sight (and soon out of the list).
+    const present = this.presentTick(nowMs);
+    const fly = <T extends Bullet | Projectile>(rounds: Map<number, Round<T>>): T[] => {
+      const out: T[] = [];
+      for (const rd of rounds.values()) {
+        const dt = Math.max(0, (rd.own ? present : r) - rd.tick);
+        const from = vec(rd.x, rd.y);
+        const pos = vec(rd.x + rd.vx * dt, rd.y + rd.vy * dt);
+        if (this.blocked(from, pos, rd.r.z)) continue;
+        rd.r.pos = pos;
+        rd.r.prev = sub(pos, rd.r.vel);
+        out.push(rd.r);
+      }
+      return out;
+    };
+    this.world.bullets = fly(this.bullets);
+    this.world.projectiles = fly(this.projs);
   }
 
-  private sendInput(input: PlayerInput): void {
-    const pressed =
-      input.firePressed || !!input.equip || input.cancel || input.interact || input.drop || !!input.dropHud ||
-      input.restart || input.debugDamage || input.debugHeal;
-    const held = JSON.stringify([input.move, input.aim, input.fire, input.reload]);
-    this.sinceSent += 1;
-    if (!pressed && held === this.lastSent && this.sinceSent < INPUT_KEEPALIVE_TICKS) return;
-    this.lastSent = held;
-    this.sinceSent = 0;
-    this.seq += 1;
-    this.send({ t: "input", seq: this.seq, in: input });
+  /** A wall between `a` and `b` on level `z`? Checked every 16 px. */
+  private blocked(a: Vec2, b: Vec2, z: number): boolean {
+    const grid = this.grid;
+    if (!grid) return false;
+    const d = sub(b, a);
+    const n = Math.ceil(len(d) / 16);
+    for (let i = 1; i <= n; i++) if (grid.hit(add(a, scale(d, i / n)), z)) return true;
+    return false;
   }
 }

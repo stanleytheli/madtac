@@ -31,7 +31,7 @@ import * as Armors from "./entities/armor.ts";
 import { Body } from "./entities/body.ts";
 import { BODY_RADIUS, DEFAULT_SKIN } from "./entities/character.ts";
 import { startingUtilities } from "./entities/consumable.ts";
-import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsBox, resolveCircleVsObstacle } from "./engine/collision.ts";
+import { hasLineOfSight, ObstacleGrid, pointInBox, resolveCircleVsObstacle } from "./engine/collision.ts";
 import { KILLFEED_TTL, type GameCtx, type Gamemode, type KillFeedEntry, type PlayerLoadout } from "./gamemodes/gamemode.ts";
 import { Gun } from "./entities/gun.ts";
 import * as Guns from "./entities/guns.ts";
@@ -50,11 +50,10 @@ import { Robot, type AiContext } from "./ai/robot.ts";
 import { areHostile, type TeamId } from "./entities/team.ts";
 import type { SlotKind } from "./ui/ui.ts";
 import { heldOnly, idleInput, type PlayerInput } from "./engine/command.ts";
-import { emitSound } from "./engine/events.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
-import { add, angleOf, dist, dot, fromAngle, len, norm, perp, scale, sub, vec, type Vec2 } from "./engine/vec.ts";
-import { FOOTSTEP_LEAD, FOOTSTEP_MIN_SPEED, FOOTSTEP_SOUNDS, FOOTSTEP_TICKS } from "./world/hitsounds.ts";
-import { stairClimbDir, stairZ, updateBullets, updateProjectiles, type World } from "./world/world.ts";
+import { add, angleOf, dist, fromAngle, norm, perp, scale, vec, type Vec2 } from "./engine/vec.ts";
+import { stairZ, updateBullets, updateProjectiles, type World } from "./world/world.ts";
+import { applyStairZ, footsteps, resolveCollisions, resolveVehicles, resolveWalls, stairDirAt, walk } from "./world/locomotion.ts";
 import { Vehicle, type VehicleSpec } from "./entities/vehicle.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
@@ -81,7 +80,6 @@ const PLAYER_ROUTE_MIN_COS = 0.5;
 // casual one-sided bump (≈2.4/tick) still gets eased apart. This softness is the
 // whole point: it's what lets a mutual wedge resolve.
 const SQUISH_DELTA = 2.0; // max centre-line separation applied per tick (px)
-const WALL_PASSES = 3; // push-out passes so a body in a corner (two walls) settles
 
 /** The gun for a player slot: "none" = empty, omitted/unknown = the default. */
 function slotGun(key: string | undefined, fallback: string): Gun | undefined {
@@ -399,61 +397,8 @@ export class Game implements GameCtx {
     return this.aimingGun(slot).spec.visionCone ?? 360;
   }
 
-  /** Resolve `c` against WALLS: it has already moved this tick (pos += vel), so
-   *  just push it out of any wall it now overlaps. No sweep is needed — at the
-   *  game's body speeds (max ~7.5 px/tick, far below the 60px body diameter) a
-   *  body can't jump across a wall in one tick, and pushing out along the wall's
-   *  nearest feature slides the body along it for free. Body-vs-body is the
-   *  separate squishy pass (see separateCharacters). */
-  private resolveCollisions(c: Character): void {
-    const before = c.pos;
-    c.pos = this.resolveWalls(c.pos, c.z);
-    c.pos = this.resolveVehicles(c.pos, c.z);
-    // The push-out moved the body, not its velocity: pressing into a wall left
-    // `vel` at full running speed while the body stood still, so everything
-    // that reads speed (spread, footsteps, the no-scope mark, the player's
-    // inferred route) behaved as if it were sprinting. Cancel the component of
-    // vel that points into the wall (the push direction), keep the rest so a
-    // glancing approach still slides along it at the slide speed.
-    const push = sub(c.pos, before);
-    const pl = len(push);
-    if (pl > 1e-6) {
-      const n = scale(push, 1 / pl);
-      const into = dot(c.vel, n);
-      if (into < 0) c.vel = sub(c.vel, scale(n, into));
-    }
-  }
 
-  /** Push a body at `pos` out of every vehicle's solid parts on level `z` — a
-   *  pedestrian can't stand inside a hull (occupants are pinned and skip this).
-   *  A moving vehicle thus shoves anyone it drives into (they're re-ejected each
-   *  tick as the hull advances). No-op when the map has no vehicles. */
-  private resolveVehicles(pos: Vec2, z: number): Vec2 {
-    for (const v of this.world.vehicles) {
-      if (v.z !== z) continue;
-      for (const b of v.movementBoxes()) pos = resolveCircleVsBox(pos, BODY_RADIUS, b);
-    }
-    return pos;
-  }
 
-  /** Push a body at `pos` out of every wall it overlaps on level `z`, a few
-   *  passes so a corner between two walls settles (each push-out can nudge it
-   *  into the neighbour). Uses the grid to touch only nearby obstacles. */
-  private resolveWalls(pos: Vec2, z: number): Vec2 {
-    const grid = this.world.grid;
-    for (let i = 0; i < WALL_PASSES; i++) {
-      if (grid) {
-        grid.eachNear(pos, BODY_RADIUS, z, (o) => {
-          pos = resolveCircleVsObstacle(pos, BODY_RADIUS, o);
-        });
-      } else {
-        for (const o of this.world.obstacles) {
-          if (o.z === z) pos = resolveCircleVsObstacle(pos, BODY_RADIUS, o);
-        }
-      }
-    }
-    return pos;
-  }
 
   /** Squishy bodies: push every overlapping pair of live characters apart,
    *  EQUALLY — each gives way half the penetration along their centre line — then
@@ -513,31 +458,12 @@ export class Game implements GameCtx {
     // nudge so a shove can't leave a body inside a wall (a body squeezed between a
     // wall and another body ends against the wall — the least-bad spot, not a freeze).
     for (const c of cs) {
-      c.pos = this.resolveWalls(c.pos, c.z);
-      c.pos = this.resolveVehicles(c.pos, c.z);
+      c.pos = resolveWalls(this.world, c.pos, c.z);
+      c.pos = resolveVehicles(this.world, c.pos, c.z);
     }
   }
 
-  /** Flip `c`'s z at any stair midpoint it's standing on. Called right after a
-   *  character moves and before it resolves collisions, so it always resolves
-   *  against the level it actually ended up on — crossing the midpoint used to
-   *  resolve against the OLD level, then snap (or clip through a wall) next tick. */
-  private applyStairZ(c: Character): void {
-    for (const s of this.world.stairs) {
-      const z = stairZ(s, c.pos);
-      if (z !== null) c.z = z;
-    }
-  }
 
-  /** The climb-axis direction of the staircase `c` is standing on, or null if on
-   *  none. Handed to the Character so its move() can slow the climb (see
-   *  Character.onStairs) — the world-aware half of that feature. */
-  private stairDirAt(c: Character): Vec2 | null {
-    for (const s of this.world.stairs) {
-      if (stairZ(s, c.pos) !== null) return stairClimbDir(s);
-    }
-    return null;
-  }
 
   /** Nearest ground item on the human's level, within reach and line of sight. */
   private findInteractable(p: Character): GroundItem | null {
@@ -626,12 +552,12 @@ export class Game implements GameCtx {
       const cand = add(seatW, scale(dir, reach));
       if (this.spotClear(cand, v.z)) return cand;
     }
-    return this.resolveWalls(seatW, v.z);
+    return resolveWalls(this.world, seatW, v.z);
   }
 
   /** Is a body at `pos` on `z` clear of every static wall and vehicle hull? */
   private spotClear(pos: Vec2, z: number): boolean {
-    const rw = this.resolveWalls(pos, z);
+    const rw = resolveWalls(this.world, pos, z);
     if (rw.x !== pos.x || rw.y !== pos.y) return false; // pushed => inside a wall
     for (const v of this.world.vehicles) {
       if (v.z === z && v.blocksCircle(pos, BODY_RADIUS)) return false;
@@ -873,7 +799,7 @@ export class Game implements GameCtx {
 
     // Refresh every character's staircase state before anyone moves, so the climb
     // slowdown (Character.move / applyStairMove) and the recoil speed both see it.
-    for (const c of this.characters) c.onStairs = this.stairDirAt(c);
+    for (const c of this.characters) c.onStairs = stairDirAt(this.world, c);
 
     for (const h of this.humans) this.moveHuman(h);
 
@@ -919,28 +845,16 @@ export class Game implements GameCtx {
     }
     profiler.end("ai");
 
-    // Footsteps, everyone's: on foot and moving, one every FOOTSTEP_TICKS,
-    // clips cycled. Positional at the walker's feet — a human's own sit in
-    // the same mix as the world's, and an unseen bot's carry through walls.
-    // After the AI phase so a bot's step this tick is in its vel.
-    for (const c of this.characters) {
-      if (c.hp > 0 && !c.vehicle && Math.hypot(c.vel.x, c.vel.y) >= FOOTSTEP_MIN_SPEED) {
-        c.stepTicks += 1;
-        if (c.stepTicks >= FOOTSTEP_TICKS) {
-          c.stepTicks = 0;
-          emitSound(this.world.events, FOOTSTEP_SOUNDS[c.stepIndex], { pos: c.pos, z: c.z, pitchVar: 0.06 });
-          c.stepIndex = (c.stepIndex + 1) % FOOTSTEP_SOUNDS.length;
-        }
-      } else {
-        c.stepTicks = FOOTSTEP_TICKS - FOOTSTEP_LEAD;
-      }
-    }
+    // Footsteps, everyone's: positional at the walker's feet — a human's own
+    // sit in the same mix as the world's, and an unseen bot's carry through
+    // walls. After the AI phase so a bot's step this tick is in its vel.
+    for (const c of this.characters) footsteps(c, this.world.events);
 
     profiler.begin("collide");
     for (const c of this.characters) {
       if (c.vehicle || this.slotOf(c)) continue; // humans resolved above; occupants are pinned
-      this.applyStairZ(c); // flip z after this tick's move, before resolving (see applyStairZ)
-      this.resolveCollisions(c);
+      applyStairZ(this.world, c); // flip z after this tick's move, before resolving (see applyStairZ)
+      resolveCollisions(this.world, c);
     }
     // Body-vs-body last, as one symmetric pass over all characters — every agent
     // treated equally (no resolve-order priority; the humans included).
@@ -1020,9 +934,7 @@ export class Game implements GameCtx {
       if (p.vehicle) {
         this.driveInput(h, h.input); // WASD -> vehicle (relative to its facing); aim its turret
       } else {
-        p.move(h.input.move); // speed factors live on the Character now
-        this.applyStairZ(p); // flip z at the midpoint BEFORE resolving...
-        this.resolveCollisions(p); // ...so it's against the level it ends on (walls only)
+        walk(this.world, p, h.input.move); // the same step a client predicts (see world/locomotion.ts)
       }
     }
     // They have moved for this tick, so their inferred corridor is current.

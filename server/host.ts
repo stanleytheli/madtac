@@ -63,6 +63,15 @@ const AUTH_FAILS = 5;
 const AUTH_WINDOW_MS = 60_000;
 /** How long a dropped connection's slot is held for a reconnect (ms). */
 const GRACE_MS = 30_000;
+/** Inputs held in hand before a client's start being applied (and again after
+ *  they run dry): a tick of slack, so inputs the network delivers bunched up
+ *  still land one per tick, in order. The player doesn't feel it — their
+ *  client predicts — it only puts them a tick further behind for everyone else. */
+const INPUT_BUFFER = 2;
+/** Most inputs held for a client. Past this the two oldest merge (their
+ *  presses kept), so a client whose clock runs fast, or a burst after a stall,
+ *  can't build up lag. */
+const INPUT_MAX = 6;
 
 // ----------------------------------------------------------------- config ----
 
@@ -96,6 +105,9 @@ export interface MatchConfig {
   /** The match has thrown on every tick for five seconds: start it fresh
    *  (Node exits for a supervisor; a Durable Object rebuilds its host). */
   onFatal?: () => void;
+  /** Tick only when advance() says (a headless test running the clock),
+   *  rather than on a timer. */
+  manual?: boolean;
 }
 
 /** What a transport hands over for each socket. */
@@ -116,9 +128,12 @@ interface Client {
   slot: PlayerSlot;
   token: string;
   mirror: ClientMirror;
-  /** Inputs received since the last tick, merged as they arrive (so a flood
-   *  can't pile them up) and applied at the next tick. */
-  pending: PlayerInput | null;
+  /** Inputs received and not yet applied, oldest first: one is applied per
+   *  tick (see INPUT_BUFFER / INPUT_MAX). */
+  inputs: { seq: number; in: PlayerInput }[];
+  /** Holding inputs back until INPUT_BUFFER are in hand. */
+  buffering: boolean;
+  /** The last input applied; snapshots echo it (SnapMsg.seq). */
   seq: number;
   /** When the socket dropped, for the reconnect grace; null while connected. */
   droppedAt: number | null;
@@ -187,6 +202,8 @@ export class MatchHost {
   private readonly maxPerAddr: number;
   private readonly password: Buffer | null;
   private readonly onFatal: () => void;
+  private readonly manual: boolean;
+  private manualNow = 0;
 
   /** Built on the first join (see the file comment). */
   private game: Game | null = null;
@@ -217,6 +234,26 @@ export class MatchHost {
     this.password = cfg.password ? digest(cfg.password) : null;
     this.locked = !!this.password;
     this.onFatal = cfg.onFatal ?? (() => {});
+    this.manual = cfg.manual ?? false;
+  }
+
+  /** Run `ticks` ticks now (a manual host; see MatchConfig.manual). Its clock
+   *  is those ticks, so the rate limits and timeouts read test time too. */
+  advance(ticks = 1): void {
+    for (let i = 0; i < ticks; i++) {
+      this.manualNow += 1000 / SIM_HZ;
+      this.safeTick();
+    }
+  }
+
+  /** Wall-clock ms, or a manual host's tick clock. */
+  private now(): number {
+    return this.manual ? this.manualNow : Date.now();
+  }
+
+  /** The match's Game, once someone has joined (a test looking in). */
+  get match(): Game | null {
+    return this.game;
   }
 
   /** What GET /info answers. */
@@ -242,7 +279,7 @@ export class MatchHost {
       return null;
     }
     this.perAddr.set(addr, open);
-    const conn: Conn = { socket, addr, client: null, budget: MSG_BURST, budgetAt: Date.now(), joinTimer: null, closed: false };
+    const conn: Conn = { socket, addr, client: null, budget: MSG_BURST, budgetAt: this.now(), joinTimer: null, closed: false };
     conn.joinTimer = setTimeout(() => {
       conn.joinTimer = null;
       if (!conn.client) socket.terminate();
@@ -255,7 +292,7 @@ export class MatchHost {
   message(conn: Conn, text: string | null): void {
     if (conn.closed || !conn.socket.open) return; // hanging up already
     // The message budget refills at MSG_RATE a second, up to MSG_BURST.
-    const now = Date.now();
+    const now = this.now();
     conn.budget = Math.min(MSG_BURST, conn.budget + ((now - conn.budgetAt) / 1000) * MSG_RATE);
     conn.budgetAt = now;
     if (conn.budget < 1) {
@@ -303,7 +340,7 @@ export class MatchHost {
     const c = conn.client;
     if (!c || c.socket !== conn.socket) return;
     c.socket = null;
-    c.droppedAt = Date.now();
+    c.droppedAt = this.now();
     console.log(`[server] ${c.slot.name} dropped; holding the slot ${GRACE_MS / 1000}s`);
   }
 
@@ -332,7 +369,7 @@ export class MatchHost {
   private lockedOut(addr: string): boolean {
     const f = this.authFails.get(addr);
     if (!f) return false;
-    if (Date.now() - f.since > AUTH_WINDOW_MS) {
+    if (this.now() - f.since > AUTH_WINDOW_MS) {
       this.authFails.delete(addr);
       return false;
     }
@@ -342,7 +379,7 @@ export class MatchHost {
   private failedAuth(addr: string): void {
     if (this.authFails.size > 10_000) this.authFails.clear();
     const f = this.authFails.get(addr);
-    if (!f || Date.now() - f.since > AUTH_WINDOW_MS) this.authFails.set(addr, { n: 1, since: Date.now() });
+    if (!f || this.now() - f.since > AUTH_WINDOW_MS) this.authFails.set(addr, { n: 1, since: this.now() });
     else f.n += 1;
   }
 
@@ -355,6 +392,8 @@ export class MatchHost {
     const game = this.ensureGame();
     c.socket = socket;
     c.droppedAt = null;
+    c.inputs = [];
+    c.buffering = true;
     this.send(socket, {
       t: "welcome",
       protocol: PROTOCOL,
@@ -391,7 +430,9 @@ export class MatchHost {
     const name = cleanName(msg.name) || `Player ${game.humans.length + 1}`;
     const slot = game.addHuman(name);
     const token = randomBytes(12).toString("hex");
-    const c: Client = { socket: conn.socket, slot, token, mirror: new ClientMirror(game, this.sight), pending: null, seq: 0, droppedAt: null };
+    const c: Client = {
+      socket: conn.socket, slot, token, mirror: new ClientMirror(game, this.sight), inputs: [], buffering: true, seq: 0, droppedAt: null,
+    };
     this.clients.set(token, c);
     conn.client = c;
     this.attach(conn.socket, c);
@@ -420,8 +461,12 @@ export class MatchHost {
     const game = this.ensureGame();
     switch (msg.t) {
       case "input":
-        c.pending = c.pending ? mergeInputs(c.pending, msg.in) : msg.in;
-        c.seq = msg.seq;
+        c.inputs.push({ seq: msg.seq, in: msg.in });
+        while (c.inputs.length > INPUT_MAX) {
+          const a = c.inputs.shift()!;
+          const b = c.inputs.shift()!;
+          c.inputs.unshift({ seq: b.seq, in: mergeInputs(a.in, b.in) });
+        }
         break;
       case "loadout":
         game.gamemode.setPlayerLoadout?.(c.slot.char, msg.loadout);
@@ -448,7 +493,7 @@ export class MatchHost {
   /** A fixed-rate loop that catches up after a stall (a few ticks at most, so
    *  a long pause doesn't burst the whole backlog). */
   private startLoop(): void {
-    if (this.loop) return;
+    if (this.loop || this.manual) return;
     const step = 1000 / SIM_HZ;
     this.due = performance.now();
     this.loop = setInterval(() => {
@@ -470,16 +515,25 @@ export class MatchHost {
 
   private tick(): void {
     const game = this.ensureGame();
-    // Apply what arrived: several inputs since the last tick were merged into
-    // one so no press is lost; none at all means the held state carries.
+    // One input per client per tick, in the order they were sent. None in hand
+    // (or still building slack) means the held state carries over.
     for (const c of this.clients.values()) {
-      if (c.pending) {
-        c.slot.input = c.pending;
-        c.pending = null;
+      if (c.buffering && c.inputs.length >= INPUT_BUFFER) c.buffering = false;
+      if (!c.buffering) {
+        const next = c.inputs.shift();
+        if (next) {
+          c.slot.input = next.in;
+          c.seq = next.seq;
+        } else {
+          c.buffering = true; // ran dry: wait for slack again
+        }
       }
       // A dropped player stands still rather than running into a wall forever.
-      if (c.socket === null) c.slot.input = idleInput();
-      if (c.droppedAt !== null && Date.now() - c.droppedAt > GRACE_MS) this.leave(c);
+      if (c.socket === null) {
+        c.slot.input = idleInput();
+        c.inputs.length = 0;
+      }
+      if (c.droppedAt !== null && this.now() - c.droppedAt > GRACE_MS) this.leave(c);
     }
     // Nobody connected or held: rest until someone joins.
     if (this.clients.size === 0) {

@@ -280,6 +280,7 @@ export class ClientMirror {
     for (const b of w.bullets) {
       if (!seen(b.pos, b.z) && !seen(b.prev, b.z)) continue;
       const s: BulletSnap = { id: b.id, x: r1(b.pos.x), y: r1(b.pos.y), vx: r2(b.vel.x), vy: r2(b.vel.y), z: b.z };
+      if (b.owner === me) s.o = 1;
       if (!this.sentBullets.has(b.id)) {
         s.w = b.tracerWidth;
         s.l = b.tracerLength;
@@ -297,6 +298,7 @@ export class ClientMirror {
     for (const p of w.projectiles) {
       if (!seen(p.pos, p.z) && !seen(p.prev, p.z)) continue;
       const s: ProjSnap = { id: p.id, x: r1(p.pos.x), y: r1(p.pos.y), vx: r2(p.vel.x), vy: r2(p.vel.y), z: p.z };
+      if (p.owner === me) s.o = 1;
       if (!this.sentProjs.has(p.id)) {
         s.ra = r1(p.renderAfter);
         s.ox = r1(p.origin.x);
@@ -366,6 +368,20 @@ export class ClientMirror {
       label: game.interactLabel(slot),
       item: slot.interactable?.id ?? null,
       seat: slot.enterable ? { vh: slot.enterable.vehicle.id, st: slot.enterable.seat } : null,
+      // Where a predicting client rewinds to (see MeSnap): finer than the
+      // poses everyone else gets, so its replay starts where the server is.
+      px: r2(me.pos.x),
+      py: r2(me.pos.y),
+      vx: r3(me.vel.x),
+      vy: r3(me.vel.y),
+      pz: me.z,
+      stg: me.staggerTicks,
+      stm: me.staggerMul,
+      sl: me.equippedSlot,
+      co: me.gun.fireCooldown,
+      re: me.gun.reloadTicks,
+      dr: me.gun.drawTicks,
+      us: me.useTicks,
     };
 
     const msg: SnapMsg = {

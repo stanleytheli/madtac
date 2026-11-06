@@ -407,19 +407,7 @@ export class Gun implements Droppable {
     // chambered — no need to tap X first. A whole-mag-swap reload still commits.
     if (this.reloading && this.spec.fire?.perBullet && this.mag > 0) this.cancelReload();
     if (!this.canFire) return false;
-    // A shot is now committed — one report per trigger pull (shotguns included),
-    // positioned at the muzzle on the shooter's floor. A melee weapon gets only
-    // the sound it names: the default is a gunshot, which a fist has no business
-    // making, so a swing with no fireSound stays silent.
-    const report = this.spec.melee ? this.spec.fireSound : (this.spec.fireSound ?? DEFAULT_FIRE_SOUND);
-    if (report) emitSound(world.events, report, { pos: origin, z: owner.z, pitchVar: 0.06 });
-    // The bolt/pump "action" that cycles between shots, fitted to fire.delay. No
-    // pitch wobble — it's synced to the delay, and pitching it would drift its end.
-    // Named: unlike the report above, a cycle is an ONGOING action, and an
-    // interruption should cut it (see stopActionSounds).
-    if (this.spec.cycleSound) {
-      emitSound(world.events, this.spec.cycleSound, { pos: origin, z: owner.z, voice: this.cycleVoice });
-    }
+    this.emitShot(world.events, origin, owner);
     const f = this.spec.fire!;
 
     // A melee weapon swings: reach and arc against the bodies in front of it, no
@@ -527,6 +515,46 @@ export class Gun implements Droppable {
         );
       }
     }
+    return true;
+  }
+
+  /** The sound of a committed shot: one report per trigger pull (shotguns
+   *  included), positioned at the muzzle on the shooter's floor, then the bolt or
+   *  pump cycle. A melee weapon gets only the sound it names: the default is a
+   *  gunshot, which a fist has no business making, so a swing with no fireSound
+   *  stays silent. Both carry the shooter (`by`; see GameEvent "sound"). */
+  private emitShot(events: GameEvent[], origin: Vec2, owner: { id: number; z: number }): void {
+    const report = this.spec.melee ? this.spec.fireSound : (this.spec.fireSound ?? DEFAULT_FIRE_SOUND);
+    if (report) emitSound(events, report, { pos: origin, z: owner.z, pitchVar: 0.06, by: owner.id });
+    // The bolt/pump "action" that cycles between shots, fitted to fire.delay. No
+    // pitch wobble — it's synced to the delay, and pitching it would drift its end.
+    // Named: unlike the report above, a cycle is an ONGOING action, and an
+    // interruption should cut it (see stopActionSounds).
+    if (this.spec.cycleSound) {
+      emitSound(events, this.spec.cycleSound, { pos: origin, z: owner.z, voice: this.cycleVoice, by: owner.id });
+    }
+  }
+
+  /**
+   * A trigger pull with nothing fired: fire()'s gate and all its bookkeeping —
+   * cooldown, magazine, recoil spray, kick, muzzle flash, the punch, the report
+   * and the cycle sound — but no bullet, projectile or swing. A networked client
+   * runs this for its own player the instant the trigger is pulled, so the shot
+   * is seen and heard at once; the server fires the real one moments later, and
+   * the client skips the server's echo of these sounds (see `by`). Returns true
+   * if the gun would have fired.
+   */
+  fireCosmetic(events: GameEvent[], origin: Vec2, owner: { id: number; z: number }, speedRatio: number): boolean {
+    if (this.reloading && this.spec.fire?.perBullet && this.mag > 0) this.cancelReload();
+    if (!this.canFire) return false;
+    this.emitShot(events, origin, owner);
+    if (this.spec.melee) {
+      this.startPunch();
+      this.fireCooldown = this.spec.fire!.delay;
+      this.idleTicks = 0;
+      return true;
+    }
+    this.shoot(speedRatio); // magazine, spray, cooldown, kick, flash
     return true;
   }
 
