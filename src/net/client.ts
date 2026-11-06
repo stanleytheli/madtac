@@ -263,6 +263,9 @@ export class NetSession implements Session {
   private lastArrival = 0;
   /** Average cushion (ticks), for the delay figure and our own rounds' clock. */
   private lead = 0;
+  /** The server tick we last came back on (a respawn, on arrival): a death of
+   *  ours older than this, reached late on the delayed clock, is stale. */
+  private ownBackTick = -1;
   /** Poses as of the last applied snapshot, interpolated from toward the next. */
   private readonly poses = new Map<number, Pose>();
   private readonly vehiclePoses = new Map<number, VehiclePose>();
@@ -394,6 +397,7 @@ export class NetSession implements Session {
     this.pendingEvents.length = 0;
     this.renderAt = null;
     this.lastReceivedTick = -1;
+    this.ownBackTick = -1;
     // Inputs sent into a dead socket were never heard: nothing to replay.
     this.pending = [];
     this.predicting = false;
@@ -441,20 +445,20 @@ export class NetSession implements Session {
     // Our own character, all but its pose (which is predicted, or else drawn
     // on the delayed clock with everyone's).
     if (m.gone.includes(this.myId)) {
+      // We are always in our own view, so our own character going means it
+      // left the roster: we died. Dead from now (prediction stops, the HUD
+      // knows); it stays drawn, frozen where it fell, until the delayed clock
+      // reaches this snapshot and its corpse takes its place (applyWorld).
       const c = this.mirrors.get(this.myId);
-      if (c) {
-        this.mirrors.delete(this.myId);
-        this.poses.delete(this.myId);
-        const i = this.characters.indexOf(c);
-        if (i >= 0) this.characters.splice(i, 1);
-        // We are always in our own view, so our own character going means it
-        // left the roster: we died. Read as dead until it comes back (the last
-        // pose before the death may still have shown some health).
-        c.hp = 0;
-      }
+      if (c) c.hp = 0;
     }
     const mine = m.chars.find((s) => s.id === this.myId);
-    if (mine) this.applyOwn(mine);
+    if (mine) {
+      // Back from the dead (a respawn): a death still waiting on the delayed
+      // clock must not take us out again.
+      if (!this.mirrors.has(this.myId) || this.player.hp <= 0) this.ownBackTick = m.tick;
+      this.applyOwn(mine);
+    }
     this.applyPrivate(m);
     this.reconcile(m.me, m.seq);
 
@@ -634,7 +638,9 @@ export class NetSession implements Session {
       for (const b of this.bodies) b.age += dt;
     }
     for (const id of m.gone) {
-      if (id === this.myId) continue; // ours went on arrival
+      // Ours: our death, now that the delayed clock is here (the corpse comes
+      // in this same snapshot) — unless we've respawned since.
+      if (id === this.myId && this.ownBackTick > m.tick) continue;
       const c = this.mirrors.get(id);
       if (!c) continue;
       this.mirrors.delete(id);
@@ -669,9 +675,11 @@ export class NetSession implements Session {
     }
     for (const s of m.chars) {
       const own = s.id === this.myId;
-      if (own && this.predicting) {
-        // Ours is in the present. Forget its last delayed pose, so when we
-        // stop predicting (a seat, a death) it starts from where it is drawn.
+      if (own && (this.predicting || this.player.hp <= 0 || !this.mirrors.has(s.id))) {
+        // Ours, and in the present (predicted), dead (frozen where it fell) or
+        // out of the roster: nothing for the delayed clock to do with it, and
+        // it must not be put back. Forget its last delayed pose, so if it goes
+        // on the delayed clock later (a seat) it starts from where it's drawn.
         this.poses.delete(s.id);
         continue;
       }

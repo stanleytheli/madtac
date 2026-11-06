@@ -547,7 +547,9 @@ console.log("\nrespawning over the wire keeps the same player object:");
   step(10);
   me.char.hp = 0;
   step(30);
-  check("dead: our character leaves the drawn roster and reads as dead", !net.characters.includes(held!) && held!.hp === 0 && net.player === held, `hp=${held!.hp}`);
+  check("dead: on arrival, our character reads as dead at once", held!.hp === 0 && net.player === held, `hp=${held!.hp}`);
+  net.flush(); // this test runs no frames: bring the delayed clock up to date
+  check("...and once the delayed clock reaches the death, it leaves the drawn roster", !net.characters.includes(held!));
   let back = false;
   for (let i = 0; i < 3000 && !back; i++) {
     step(2);
@@ -558,6 +560,50 @@ console.log("\nrespawning over the wire keeps the same player object:");
   // (Within a few px: bots spawning beside us can shove us, and this test runs
   // no client ticks for the eased-in correction to finish melting.)
   check("...back in the roster, alive, at the server's spawn point", net.characters.includes(held!) && held!.hp > 0 && dist(held!.pos, me.char.pos) < 10, `${held!.pos.x.toFixed(0)},${held!.pos.y.toFixed(0)} vs ${me.char.pos.x.toFixed(0)},${me.char.pos.y.toFixed(0)}`);
+}
+
+console.log("\ndying online leaves a corpse where we stood, not our character:");
+{
+  // The server match on a manual clock, us 3 ticks away, playing normally: a
+  // frame and an input every tick. We die; what's drawn should be what a
+  // local game draws: our character gone, a corpse in its place.
+  const text = readFileSync("src/world/levels/tdm-arena-big.json", "utf8");
+  const host = new MatchHost({ levelName: "tdm-arena-big", levelText: text, mode: "tdm", overrides: { blueTroops: 0, redTroops: 0 }, manual: true });
+  let tick = 0;
+  const toClient: { at: number; text: string }[] = [];
+  const toServer: { at: number; text: string }[] = [];
+  const sock: HostSocket = { open: true, send: (t) => toClient.push({ at: tick + 3, text: t }), close: () => {}, terminate: () => {} };
+  const conn = host.connect(sock, "198.51.100.1")!;
+  const net = new NetSession("localhost:1", "Me", false);
+  net.outbox = (m) => toServer.push({ at: tick + 3, text: JSON.stringify(m) });
+  host.message(conn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Me" }));
+  const run = (n: number, each?: () => void) => {
+    for (let i = 0; i < n; i++) {
+      tick++;
+      while (toServer.length && toServer[0].at <= tick) host.message(conn, toServer.shift()!.text);
+      host.advance(1);
+      while (toClient.length && toClient[0].at <= tick) net.receive(JSON.parse(toClient.shift()!.text), tick * (1000 / 60));
+      net.step({ ...idleInput(), move: vec(1, 0) }, tick * (1000 / 60));
+      net.interpolate(tick * (1000 / 60));
+      each?.();
+    }
+  };
+  run(60);
+  const me = host.match!.humans[0].char;
+  const where = vec(me.pos.x, me.pos.y);
+  me.hp = 0; // killed
+  let standingWhileDead = 0;
+  let neither = 0;
+  run(60, () => {
+    const drawn = net.characters.includes(net.player);
+    const corpse = net.bodies.some((b) => dist(b.pos, where) < 60);
+    if (drawn && corpse) standingWhileDead++;
+    if (!drawn && !corpse) neither++;
+  });
+  check("dead: our character is no longer drawn", !net.characters.includes(net.player), `drawn=${net.characters.includes(net.player)} hp=${net.player.hp}`);
+  check("...and a corpse lies where we fell", net.bodies.some((b) => dist(b.pos, where) < 60), `bodies=${net.bodies.length}`);
+  check("...never both at once (no character standing over its own corpse)", standingWhileDead === 0, `${standingWhileDead} frames`);
+  check("...and the corpse takes our place in the same frame (never neither)", neither === 0, `${neither} frames`);
 }
 
 console.log("\nserver addresses:");
