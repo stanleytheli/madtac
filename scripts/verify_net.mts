@@ -216,16 +216,23 @@ console.log("\na NetSession rebuilds the match from the messages:");
   check("...and the local player carries the server's id", net.player.id === alice.char.id);
   const mirror = new ClientMirror(game, false);
   // A clock this test drives (ms), kept in step with the server's ticks:
-  // arrivals and frames are stamped with it.
+  // arrivals and frames are stamped with it. pump() is time passing as it
+  // does in a live match: a snapshot every 2 ticks, a frame every tick.
   let clock = game.tick * (1000 / 60);
   const later = (ms: number): void => {
     clock += ms;
     game.tick += Math.round(ms / (1000 / 60));
   };
+  const pump = (ms: number): void => {
+    for (let i = 0; i < Math.round(ms / (1000 / 60)); i++) {
+      later(1000 / 60);
+      if (game.tick % 2 === 0) net.receive(roundTrip(mirror.encode(game, alice, 0, [])), clock);
+      net.interpolate(clock);
+    }
+  };
   net.receive(roundTrip(mirror.encode(game, alice, 0, game.world.events)), clock);
   check("the world waits for render time: on arrival, only our own character", net.characters.length === 1 && net.characters[0] === net.player, `n=${net.characters.length}`);
-  later(300);
-  net.interpolate(clock); // well past the snapshot
+  pump(300); // well past the snapshot
   const expected = inRange(game.characters);
   check("then every character in range is mirrored", net.characters.length === expected.length, `${net.characters.length} vs ${expected.length}`);
   let placed = 0;
@@ -254,13 +261,19 @@ console.log("\na NetSession rebuilds the match from the messages:");
   net.step(idleInput(), clock);
   const early = net.world.events.map((e) => e.kind);
   check("a hit plays on the next step, the decal not yet (render time hasn't reached it)", early.includes("hit") && !early.includes("decal"), early.join(","));
-  later(150); // past the interpolation delay (not so far that it counts as a stale catch-up)
-  net.step(idleInput(), clock);
-  const late = net.world.events.map((e) => e.kind);
-  check("...then the decal, as an obstacle on the client", late.includes("decal") && !late.includes("hit") && (net.world.events.find((e) => e.kind === "decal") as any).on === net.world.obstacles[0], late.join(","));
-  later(17);
-  net.step(idleInput(), clock);
-  check("events play once: the next step has none", net.world.events.length === 0);
+  // Steps every tick until render time reaches it.
+  const seen: string[] = [];
+  let decalOn: unknown = null;
+  for (let i = 0; i < 30; i++) {
+    later(1000 / 60);
+    if (game.tick % 2 === 0) net.receive(roundTrip(mirror.encode(game, alice, 0, [])), clock);
+    net.step(idleInput(), clock);
+    for (const e of net.world.events) {
+      seen.push(e.kind);
+      if (e.kind === "decal") decalOn = e.on;
+    }
+  }
+  check("...then the decal, once, as an obstacle on the client", seen.filter((k) => k === "decal").length === 1 && !seen.includes("hit") && decalOn === net.world.obstacles[0], seen.join(","));
 
   // Our own facing and position: our input, at once, while we're in control.
   const aim = vec(Math.SQRT1_2, Math.SQRT1_2);
@@ -272,29 +285,17 @@ console.log("\na NetSession rebuilds the match from the messages:");
   // Out of control (dead, the match decided), we're drawn from the snapshots.
   alice.controllable = false;
   alice.char.forward = vec(0, 1);
-  later(33);
-  net.receive(roundTrip(mirror.encode(game, alice, 0, [])), clock);
-  later(300);
-  net.interpolate(clock);
+  pump(300);
   check("out of control, our facing is the server's again", Math.abs(net.player.forward.x) < 0.002 && Math.abs(net.player.forward.y - 1) < 0.002, JSON.stringify(net.player.forward));
   alice.controllable = true;
 
   // Ages run on here between the snapshots that carry them.
   const it = net.world.items.find((x) => x.id === dropped.id)!;
-  // A snapshot to measure from, then one 8 ticks later.
-  net.receive(roundTrip(mirror.encode(game, alice, 0, [])), clock);
-  later(300);
-  net.interpolate(clock);
+  // (The server's own copy doesn't age here: only the tick count moves.)
   const age0 = it.age;
-  const t0 = game.tick - 18; // that snapshot's tick (later(300) moved 18 on since)
-  game.tick = t0;
-  clock = t0 * (1000 / 60);
-  later(133);
-  const ticks = game.tick - t0;
-  net.receive(roundTrip(mirror.encode(game, alice, 0, [])), clock);
-  later(300);
-  net.interpolate(clock);
-  check("an item ages by the server ticks between snapshots", it.age === age0 + ticks, `${age0} -> ${it.age} over ${ticks} ticks`);
+  const t0 = net.tick;
+  pump(500);
+  check("an item ages by the server ticks between the snapshots applied", it.age - age0 === net.tick - t0 && net.tick > t0, `${age0} -> ${it.age} over ${net.tick - t0} ticks`);
 
 }
 
@@ -341,50 +342,84 @@ console.log("\nrounds fly on the right clock:");
 console.log("\neveryone else is drawn smoothly, however unevenly snapshots arrive:");
 {
   // A server match with two humans: us, standing, and Other, walking right at
-  // a steady speed. Snapshots reach us 2-5 ticks late, at random (in order,
-  // as over TCP). Drawn at 60 frames a second, Other must glide: the same
-  // step every frame, no stalls, no jumps.
-  // An open level: Other spawns beside us and has nothing to walk into.
-  const host = new MatchHost({ levelName: "open", levelText: `{ "version": 1, "entities": [] }`, mode: "sandbox", manual: true });
-  let tick = 0;
-  let lastAt = 0;
-  const toClient: { at: number; text: string }[] = [];
-  const sock = (deliver: boolean): HostSocket => ({
-    open: true,
-    send: (t) => {
-      if (!deliver) return;
-      lastAt = Math.max(lastAt, tick + 2 + Math.floor(Math.random() * 4));
-      toClient.push({ at: lastAt, text: t });
-    },
-    close: () => {},
-    terminate: () => {},
-  });
-  const meConn = host.connect(sock(true), "198.51.100.1")!;
-  const otherConn = host.connect(sock(false), "198.51.100.2")!;
-  host.message(meConn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Me" }));
-  host.message(otherConn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Other" }));
-  const net = new NetSession("localhost:1", "Me", false);
-  net.outbox = () => {}; // we stand still; the server needn't hear us
-  const ms = (t: number) => t * (1000 / 60);
-  const xs: number[] = [];
-  let otherId = 0;
-  for (let i = 0; i < 400; i++) {
-    tick++;
-    host.message(otherConn, JSON.stringify({ t: "input", seq: tick, in: { ...idleInput(), move: { x: 1, y: 0 } } }));
-    host.advance(1);
-    while (toClient.length && toClient[0].at <= tick) net.receive(JSON.parse(toClient.shift()!.text), ms(tick));
-    net.step(idleInput(), ms(tick));
-    net.interpolate(ms(tick));
-    otherId ||= host.match!.humans.find((h) => h.name === "Other")?.char.id ?? 0;
-    const o = net.characters.find((c) => c.id === otherId);
-    if (o && i >= 150) xs.push(o.pos.x);
+  // a steady speed. Run on a wall clock, as the live server does: its ticks
+  // wander +-3% against our clock, snapshots reach us 30-80 ms late at random
+  // (in order, as over TCP), and we draw at our own 60 frames a second.
+  // `outage` = a stretch of wall time (ms) when nothing gets through.
+  const scenario = (outage: [number, number] | null) => {
+    const host = new MatchHost({ levelName: "open", levelText: `{ "version": 1, "entities": [] }`, mode: "sandbox", manual: true });
+    const toClient: { at: number; text: string }[] = [];
+    let wall = 0;
+    let lastAt = 0;
+    const sock = (deliver: boolean): HostSocket => ({
+      open: true,
+      send: (t) => {
+        if (!deliver) return;
+        let at = wall + 30 + Math.random() * 50;
+        if (outage && at > outage[0] && at < outage[1]) at = outage[1] + Math.random() * 10; // held up, then all at once
+        lastAt = Math.max(lastAt, at);
+        toClient.push({ at: lastAt, text: t });
+      },
+      close: () => {},
+      terminate: () => {},
+    });
+    const meConn = host.connect(sock(true), "198.51.100.1")!;
+    const otherConn = host.connect(sock(false), "198.51.100.2")!;
+    host.message(meConn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Me" }));
+    host.message(otherConn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Other" }));
+    const net = new NetSession("localhost:1", "Me", false);
+    net.outbox = () => {}; // we stand still; the server needn't hear us
+    const frame = 1000 / 60;
+    let nextTick = 0;
+    let nextFrame = 0;
+    let serverTick = 0;
+    const xs: { wall: number; x: number; delay: number }[] = [];
+    let otherId = 0;
+    for (wall = 0; wall < 9000; wall += 0.5) {
+      if (wall >= nextTick) {
+        serverTick++;
+        host.message(otherConn, JSON.stringify({ t: "input", seq: serverTick, in: { ...idleInput(), move: { x: 1, y: 0 } } }));
+        host.advance(1);
+        nextTick += frame * (1 + 0.03 * Math.sin(serverTick / 150)); // the server's wandering tick rate
+      }
+      while (toClient.length && toClient[0].at <= wall) net.receive(JSON.parse(toClient.shift()!.text), wall);
+      if (wall >= nextFrame) {
+        nextFrame += frame;
+        net.step(idleInput(), wall);
+        net.interpolate(wall);
+        otherId ||= host.match!.humans.find((h) => h.name === "Other")?.char.id ?? 0;
+        const o = net.characters.find((c) => c.id === otherId);
+        if (o && wall > 3000) xs.push({ wall, x: o.pos.x, delay: net.delay });
+      }
+    }
+    return xs;
+  };
+  const steps = (xs: { x: number }[]) => xs.slice(1).map((p, i) => p.x - xs[i].x);
+
+  const calmRun = scenario(null);
+  const calm = steps(calmRun);
+  const calmDelay = Math.max(...calmRun.map((p) => p.delay));
+  let stutters = 0;
+  for (let i = 1; i < calm.length - 1; i++) {
+    const around = (calm[i - 1] + calm[i + 1]) / 2;
+    if (calm[i] < 0.5 * around || calm[i] > 1.5 * around) stutters++;
   }
-  const steps = xs.slice(1).map((x, i) => x - xs[i]);
-  const sorted = [...steps].sort((a, b) => a - b);
-  const median = sorted[sorted.length >> 1];
-  const worst = Math.max(...steps.map((d) => Math.abs(d - median)));
-  check("Other moves the same distance every frame (within 0.2 px: no stall, no jump)", steps.length > 200 && median > 3 && worst < 0.2, `median ${median.toFixed(3)} px/frame, worst deviation ${worst.toFixed(3)}`);
-  check("...drawn a little behind the server: the delay covers the jitter", net.delay > 1000 / 30 && net.delay < 150, `delay ${net.delay.toFixed(0)} ms`);
+  const mean = calm.reduce((a, b) => a + b, 0) / calm.length;
+  const wobble = Math.max(...calm.slice(1).map((d, i) => Math.abs(d - calm[i])));
+  check("Other glides: no frame stalls or jumps against its neighbours", calm.length > 300 && mean > 3 && stutters === 0,
+    `${stutters} stutters in ${calm.length} frames, ${mean.toFixed(2)} px/frame`);
+  check("...and the step changes by under 0.5 px frame to frame", wobble < 0.5, `largest change ${wobble.toFixed(3)} px`);
+
+  // A 400 ms outage: Other holds still through it (nothing to show), then
+  // catches up a little faster than it walks, never in a leap, and the delay
+  // comes back down.
+  const run = scenario([5000, 5400]);
+  const out = steps(run);
+  const after = run.filter((p) => p.wall > 7900);
+  const biggest = Math.max(...out);
+  check("after an outage: no leap, just a brief hurry (no frame over 1.5x the walk)", biggest < 1.5 * mean, `largest frame step ${biggest.toFixed(2)} px vs ${mean.toFixed(2)} walking`);
+  check("...and within 2.5 s the delay is back to normal (within 40 ms of the calm run's)", after.length > 0 && after.every((p) => p.delay < calmDelay + 40),
+    `delay ${after[0]?.delay.toFixed(0)}..${after.at(-1)?.delay.toFixed(0)} ms, calm up to ${calmDelay.toFixed(0)}`);
 }
 
 console.log("\nour own player answers at once, and agrees with the server:");
@@ -520,7 +555,9 @@ console.log("\nrespawning over the wire keeps the same player object:");
   }
   step(10);
   check("respawned: the session's player is still the object the screen holds", back && net.player === held);
-  check("...back in the roster, alive, at the server's spawn point", net.characters.includes(held!) && held!.hp > 0 && dist(held!.pos, me.char.pos) < 1, `${held!.pos.x.toFixed(0)},${held!.pos.y.toFixed(0)} vs ${me.char.pos.x.toFixed(0)},${me.char.pos.y.toFixed(0)}`);
+  // (Within a few px: bots spawning beside us can shove us, and this test runs
+  // no client ticks for the eased-in correction to finish melting.)
+  check("...back in the roster, alive, at the server's spawn point", net.characters.includes(held!) && held!.hp > 0 && dist(held!.pos, me.char.pos) < 10, `${held!.pos.x.toFixed(0)},${held!.pos.y.toFixed(0)} vs ${me.char.pos.x.toFixed(0)},${me.char.pos.y.toFixed(0)}`);
 }
 
 console.log("\nserver addresses:");

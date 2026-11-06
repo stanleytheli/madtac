@@ -10,10 +10,11 @@
  * EVERYONE ELSE is drawn a little in the past, on the server's clock. Each
  * snapshot is stamped with its tick; it is held in a buffer and applied when
  * render time reaches that tick, and characters and vehicles are interpolated
- * between it and the next one. Render time runs `delay` behind the newest
- * snapshot, enough to cover the gap to the next plus however unevenly they have
- * been arriving (measured as it goes), so a late or an early packet changes
- * nothing on screen. Rounds fly on the same clock (linear from their last
+ * between it and the next one. Render time is a playout buffer: real speed,
+ * nudged a few percent to keep a cushion of snapshots in hand that is sized by
+ * how unevenly they have been arriving (and by how the server's tick rate
+ * wanders against ours), so a late or an early packet changes nothing on
+ * screen. Rounds fly on the same clock (linear from their last
  * position), and the world's events — shots, impacts, blood, footsteps — play
  * when render time reaches them, so a muzzle flash and its tracer line up with
  * the shooter you see. Our own rounds are drawn without the delay.
@@ -80,25 +81,49 @@ const PING_MS = 2000;
 const RECONNECT_MS = 1500;
 const TICK_MS = 1000 / SIM_HZ;
 
-// --- the delayed clock --------------------------------------------------------
-/** The interpolation delay is one snapshot interval plus a margin for uneven
- *  arrival: JITTER_MARGIN times the average lateness, at least MIN_MARGIN_MS,
- *  and never past MAX_DELAY_MS in all. */
-const JITTER_MARGIN = 2.5;
-const MIN_MARGIN_MS = 10;
-const MAX_DELAY_MS = 250;
-/** The clock follows the fastest arrivals: a faster one moves it at once, and
- *  otherwise it creeps this fraction per snapshot toward the latest, so drift
- *  between the two machines' clocks (or a slower route) is followed too. */
-const CLOCK_CREEP = 0.01;
-/** Smoothing of the average lateness, per snapshot. */
-const LATENESS_EASE = 0.05;
-/** Render time runs at real speed and is steered toward where the clock says
- *  it should be by this fraction of the gap per frame, so a new estimate never
- *  jolts what is drawn; more than RENDER_JUMP_TICKS off (a restart, a tab
- *  coming back) and it jumps. */
-const RENDER_STEER = 0.02;
-const RENDER_JUMP_TICKS = 10;
+// --- the delayed clock (a playout buffer) -------------------------------------
+// Render time runs at real speed, a few percent faster or slower as needed to
+// keep a cushion of snapshots ahead of it: deep enough that the next one is
+// in hand when it's needed, however unevenly they arrive and however the
+// server's own tick rate wanders against our clock. It never runs past the
+// newest snapshot: with nothing newer, everyone holds still until more comes.
+//
+// The cushion is thinnest just before a snapshot arrives; that reading is
+// followed by a "valley": a thinner reading pulls it down at once (a late
+// snapshot is answered right away), a thicker one lets it rise over half a
+// second or so (so it never steers on a thin spot long gone). Render speed
+// steers the valley toward CUSHION_TICKS.
+/** Ticks of cushion wanted at its thinnest. */
+const CUSHION_TICKS = 3;
+/** How far the valley moves toward each reading: a thinner one, a thicker one. */
+const VALLEY_DOWN = 0.5;
+const VALLEY_UP = 0.03;
+/** A gap between arrivals this long (ms) is an outage, not jitter: it says
+ *  nothing about the jitter to come, so the valley starts over from the next
+ *  reading. */
+const OUTAGE_MS = 250;
+/** An arrival this soon (ms) after the one before is part of a bunch; the
+ *  thin point was before the bunch's first, so it gives no reading. */
+const BUNCHED_MS = 8;
+/** Render speed heads for real speed times 1 + bias + STEER x (valley -
+ *  CUSHION_TICKS) and eases there by RATE_EASE a tick, so speed never changes
+ *  abruptly. The steer is held to MAX_SLOW slower (a few percent, too little to
+ *  see) and MAX_HURRY faster (the cushion is thick even at its thinnest, as
+ *  after an outage: a brief fast-forward beats drawing everyone that far in the
+ *  past for seconds). The bias learns, BIAS_GAIN per tick of error per tick,
+ *  how fast the server is really ticking against our clock, so a server that
+ *  runs a few percent slow or fast for a while doesn't leave the cushion thin
+ *  or fat; it only learns near the target (within BIAS_BAND ticks) and stays
+ *  within MAX_BIAS. */
+const STEER = 0.04;
+const MAX_SLOW = 0.08;
+const MAX_HURRY = 0.25;
+const RATE_EASE = 0.05;
+const BIAS_GAIN = 0.0005;
+const BIAS_BAND = 3;
+const MAX_BIAS = 0.06;
+/** This many ticks further behind than needed and render time jumps. */
+const JUMP_TICKS = 60;
 /** Applied this many ticks behind render time, a snapshot is stale (a
  *  backgrounded tab catching up): its events are dropped, not played in a heap. */
 const STALE_TICKS = 30;
@@ -222,14 +247,22 @@ export class NetSession implements Session {
 
   // The delayed clock (see the file comment).
   private readonly buffer: Buffered[] = [];
-  /** performance.now() minus server time, from the fastest recent arrivals. */
-  private clockOffset: number | null = null;
-  /** Average lateness of a snapshot past the fastest (ms). */
-  private lateness = 0;
   private lastReceivedTick = -1;
-  /** Render time (server ticks) and the wall time it was last advanced to. */
+  /** Render time (server ticks), the wall time it was last advanced to, and
+   *  the thinnest the cushion has recently been (see CUSHION_TICKS). */
   private renderAt: number | null = null;
   private renderNow = 0;
+  /** The cushion's valley (see VALLEY_DOWN), and whether the next reading
+   *  sets it outright (after an outage). */
+  private valley = 0;
+  private freshValley = false;
+  /** Render speed, as a multiple of real time, and its learned bias. */
+  private rate = 1;
+  private bias = 0;
+  /** When the newest snapshot arrived (wall ms). */
+  private lastArrival = 0;
+  /** Average cushion (ticks), for the delay figure and our own rounds' clock. */
+  private lead = 0;
   /** Poses as of the last applied snapshot, interpolated from toward the next. */
   private readonly poses = new Map<number, Pose>();
   private readonly vehiclePoses = new Map<number, VehiclePose>();
@@ -359,7 +392,6 @@ export class NetSession implements Session {
     this.vehiclePoses.clear();
     this.buffer.length = 0;
     this.pendingEvents.length = 0;
-    this.clockOffset = null;
     this.renderAt = null;
     this.lastReceivedTick = -1;
     // Inputs sent into a dead socket were never heard: nothing to replay.
@@ -385,11 +417,23 @@ export class NetSession implements Session {
     // before applies to the new one; show it all now and start the clock again.
     if (this.lastReceivedTick >= 0 && m.tick < this.lastReceivedTick - RESTART_TICKS) {
       this.flush();
-      this.clockOffset = null;
       this.renderAt = null;
+      this.lastReceivedTick = -1;
+    }
+    // Render time up to this arrival, before it counts: the cushion is at its
+    // thinnest right now, which is what sizes it.
+    this.renderTick(now);
+    const gap = now - this.lastArrival;
+    if (gap >= OUTAGE_MS) {
+      this.freshValley = true;
+    } else if (this.renderAt !== null && gap >= BUNCHED_MS) {
+      const c = this.lastReceivedTick - this.renderAt;
+      if (this.freshValley) this.valley = c;
+      else this.valley += (c - this.valley) * (c < this.valley ? VALLEY_DOWN : VALLEY_UP);
+      this.freshValley = false;
     }
     this.lastReceivedTick = m.tick;
-    this.observeArrival(m.tick, now);
+    this.lastArrival = now;
 
     // Hits are feedback (a hit marker, our own hurt), not scenery: at once.
     for (const e of m.events) if (e.kind === "hit") this.pendingEvents.push(e);
@@ -436,43 +480,53 @@ export class NetSession implements Session {
     this.buffer.push({ m, chars: new Map(m.chars.map((s) => [s.id, s])), vehicles: new Map(m.vehicles.map((s) => [s.id, s])) });
   }
 
-  /** Track the server's clock from a snapshot of `tick` arriving at `now`. */
-  private observeArrival(tick: number, now: number): void {
-    const sample = now - tick * TICK_MS;
-    if (this.clockOffset === null) {
-      this.clockOffset = sample;
-      this.lateness = 0;
-      return;
-    }
-    if (sample < this.clockOffset) this.clockOffset = sample;
-    else this.clockOffset += (sample - this.clockOffset) * CLOCK_CREEP;
-    this.lateness += (sample - this.clockOffset - this.lateness) * LATENESS_EASE;
-  }
-
-  /** How far behind the newest snapshot everyone else is drawn (ms). */
+  /** How far behind the newest snapshot everyone else is drawn, on average,
+   *  counting the wait for the next (ms). */
   get delay(): number {
-    return Math.min(MAX_DELAY_MS, this.snapMs + Math.max(MIN_MARGIN_MS, JITTER_MARGIN * this.lateness));
+    return (this.lead + this.snapMs / TICK_MS / 2) * TICK_MS;
   }
 
-  /** The server tick to draw everyone else at, at `now` (fractional): real
-   *  time's pace, steered gently toward the clock's estimate (see RENDER_STEER). */
+  /** The server tick to draw everyone else at, at `now` (fractional): see the
+   *  playout buffer above. Advancing it is idempotent for a given `now`. */
   renderTick(now: number): number {
-    if (this.clockOffset === null) return this.tick;
-    const target = (now - this.clockOffset - this.delay) / TICK_MS;
-    if (this.renderAt === null || Math.abs(target - this.renderAt) > RENDER_JUMP_TICKS) {
-      this.renderAt = target;
-    } else if (now > this.renderNow) {
-      this.renderAt += (now - this.renderNow) / TICK_MS;
-      this.renderAt += (target - this.renderAt) * RENDER_STEER;
+    if (this.lastReceivedTick < 0) return this.tick;
+    const snapTicks = this.snapMs / TICK_MS;
+    if (this.renderAt === null) {
+      // Start a snapshot interval plus the cushion behind the newest, as of
+      // when it arrived.
+      this.renderAt = this.lastReceivedTick - snapTicks - CUSHION_TICKS;
+      this.renderNow = this.lastArrival;
+      this.valley = CUSHION_TICKS;
+      this.freshValley = false;
+      this.lead = snapTicks + CUSHION_TICKS;
+      this.rate = 1;
+      this.bias = 0;
     }
-    this.renderNow = Math.max(this.renderNow, now);
+    if (now > this.renderNow) {
+      const dt = (now - this.renderNow) / TICK_MS;
+      if (this.valley - CUSHION_TICKS > JUMP_TICKS) {
+        // Far behind: no point hurrying.
+        this.renderAt += this.valley - CUSHION_TICKS;
+        this.valley = CUSHION_TICKS;
+      }
+      const err = this.valley - CUSHION_TICKS;
+      if (Math.abs(err) < BIAS_BAND) this.bias = Math.max(-MAX_BIAS, Math.min(MAX_BIAS, this.bias + BIAS_GAIN * err * dt));
+      const want = 1 + this.bias + Math.max(-MAX_SLOW, Math.min(MAX_HURRY, STEER * err));
+      this.rate += (want - this.rate) * Math.min(1, RATE_EASE * dt);
+      this.renderAt += dt * this.rate;
+      this.renderNow = now;
+      // Never past the newest snapshot: with nothing newer in hand, everyone
+      // holds where they last were until more arrives.
+      if (this.renderAt > this.lastReceivedTick) this.renderAt = this.lastReceivedTick;
+      this.lead += (this.lastReceivedTick - this.renderAt - this.lead) * Math.min(1, dt / 30);
+    }
     return this.renderAt;
   }
 
   /** The server tick it is "now", as far as we know (our own rounds' clock):
-   *  render time plus the delay, so it is as smooth. */
+   *  render time plus the average cushion, so it is as smooth. */
   private presentTick(now: number): number {
-    return this.renderTick(now) + this.delay / TICK_MS;
+    return this.renderTick(now) + this.lead;
   }
 
   /** Apply every buffered snapshot render time has reached. */
