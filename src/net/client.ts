@@ -22,9 +22,15 @@
  * OUR OWN PLAYER is drawn in the present, predicted. Every tick we send one
  * input (numbered) and run it here at once through the same steps the server
  * will (a weapon switch, a reload, walking against the same walls and stairs
- * in world/locomotion.ts, the gun's timers, the trigger as Gun.fireCosmetic:
- * flash, kick, sound, ammo), so moving and shooting answer the keys
- * immediately. Each snapshot says which of our inputs the server has applied
+ * in world/locomotion.ts, the gun's timers, the trigger), so moving and
+ * shooting answer the keys immediately. The trigger is the real Gun.fire,
+ * seeded as the server seeds that input's shot (engine/rng.ts): flash, kick,
+ * sound and ammo at once, and bullets of our own that fly here against
+ * everyone as we draw them, with their impacts (blood, sparks, holes, the hit
+ * sound) the moment they land. Each input also says what server tick we were
+ * drawing everyone at, and the server rewinds its targets there for our shots
+ * (lag compensation), so what hit here hit there; the damage is still the
+ * server's call. Each snapshot says which of our inputs the server has applied
  * and where that left us (MeSnap): we rewind to that, replay the inputs it
  * hasn't seen yet, and if the result differs from what we showed (a shove, a
  * hit's stagger) the difference is melted away over a few ticks rather than
@@ -57,7 +63,8 @@ import type { DeathMark } from "../ui/minimap.ts";
 import type { RespawnHost, Session } from "../ui/session.ts";
 import { loadLevel, type LevelMeta } from "../world/level.ts";
 import { footsteps, stairDirAt, walk } from "../world/locomotion.ts";
-import type { Bullet, Projectile, World } from "../world/world.ts";
+import { updateBullets, type Bullet, type Hittable, type Projectile, type World } from "../world/world.ts";
+import { shotRng } from "../engine/rng.ts";
 import {
   DEFAULT_SNAP_HZ,
   PROTOCOL,
@@ -280,6 +287,13 @@ export class NetSession implements Session {
   private smooth: Vec2 = vec(0, 0);
   /** Where our own simulation's events go while replaying (heard by no one). */
   private readonly muted: GameEvent[] = [];
+  /** The match's shot seed (WelcomeMsg.salt; see engine/rng.ts). */
+  private salt = 0;
+  /** Our own rounds, predicted: fired here the instant the trigger is pulled
+   *  (seeded as the server seeds the real shot, so they fly the same way) and
+   *  flown here against everyone as we draw them, impacts and all. The
+   *  server's copies of them, and of what they hit, aren't shown. */
+  private ownBullets: Bullet[] = [];
 
   /** `host` is "host:port" or a full ws:// URL; `name` is what to join as;
    *  `password` the server's join password, if it has one. `connect` = false
@@ -362,6 +376,8 @@ export class NetSession implements Session {
     this.token = m.token;
     if (typeof sessionStorage !== "undefined") sessionStorage.setItem(`madtac.token.${this.url}`, m.token);
     this.snapMs = 1000 / (m.snapHz || DEFAULT_SNAP_HZ);
+    this.salt = m.salt;
+    this.ownBullets = [];
     const rejoin = this.myId === m.id && this.meta !== null;
     this.myId = m.id;
     this.meta = m.meta;
@@ -440,7 +456,10 @@ export class NetSession implements Session {
     this.lastArrival = now;
 
     // Hits are feedback (a hit marker, our own hurt), not scenery: at once.
-    for (const e of m.events) if (e.kind === "hit") this.pendingEvents.push(e);
+    // (Not the hits of our own rounds while we predict them: we've shown those.)
+    for (const e of m.events) {
+      if (e.kind === "hit" && !(e.round && e.attacker === this.myId && this.predicting)) this.pendingEvents.push(e);
+    }
 
     // Our own character, all but its pose (which is predicted, or else drawn
     // on the delayed clock with everyone's).
@@ -758,7 +777,7 @@ export class NetSession implements Session {
     if (r - m.tick > STALE_TICKS) return;
     for (const e of m.events) {
       if (e.kind === "hit") continue;
-      if (e.kind === "sound" && e.by === this.myId && this.predicting) continue;
+      if ((e as { by?: number }).by === this.myId && this.predicting) continue; // ours: played already
       if (e.kind !== "decal") {
         this.pendingEvents.push(e);
       } else {
@@ -889,7 +908,7 @@ export class NetSession implements Session {
     c.setUseTimer(me.us, Math.max(me.us, c.useTotalTicks));
 
     // Replay what the server hasn't seen yet, silently.
-    for (const p of this.pending) this.simulate(p.input, false);
+    for (const p of this.pending) this.simulate(p, false);
 
     const now = c.gun;
     if (now === g0) {
@@ -925,7 +944,8 @@ export class NetSession implements Session {
    * pickups, drops, utility use and healing stay the server's. `live` = the
    * tick being played now (heard and seen); otherwise a silent replay.
    */
-  private simulate(input: PlayerInput, live: boolean): void {
+  private simulate(p: { seq: number; input: PlayerInput }, live: boolean): void {
+    const input = p.input;
     const c = this.player;
     const events = live ? this.world.events : this.muted;
     const saved = c.events;
@@ -941,7 +961,12 @@ export class NetSession implements Session {
     c.tickStagger();
     const f = c.gun.spec.fire;
     if (f && !c.holdingUtility && (f.auto ? input.fire : input.firePressed)) {
-      c.gun.fireCosmetic(events, c.pos, c, c.speedRatio);
+      // The real trigger, into a world of its own: what it spawns becomes our
+      // predicted rounds (live) or is thrown away (a replay). Seeded as the
+      // server seeds this input's shot, so the spread comes out the same.
+      const fw: World = { ...this.world, bullets: [], projectiles: [], events };
+      c.gun.fire(fw, c.pos, c.forward, c, c.speedRatio, [], c.speedFraction, shotRng(this.salt, p.seq));
+      if (live) this.ownBullets.push(...fw.bullets);
     }
     if (live) footsteps(c, events);
     c.events = saved;
@@ -985,7 +1010,10 @@ export class NetSession implements Session {
    *  apply the snapshots render time has reached, and hand their events on. */
   step(input: PlayerInput, nowMs = performance.now()): void {
     this.seq += 1;
-    this.send({ t: "input", seq: this.seq, in: input });
+    // Where we're drawing everyone else: a shot this input fires should meet
+    // them there on the server too (lag compensation).
+    const vt = this.renderAt !== null ? Math.round(this.renderTick(nowMs) * 10) / 10 : undefined;
+    this.send(vt === undefined ? { t: "input", seq: this.seq, in: input } : { t: "input", seq: this.seq, in: input, vt });
     this.pending.push({ seq: this.seq, input });
     if (this.pending.length > MAX_PENDING) this.pending.shift();
 
@@ -1009,7 +1037,7 @@ export class NetSession implements Session {
       const c = this.player;
       c.pos = this.predPos;
       const from = this.world.events.length;
-      this.simulate(input, true);
+      this.simulate({ seq: this.seq, input }, true);
       // Our own sounds' voices, apart from the server's: a "stop reload:7" for
       // someone else's gun 7 mustn't cut ours.
       for (let i = from; i < this.world.events.length; i++) {
@@ -1021,15 +1049,26 @@ export class NetSession implements Session {
       c.pos = add(this.predPos, this.smooth);
     }
 
+    // Our predicted rounds fly against everyone where we draw them right now,
+    // just as the server flies the real ones against where we saw them (lag
+    // compensation): their impacts show the moment they happen, and harm no
+    // one here (the damage is the server's to deal).
+    if (this.ownBullets.length) {
+      this.placeEveryone(nowMs);
+      const fw: World = { ...this.world, bullets: this.ownBullets, events: this.world.events };
+      updateBullets(fw, this.asDrawn());
+      this.ownBullets = fw.bullets;
+    }
+
     if (nowMs - this.lastPingAt > PING_MS && this.status === "connected") {
       this.lastPingAt = nowMs;
       this.send({ t: "ping", at: nowMs });
     }
   }
 
-  /** Before a frame: everyone else where render time puts them (between the
-   *  last applied snapshot and the next), the rounds where they have flown. */
-  interpolate(nowMs: number): void {
+  /** Everyone else where render time puts them: between the last applied
+   *  snapshot and the next. */
+  private placeEveryone(nowMs: number): void {
     this.advance(nowMs);
     const r = this.renderTick(nowMs);
     const next = this.buffer[0];
@@ -1054,13 +1093,32 @@ export class NetSession implements Session {
         v.turretAngle[i] = n && i < n.ta.length ? angleLerp(p.ta[i], n.ta[i], a) : p.ta[i];
       }
     }
+  }
+
+  /** Everyone else, for our predicted rounds to hit: where they're drawn, as
+   *  stand-ins that take no harm (the server decides the damage). */
+  private asDrawn(): Hittable[] {
+    const out: Hittable[] = [];
+    for (const c of this.characters) {
+      if (c === this.player || c.hp <= 0) continue;
+      out.push({ id: c.id, pos: c.pos, z: c.z, registerHit: () => {} });
+    }
+    return out;
+  }
+
+  /** Before a frame: everyone else where render time puts them (between the
+   *  last applied snapshot and the next), the rounds where they have flown. */
+  interpolate(nowMs: number): void {
+    this.placeEveryone(nowMs);
+    const r = this.renderTick(nowMs);
     // Rounds fly on in a straight line from where they last were: everyone
     // else's on the delayed clock, ours on the present one. One that would
     // have crossed a wall since is out of sight (and soon out of the list).
     const present = this.presentTick(nowMs);
-    const fly = <T extends Bullet | Projectile>(rounds: Map<number, Round<T>>): T[] => {
+    const fly = <T extends Bullet | Projectile>(rounds: Map<number, Round<T>>, skipOwn = false): T[] => {
       const out: T[] = [];
       for (const rd of rounds.values()) {
+        if (skipOwn && rd.own) continue;
         const dt = Math.max(0, (rd.own ? present : r) - rd.tick);
         const from = vec(rd.x, rd.y);
         const pos = vec(rd.x + rd.vx * dt, rd.y + rd.vy * dt);
@@ -1071,7 +1129,9 @@ export class NetSession implements Session {
       }
       return out;
     };
-    this.world.bullets = fly(this.bullets);
+    // Our own bullets are our predicted ones; the server's copies stay hidden
+    // while we predict (seated, say, ours come from the server like anyone's).
+    this.world.bullets = [...fly(this.bullets, this.predicting), ...this.ownBullets];
     this.world.projectiles = fly(this.projs);
   }
 

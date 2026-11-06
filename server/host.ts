@@ -33,6 +33,7 @@ import { loadLevel, type LevelMeta, type LevelState, type TeamConfig } from "../
 import type { GameEvent } from "../src/engine/events.ts";
 import { idleInput, type PlayerInput } from "../src/engine/command.ts";
 import { ClientMirror } from "../src/net/snapshot.ts";
+import { shotRng } from "../src/engine/rng.ts";
 import {
   DEFAULT_SNAP_HZ,
   PROTOCOL,
@@ -129,8 +130,11 @@ interface Client {
   token: string;
   mirror: ClientMirror;
   /** Inputs received and not yet applied, oldest first: one is applied per
-   *  tick (see INPUT_BUFFER / INPUT_MAX). */
-  inputs: { seq: number; in: PlayerInput }[];
+   *  tick (see INPUT_BUFFER / INPUT_MAX). `vt` = what the client was seeing. */
+  inputs: { seq: number; in: PlayerInput; vt?: number }[];
+  /** Ticks since an input was last applied (the held one carrying over): a
+   *  shot then gets a seed of its own (see engine/rng.ts). */
+  repeat: number;
   /** Holding inputs back until INPUT_BUFFER are in hand. */
   buffering: boolean;
   /** The last input applied; snapshots echo it (SnapMsg.seq). */
@@ -204,6 +208,8 @@ export class MatchHost {
   private readonly onFatal: () => void;
   private readonly manual: boolean;
   private manualNow = 0;
+  /** Seeds every human's shot randomness this match (see engine/rng.ts). */
+  private readonly salt = randomBytes(4).readUInt32LE(0);
 
   /** Built on the first join (see the file comment). */
   private game: Game | null = null;
@@ -403,6 +409,7 @@ export class MatchHost {
       meta: this.meta,
       tick: game.tick,
       snapHz: this.snapHz,
+      salt: this.salt,
     });
     // What this client saw before (if anything) is stale after a rebuild.
     c.mirror = new ClientMirror(game, this.sight);
@@ -431,7 +438,7 @@ export class MatchHost {
     const slot = game.addHuman(name);
     const token = randomBytes(12).toString("hex");
     const c: Client = {
-      socket: conn.socket, slot, token, mirror: new ClientMirror(game, this.sight), inputs: [], buffering: true, seq: 0, droppedAt: null,
+      socket: conn.socket, slot, token, mirror: new ClientMirror(game, this.sight), inputs: [], repeat: 0, buffering: true, seq: 0, droppedAt: null,
     };
     this.clients.set(token, c);
     conn.client = c;
@@ -461,11 +468,11 @@ export class MatchHost {
     const game = this.ensureGame();
     switch (msg.t) {
       case "input":
-        c.inputs.push({ seq: msg.seq, in: msg.in });
+        c.inputs.push({ seq: msg.seq, in: msg.in, vt: msg.vt });
         while (c.inputs.length > INPUT_MAX) {
           const a = c.inputs.shift()!;
           const b = c.inputs.shift()!;
-          c.inputs.unshift({ seq: b.seq, in: mergeInputs(a.in, b.in) });
+          c.inputs.unshift({ seq: b.seq, in: mergeInputs(a.in, b.in), vt: b.vt });
         }
         break;
       case "loadout":
@@ -519,15 +526,21 @@ export class MatchHost {
     // (or still building slack) means the held state carries over.
     for (const c of this.clients.values()) {
       if (c.buffering && c.inputs.length >= INPUT_BUFFER) c.buffering = false;
+      let applied = false;
       if (!c.buffering) {
         const next = c.inputs.shift();
         if (next) {
           c.slot.input = next.in;
           c.seq = next.seq;
+          c.slot.viewTick = next.vt ?? null;
+          applied = true;
         } else {
           c.buffering = true; // ran dry: wait for slack again
         }
       }
+      // A shot this tick draws from the seed the client predicted it with.
+      c.repeat = applied ? 0 : c.repeat + 1;
+      c.slot.rng = shotRng(this.salt, c.seq, c.repeat);
       // A dropped player stands still rather than running into a wall forever.
       if (c.socket === null) {
         c.slot.input = idleInput();

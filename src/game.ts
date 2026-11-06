@@ -50,6 +50,7 @@ import { Robot, type AiContext } from "./ai/robot.ts";
 import { areHostile, type TeamId } from "./entities/team.ts";
 import type { SlotKind } from "./ui/ui.ts";
 import { heldOnly, idleInput, type PlayerInput } from "./engine/command.ts";
+import type { Rng } from "./engine/rng.ts";
 import { MINIMAP_DEATH_TTL, type DeathMark } from "./ui/minimap.ts";
 import { add, angleOf, dist, fromAngle, norm, perp, scale, vec, type Vec2 } from "./engine/vec.ts";
 import { stairZ, updateBullets, updateProjectiles, type World } from "./world/world.ts";
@@ -57,6 +58,15 @@ import { applyStairZ, footsteps, resolveCollisions, resolveVehicles, resolveWall
 import { Vehicle, type VehicleSpec } from "./entities/vehicle.ts";
 
 const PICKUP_RANGE = 75; // world px the player can reach a ground item from
+
+// --- lag compensation (online) -------------------------------------------------
+/** How far back a human's shot may meet its targets (ticks): an online client
+ *  draws everyone else ~100 ms in the past, plus half its round trip. Capped so
+ *  a lagging (or lying) client can't shoot at where people were long ago, and
+ *  so a victim isn't hit long after reaching cover. 18 ticks = 300 ms. */
+export const MAX_REWIND_TICKS = 18;
+/** Ticks of position history kept per character, a little past the cap. */
+const TRAIL_TICKS = 24;
 const ENTER_RANGE = 160; // world px to a seat the player can board it from (hulls are big)
 
 // --- inferred player route (nav congestion) ---------------------------------
@@ -115,6 +125,13 @@ export class PlayerSlot {
    *  unshifts a credited kill (newest first); despawnStale ages them and drops
    *  any past KILLFEED_TTL; cleared on reset. */
   readonly killFeed: KillFeedEntry[] = [];
+  /** Online only, set by the server before each tick: the randomness this
+   *  tick's shot draws from (seeded by the input that fired it, so the
+   *  shooter's client predicts it exactly; see engine/rng.ts), and the server
+   *  tick their client was drawing everyone else at (lag compensation; see
+   *  Bullet.rewind). Null = single player: Math.random, the present. */
+  rng: Rng | null = null;
+  viewTick: number | null = null;
 
   constructor(char: Character, name: string) {
     this.char = char;
@@ -859,10 +876,11 @@ export class Game implements GameCtx {
     // Body-vs-body last, as one symmetric pass over all characters — every agent
     // treated equally (no resolve-order priority; the humans included).
     this.separateCharacters();
+    this.recordTrail();
     profiler.end("collide");
 
     profiler.begin("bullets");
-    updateBullets(this.world, this.characters);
+    updateBullets(this.world, this.characters, (t, ago) => this.pastPose(t as Character, ago));
     updateProjectiles(this.world, this.characters);
     profiler.end("bullets");
 
@@ -968,8 +986,54 @@ export class Game implements GameCtx {
       const f = p.gun.spec.fire;
       if (f) {
         const wantFire = f.auto ? input.fire : input.firePressed;
-        if (wantFire) p.fire(this.world, this.characters);
+        if (wantFire) {
+          const before = this.world.bullets.length;
+          p.fire(this.world, this.characters, h.rng ?? undefined);
+          // Online: the rounds meet their targets where this player saw them.
+          if (h.viewTick !== null) {
+            const rewind = Math.max(0, Math.min(MAX_REWIND_TICKS, this.tick - h.viewTick));
+            for (let i = before; i < this.world.bullets.length; i++) this.world.bullets[i].rewind = rewind;
+          }
+        }
       }
     }
+  }
+
+  /** Each character's recent positions, newest last (see pastPose). */
+  private readonly trail = new WeakMap<Character, { tick: number; x: number; y: number; z: number }[]>();
+
+  /** Note where every live character stands this tick, after all movement and
+   *  before rounds fly. */
+  private recordTrail(): void {
+    for (const c of this.characters) {
+      if (c.hp <= 0) continue;
+      let t = this.trail.get(c);
+      if (!t) {
+        t = [];
+        this.trail.set(c, t);
+      }
+      t.push({ tick: this.tick, x: c.pos.x, y: c.pos.y, z: c.z });
+      if (t.length > TRAIL_TICKS) t.shift();
+    }
+  }
+
+  /** Where `c` was `ago` ticks back (fractional: between two recorded ticks),
+   *  or null if it wasn't in the fight then (dead, not yet spawned, or before
+   *  the history starts). */
+  private pastPose(c: Character, ago: number): { pos: Vec2; z: number } | null {
+    if (ago <= 0) return c;
+    const at = this.tick - ago;
+    const t = this.trail.get(c);
+    if (!t || !t.length) return null;
+    for (let i = t.length - 1; i >= 0; i--) {
+      const e = t[i];
+      if (e.tick > at) continue;
+      if (e.tick === at) return { pos: vec(e.x, e.y), z: e.z };
+      const n = t[i + 1];
+      if (!n || n.tick !== e.tick + 1) return null; // a gap: not in the fight then
+      const f = at - e.tick;
+      return { pos: vec(e.x + (n.x - e.x) * f, e.y + (n.y - e.y) * f), z: f < 0.5 ? e.z : n.z };
+    }
+    return null;
   }
 }

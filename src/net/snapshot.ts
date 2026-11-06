@@ -118,7 +118,10 @@ export function toWire(e: GameEvent, obstacleIndex: Map<object, number>): WireEv
   switch (e.kind) {
     case "decal": {
       const oi = obstacleIndex.get(e.on);
-      return oi === undefined ? null : { kind: "decal", near: rp(e.near), oi, z: e.z, heft: r2(e.heft) };
+      if (oi === undefined) return null;
+      return e.by === undefined
+        ? { kind: "decal", near: rp(e.near), oi, z: e.z, heft: r2(e.heft) }
+        : { kind: "decal", near: rp(e.near), oi, z: e.z, heft: r2(e.heft), by: e.by };
     }
     case "sound":
       return e.pos ? { ...e, pos: rp(e.pos) } : e;

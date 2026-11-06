@@ -24,17 +24,19 @@ import { GAMEMODES } from "../src/gamemodes/gamemode.ts";
 import { loadLevel } from "../src/world/level.ts";
 import { ClientMirror, CULL_R, POSE_REFRESH, pointInPolygon } from "../src/net/snapshot.ts";
 import { MatchHost, type HostSocket } from "../server/host.ts";
+import { MAX_REWIND_TICKS } from "../src/game.ts";
 import { NetSession } from "../src/net/client.ts";
 import { mergeInputs, parseClientMsg, sanitizeInput, serverUrls, PROTOCOL, type ServerMsg, type SnapMsg } from "../src/net/protocol.ts";
 import { ARMOR_SPECS, GUN_SPECS as SPECS, SKINS } from "../src/entities/specs.ts";
 import { TEAMS } from "../src/entities/team.ts";
 import { idleInput } from "../src/engine/command.ts";
-import { dist, len, norm, vec, type Vec2 } from "../src/engine/vec.ts";
+import { dist, len, norm, sub, vec, type Vec2 } from "../src/engine/vec.ts";
 import { areHostile } from "../src/entities/team.ts";
 import { makeWall } from "../src/world/world.ts";
 import { Gun } from "../src/entities/gun.ts";
 import { GUN_SPECS } from "../src/entities/specs.ts";
 import { GunItem } from "../src/entities/item.ts";
+import { DEFAULT_FIRE_SOUND } from "../src/entities/gun.ts";
 
 let passed = 0;
 let failed = 0;
@@ -210,7 +212,7 @@ console.log("\na NetSession rebuilds the match from the messages:");
   const net = new NetSession("localhost:1", "Alice", false);
   let ready = 0;
   net.onReady = () => ready++;
-  const welcome: ServerMsg = { t: "welcome", protocol: PROTOCOL, id: alice.char.id, token: "tok", level: levelText, meta, tick: game.tick, snapHz: 30 };
+  const welcome: ServerMsg = { t: "welcome", protocol: PROTOCOL, id: alice.char.id, token: "tok", level: levelText, meta, tick: game.tick, snapHz: 30, salt: 1 };
   net.receive(roundTrip(welcome));
   check("the welcome builds the level", ready === 1 && net.world.obstacles.length === game.world.obstacles.length);
   check("...and the local player carries the server's id", net.player.id === alice.char.id);
@@ -303,14 +305,17 @@ console.log("\nrounds fly on the right clock:");
 {
   // An open level (no walls to stop anything), us and another human. Every
   // snapshot arrives exactly on time, so the delayed clock is just the delay.
+  // We're out of control (as when seated): predicting, we'd draw our own
+  // predicted rounds instead, and the server's copies are what's tested here.
   const open = `{ "version": 1, "entities": [] }`;
   const g = new Game(loadLevel(open), GAMEMODES.sandbox(loadLevel(open).meta), { humans: 0 });
   const me = g.addHuman("Me");
+  me.controllable = false;
   const other = g.addHuman("Other");
   other.char.pos = vec(300, 0);
   const mirror = new ClientMirror(g, false);
   const net = new NetSession("localhost:1", "Me", false);
-  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: open, meta: g.level.meta, tick: g.tick, snapHz: 30 }));
+  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: open, meta: g.level.meta, tick: g.tick, snapHz: 30, salt: 1 }));
   const at = (tick: number) => tick * (1000 / 60);
   const spawn = (id: number, owner: typeof me.char, color: string) =>
     g.world.bullets.push({
@@ -327,7 +332,7 @@ console.log("\nrounds fly on the right clock:");
   check("our own round is flagged as ours on the wire, the other not", rs.bullets.find((b) => b.id === 990003)?.o === 1 && rs.bullets.find((b) => b.id === 990002)?.o === undefined);
   net.receive(rs, at(102));
   net.interpolate(at(102));
-  check("ours is drawn on arrival; theirs waits for render time", net.world.bullets.some((b) => b.id === 990003) && !net.world.bullets.some((b) => b.id === 990002));
+  check("not predicting, the server's copy of ours is drawn on arrival; theirs waits for render time", net.world.bullets.some((b) => b.id === 990003) && !net.world.bullets.some((b) => b.id === 990002));
   const t = at(102) + net.delay + 20;
   const r = net.renderTick(t);
   net.interpolate(t);
@@ -498,15 +503,18 @@ console.log("\nour own player answers at once, and agrees with the server:");
   let echoes = 0;
   let magBounced = false;
   let ownRound = false;
+  // (Our predicted round's own impact, on a wall, is ours to hear; a second
+  // gunshot would be the echo.)
+  const report = JSON.stringify(GUN_SPECS.M16.fireSound ?? DEFAULT_FIRE_SOUND);
   run(2 * LAT + 30, () => idleInput(), () => {
-    echoes += net.world.events.filter((e) => e.kind === "sound" && e.by === net.player.id).length;
+    echoes += net.world.events.filter((e) => e.kind === "sound" && JSON.stringify(e.sound) === report).length;
     if (g.mag !== magBefore - 1) magBounced = true;
     if (net.world.bullets.length) ownRound = true;
   });
   check("...the server fired it too", sc.gun.mag === serverMag - 1, `${serverMag} -> ${sc.gun.mag}`);
   check("...its echo of our shot isn't played a second time", echoes === 0, `echoes ${echoes}`);
   check("...and the ammo count never jumps back while the server catches up", !magBounced);
-  check("our own round from the server is drawn", ownRound);
+  check("our own round is drawn (the predicted one) from the moment we fire", ownRound);
 }
 
 console.log("\nthe level's own items and vehicles are the server's to say:");
@@ -516,7 +524,7 @@ console.log("\nthe level's own items and vehicles are the server's to say:");
   const g = new Game(loadLevel(text), GAMEMODES.tdm({ ...loadLevel(text).meta, mode: "tdm" }), { humans: 0 });
   const me = g.addHuman("Viewer");
   const net = new NetSession("localhost:1", "Viewer", false);
-  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: text, meta: g.level.meta, tick: g.tick, snapHz: 30 }));
+  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: text, meta: g.level.meta, tick: g.tick, snapHz: 30, salt: 1 }));
   check("the welcome builds the map with none of the level's items on it", net.world.items.length === 0, `items=${net.world.items.length}`);
   net.receive(roundTrip(new ClientMirror(g, false).encode(g, me, 0, [])));
   net.flush();
@@ -537,7 +545,7 @@ console.log("\nrespawning over the wire keeps the same player object:");
   const net = new NetSession("localhost:1", "Me", false);
   let held: typeof net.player | null = null;
   net.onReady = () => (held = net.player);
-  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: levelText, meta: g.level.meta, tick: g.tick, snapHz: 30 }));
+  net.receive(roundTrip<ServerMsg>({ t: "welcome", protocol: PROTOCOL, id: me.char.id, token: "t", level: levelText, meta: g.level.meta, tick: g.tick, snapHz: 30, salt: 1 }));
   const step = (n: number) => {
     for (let i = 0; i < n; i++) {
       g.update();
@@ -604,6 +612,139 @@ console.log("\ndying online leaves a corpse where we stood, not our character:")
   check("...and a corpse lies where we fell", net.bodies.some((b) => dist(b.pos, where) < 60), `bodies=${net.bodies.length}`);
   check("...never both at once (no character standing over its own corpse)", standingWhileDead === 0, `${standingWhileDead} frames`);
   check("...and the corpse takes our place in the same frame (never neither)", neither === 0, `${neither} frames`);
+}
+
+console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
+{
+  // Us and a target on an open level, the real server host on a manual clock,
+  // us 3 ticks away each way. `vt` = whether our inputs say what we're seeing
+  // (with it stripped, the server can't rewind for us: the control).
+  const arena = (opts: { vt: boolean; gun: string; targetMove?: Vec2 }) => {
+    const host = new MatchHost({ levelName: "open", levelText: `{ "version": 1, "entities": [] }`, mode: "sandbox", manual: true });
+    let tick = 0;
+    const toClient: { at: number; text: string }[] = [];
+    const toServer: { at: number; text: string }[] = [];
+    const sock: HostSocket = { open: true, send: (t) => toClient.push({ at: tick + 3, text: t }), close: () => {}, terminate: () => {} };
+    const conn = host.connect(sock, "198.51.100.1")!;
+    const tconn = host.connect({ open: true, send: () => {}, close: () => {}, terminate: () => {} }, "198.51.100.2")!;
+    host.message(conn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Me" }));
+    host.message(tconn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Target" }));
+    const net = new NetSession("localhost:1", "Me", false);
+    net.outbox = (m) => {
+      if (!opts.vt && m.t === "input") delete (m as { vt?: number }).vt;
+      toServer.push({ at: tick + 3, text: JSON.stringify(m) });
+    };
+    const game = host.match!;
+    const me = game.humans[0].char;
+    const target = game.humans[1].char;
+    me.pos = vec(0, 0);
+    target.pos = vec(320, opts.targetMove ? -160 : 0);
+    me.slots.primary = new Gun(GUN_SPECS[opts.gun]);
+    me.equip("primary");
+    const ms = (t: number) => t * (1000 / 60);
+    const step = (input: ReturnType<typeof idleInput>) => {
+      tick++;
+      while (toServer.length && toServer[0].at <= tick) host.message(conn, toServer.shift()!.text);
+      host.message(tconn, JSON.stringify({ t: "input", seq: tick, in: { ...idleInput(), move: opts.targetMove ?? { x: 0, y: 0 } } }));
+      host.advance(1);
+      while (toClient.length && toClient[0].at <= tick) net.receive(JSON.parse(toClient.shift()!.text), ms(tick));
+      net.step(input, ms(tick));
+      net.interpolate(ms(tick));
+    };
+    // Settle: the kit arrives, the draw ends, the target gets going.
+    for (let i = 0; i < 100; i++) step(idleInput());
+    const drawn = () => net.characters.find((c) => c.id === target.id)!;
+    return { host, game, net, me, target, step, drawn, get tick() { return tick; } };
+  };
+
+  // 1) A shotgun blast: the same pellets on both sides.
+  {
+    const a = arena({ vt: true, gun: "MP220" });
+    const aim = norm(vec(1, 0.3));
+    a.step({ ...idleInput(), aim, fire: true, firePressed: true });
+    const mine = (a.net as unknown as { ownBullets: { vel: Vec2 }[] }).ownBullets.map((b) => Math.atan2(b.vel.y, b.vel.x)).sort();
+    let theirs: number[] = [];
+    for (let i = 0; i < 12 && !theirs.length; i++) {
+      a.step(idleInput());
+      theirs = a.game.world.bullets.filter((b) => b.owner === a.me).map((b) => Math.atan2(b.vel.y, b.vel.x)).sort();
+    }
+    const same = mine.length === 9 && theirs.length === 9 && mine.every((v, i) => Math.abs(v - theirs[i]) < 1e-9);
+    check("a shotgun blast scatters the same 9 pellets on our screen and on the server", same, `ours ${mine.length}, the server's ${theirs.length}`);
+  }
+
+  // 2) A standing target: the hit shows the tick our round reaches it.
+  {
+    const a = arena({ vt: true, gun: "AWM" });
+    const aim = norm(sub(a.drawn().pos, a.net.player.pos));
+    const firedAt = a.tick + 1;
+    a.step({ ...idleInput(), aim, fire: true, firePressed: true });
+    let shownAt = -1;
+    let hits = 0;
+    let blood = false;
+    let serverHitAt = -1;
+    for (let i = 0; i < 40; i++) {
+      for (const e of a.net.world.events) {
+        if (e.kind === "hit" && e.attacker === a.me.id) {
+          hits++;
+          if (shownAt < 0) shownAt = a.tick;
+        }
+        if (e.kind === "blood") blood = true;
+      }
+      if (serverHitAt < 0 && a.target.hp < 100) serverHitAt = a.tick;
+      a.step(idleInput());
+    }
+    const flight = Math.ceil((320 - 2 * 30) / 75); // ticks for the round to reach the target's edge
+    check("a hit shows on our screen as soon as our round reaches the target (no round trip)", shownAt >= 0 && shownAt - firedAt <= flight + 1 && blood,
+      `shown ${shownAt - firedAt} ticks after the shot, blood ${blood}`);
+    check("...the server dealt the damage", serverHitAt > 0, `target hp ${a.target.hp.toFixed(0)}`);
+    check("...and the hit plays once (the server's copy isn't played again)", hits === 1, `${hits} hit sounds`);
+  }
+
+  // 3) A target walking across our line of fire, aimed at where we see it.
+  const walk = (vt: boolean) => {
+    const a = arena({ vt, gun: "AWM", targetMove: vec(0, 1) });
+    const from = vec(a.net.player.pos.x, a.net.player.pos.y);
+    const seen = vec(a.drawn().pos.x, a.drawn().pos.y);
+    const aim = norm(sub(seen, from));
+    const lag = a.target.pos.y - seen.y; // how far ahead of what we see it really is
+    a.step({ ...idleInput(), aim, fire: true, firePressed: true });
+    let predicted = false;
+    let offLine = Infinity;
+    for (let i = 0; i < 40; i++) {
+      const before = a.target.hp;
+      a.step(idleInput());
+      if (a.net.world.events.some((e) => e.kind === "hit" && e.attacker === a.me.id)) predicted = true;
+      if (a.target.hp < before) {
+        // Where it really was when the server's round hit it: how far off our line of fire.
+        const rel = sub(a.target.pos, from);
+        offLine = Math.abs(rel.x * aim.y - rel.y * aim.x);
+      }
+    }
+    return { hit: a.target.hp < 100, predicted, offLine, lag };
+  };
+  const comp = walk(true);
+  const none = walk(false);
+  check("lag compensated: aimed where we see a walking target, the server agrees it's a hit", comp.hit && comp.predicted,
+    `server hit ${comp.hit}, shown here ${comp.predicted}; it was really ${comp.lag.toFixed(0)} px further on`);
+  check("...though at that moment it was really off our line of fire (only the rewind connects)", comp.offLine > 30, `${comp.offLine.toFixed(0)} px off (a body is 30 px)`);
+  check("...and without saying what we saw, the same shot misses on the server", !none.hit, `server hit ${none.hit}`);
+
+  // 4) A client claiming to have seen the distant past gets the cap, no more.
+  {
+    const a = arena({ vt: true, gun: "AWM" });
+    const msg = (vt: number) => JSON.stringify({ t: "input", seq: 99999, vt, in: { ...idleInput(), aim: { x: 1, y: 0 }, fire: true, firePressed: true } });
+    const conn = (a.host as unknown as { conns: Set<unknown> }).conns.values().next().value as never;
+    a.host.message(conn, msg(0));
+    a.host.message(conn, msg(0));
+    a.host.message(conn, msg(0));
+    let rewind: number | undefined;
+    for (let i = 0; i < 6 && rewind === undefined; i++) {
+      a.host.advance(1);
+      rewind = a.game.world.bullets.find((b) => b.owner === a.me)?.rewind;
+    }
+    check(`a client claiming it saw tick 0 is rewound ${MAX_REWIND_TICKS} ticks (the cap), not ${a.game.tick}`, rewind === MAX_REWIND_TICKS, `rewind ${rewind}`);
+  }
+  check("an input's view tick must be a number", parseClientMsg({ t: "input", seq: 1, in: idleInput(), vt: "5" }) === null && parseClientMsg(roundTrip({ t: "input", seq: 1, in: idleInput(), vt: 12.5 })) !== null);
 }
 
 console.log("\nserver addresses:");

@@ -1,4 +1,5 @@
 import type { Armor } from "./armor.ts";
+import type { Rng } from "../engine/rng.ts";
 import type { TeamId } from "./team.ts";
 import { drawCharacter, type CharLayer, type Skin } from "./character.ts";
 import { UtilityStack, type UtilitySpec } from "./consumable.ts";
@@ -603,9 +604,9 @@ export class Character {
    * Fire if the equipped weapon can. Returns true if a shot went out. The caller
    * decides *when* to attempt (held trigger for auto, click edge for semi).
    */
-  fire(world: World, targets: readonly Hittable[] = []): boolean {
+  fire(world: World, targets: readonly Hittable[] = [], rng?: Rng): boolean {
     const gun = this.gun;
-    return gun.fire(world, this.pos, this.forward, this, this.speedRatio, targets, this.speedFraction);
+    return gun.fire(world, this.pos, this.forward, this, this.speedRatio, targets, this.speedFraction, rng);
   }
 
   /**

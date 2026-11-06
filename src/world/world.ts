@@ -523,6 +523,11 @@ export interface Bullet {
   /** Taken on the move with a sniper — stamped at the muzzle, since that is when
    *  it is true, and carried to the kill feed on a fatal hit. See GunSpec.noscope. */
   noscope?: boolean;
+  /** Lag compensation: how many ticks behind the present this round meets the
+   *  characters it can hit — where its shooter saw them when they fired, as an
+   *  online client draws everyone else a little in the past. Set by the Game
+   *  for a human's shot (see Game.fireHuman); absent = the present. */
+  rewind?: number;
 }
 
 /**
@@ -589,34 +594,45 @@ function obstacleHitSound(o: Obstacle): string {
   return OBSTACLE_HIT_SOUND;
 }
 
+// The impact events below take `by`: the shooter, when a round in flight made
+// them (see GameEvent: a client that predicts its own rounds skips the
+// server's copies of what they did).
+
 /** An impact sound at a world point, as an event. */
-function playImpact(w: World, sound: SoundRef, at: Vec2, z: number): void {
-  emitSound(w.events, sound, { pos: at, z, pitchVar: 0.08 });
+function playImpact(w: World, sound: SoundRef, at: Vec2, z: number, by?: number): void {
+  emitSound(w.events, sound, by === undefined ? { pos: at, z, pitchVar: 0.08 } : { pos: at, z, pitchVar: 0.08, by });
 }
 
 /** Debris thrown from `pos` along `dir`, as an event (the client spawns the
  *  particles — see spawnParticles for the arguments' meaning). */
-function emitParticles(w: World, pos: Vec2, dir: Vec2, burst: ParticleBurst, z = 0, heft = 1): void {
-  w.events.push({ kind: "particles", pos, dir, burst, z, heft });
+function emitParticles(w: World, pos: Vec2, dir: Vec2, burst: ParticleBurst, z = 0, heft = 1, by?: number): void {
+  w.events.push(by === undefined ? { kind: "particles", pos, dir, burst, z, heft } : { kind: "particles", pos, dir, burst, z, heft, by });
 }
 
 /** A bullet hole on `on` for a round that reached `near`, as an event (the
  *  client stamps the decal — see stampBulletHole). */
-function emitDecal(w: World, near: Vec2, on: Obstacle, z: number, heft = 1): void {
-  w.events.push({ kind: "decal", near, on, z, heft });
+function emitDecal(w: World, near: Vec2, on: Obstacle, z: number, heft = 1, by?: number): void {
+  w.events.push(by === undefined ? { kind: "decal", near, on, z, heft } : { kind: "decal", near, on, z, heft, by });
 }
 
 /** Blood on the ground for a hit of raw `damage` that landed at `at`, sprayed
  *  along `dir`, as an event (the client stamps it — see stampBloodSplatter). */
-function emitBlood(w: World, at: Vec2, dir: Vec2, z: number, damage: number): void {
-  w.events.push({ kind: "blood", pos: at, dir, z, damage });
+function emitBlood(w: World, at: Vec2, dir: Vec2, z: number, damage: number, by?: number): void {
+  w.events.push(by === undefined ? { kind: "blood", pos: at, dir, z, damage } : { kind: "blood", pos: at, dir, z, damage, by });
 }
 
 /** Damage landed: say who was hit and by whom. The client turns this into its
- *  own player's hurt sound or hit-confirm — the sim doesn't know who that is. */
-function hitFeedback(w: World, victim: Hittable, attacker: Hittable | null): void {
-  w.events.push({ kind: "hit", victim: victim.id, attacker: attacker ? attacker.id : null });
+ *  own player's hurt sound or hit-confirm — the sim doesn't know who that is.
+ *  `round` = by a round in flight (see GameEvent "hit"). */
+function hitFeedback(w: World, victim: Hittable, attacker: Hittable | null, round = false): void {
+  const e: GameEvent = { kind: "hit", victim: victim.id, attacker: attacker ? attacker.id : null };
+  if (round) e.round = true;
+  w.events.push(e);
 }
+
+/** Where a character was `ticksAgo` ticks back (fractional), or null if it
+ *  wasn't in the fight then: lag compensation's history (see Bullet.rewind). */
+export type PastPose = (t: Hittable, ticksAgo: number) => { pos: Vec2; z: number } | null;
 
 /**
  * Can a round with `budget` px of penetration get from `a` to `b` on level `z` —
@@ -1154,11 +1170,16 @@ export function wallbangDamageFor(spent: number, budget: number): number {
  * owner (you can't shoot yourself), and only interacts with obstacles/characters
  * on its own z level.
  */
-export function updateBullets(w: World, targets: readonly Hittable[]): void {
+export function updateBullets(w: World, targets: readonly Hittable[], past?: PastPose): void {
   const alive: Bullet[] = [];
   for (const b of w.bullets) {
     b.life -= 1;
     if (b.life <= 0) continue;
+    const by = b.owner?.id;
+    // Where each target stands for this round: in the present, or (lag
+    // compensation) where its shooter saw it. Damage still lands on the target.
+    const rewind = b.rewind && past ? b.rewind : 0;
+    const poseOf = (t: Hittable): { pos: Vec2; z: number } | null => (rewind ? past!(t, rewind) : t);
 
     const start = b.pos;
     // One sample per SAMPLE_DX px of travel (>=1), so hitreg resolution is fixed
@@ -1200,15 +1221,15 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           b.penUsed = (b.penUsed || 0) + pen.cost;
           // Debris off both faces, at half a normal impact's heft: some of the
           // round's energy went through the wall rather than into it.
-          emitParticles(w, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT);
-          emitParticles(w, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT);
+          emitParticles(w, pen.entry, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit * WALLBANG_HEFT, by);
+          emitParticles(w, pen.exit, fwd, impactBurst(obstacleShrapnel(pen.exitOf)), b.z, grit * WALLBANG_HEFT, by);
           // A hole on each face it crossed: the entry face belongs to whatever
           // owns the material just past it (touching material is one run, so
           // that need not be `struck`); the exit face is exitOf's by definition.
           const entryOf = solidAt(w, add(pen.entry, scale(fwd, FACE_NUDGE)), b.z) ?? struck;
-          emitDecal(w, add(pen.entry, backDir), entryOf, b.z, grit);
-          emitDecal(w, add(pen.exit, fwd), pen.exitOf, b.z, grit);
-          playImpact(w, obstacleHitSound(struck), pen.entry, b.z);
+          emitDecal(w, add(pen.entry, backDir), entryOf, b.z, grit, by);
+          emitDecal(w, add(pen.exit, fwd), pen.exitOf, b.z, grit, by);
+          playImpact(w, obstacleHitSound(struck), pen.entry, b.z, by);
           // Fly on from the far face: everything nearer than that is the wall it
           // just crossed, and it has already been charged for it.
           skipUntil = Math.max(
@@ -1218,9 +1239,9 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
           continue;
         }
         const at = backOut(sample, backDir, (p) => pointInObstacle(p, struck!));
-        emitParticles(w, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit);
-        emitDecal(w, at, struck, b.z, grit);
-        playImpact(w, obstacleHitSound(struck), at, b.z);
+        emitParticles(w, at, backDir, impactBurst(obstacleShrapnel(struck)), b.z, grit, by);
+        emitDecal(w, at, struck, b.z, grit, by);
+        playImpact(w, obstacleHitSound(struck), at, b.z, by);
         consumed = true;
         break;
       }
@@ -1238,8 +1259,8 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
         }
         if (hb) {
           const at = backOut(sample, backDir, (p) => pointInBox(p, hb!));
-          emitParticles(w, at, backDir, impactBurst(WALL_SHRAPNEL), b.z, grit);
-          playImpact(w, METAL_HIT_SOUND, at, b.z); // a hull is metal
+          emitParticles(w, at, backDir, impactBurst(WALL_SHRAPNEL), b.z, grit, by);
+          playImpact(w, METAL_HIT_SOUND, at, b.z, by); // a hull is metal
           consumed = true;
           break;
         }
@@ -1247,8 +1268,10 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
 
       // Then characters on this level (never the shooter).
       for (const t of targets) {
-        if (t === b.owner || t.z !== b.z) continue;
-        if (dist(sample, t.pos) < BODY_RADIUS) {
+        if (t === b.owner) continue;
+        const tp = poseOf(t);
+        if (!tp || tp.z !== b.z) continue;
+        if (dist(sample, tp.pos) < BODY_RADIUS) {
           // A round that came through a wall arrives with less left in it.
           const damage = b.damage * wallbangDamageMul(b);
           t.registerHit(fwd, sample, damage, b.armorPen, b.owner, b.gun, {
@@ -1256,13 +1279,13 @@ export function updateBullets(w: World, targets: readonly Hittable[]): void {
             noscope: b.noscope,
           });
           if (b.stagger) t.applyStagger?.(b.stagger.mul, b.stagger.ticks);
-          hitFeedback(w, t, b.owner);
-          const at = backOut(sample, backDir, (p) => dist(p, t.pos) < BODY_RADIUS);
+          hitFeedback(w, t, b.owner, true);
+          const at = backOut(sample, backDir, (p) => dist(p, tp.pos) < BODY_RADIUS);
           // Blood scales with the round like everything else, but floored: it is
           // the only sign you connected, so a tracerless punch still shows one.
-          emitParticles(w, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit));
+          emitParticles(w, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit), by);
           // ...and leaves some on the ground, sprayed on the way the round was going.
-          emitBlood(w, at, fwd, b.z, damage);
+          emitBlood(w, at, fwd, b.z, damage, by);
           consumed = true;
           break;
         }

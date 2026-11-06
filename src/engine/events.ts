@@ -28,17 +28,21 @@ export type GameEvent =
   | { kind: "stopSound"; voice: string }
   /** Damage landed on `victim` from `attacker` (entity ids; null = no one, e.g.
    *  a test hit). The client turns this into ITS player's hit-confirm or hurt
-   *  sound by comparing ids — the sim no longer knows who the local player is. */
-  | { kind: "hit"; victim: number; attacker: number | null }
-  /** Debris / blood / smoke thrown from `pos` along `dir` (see spawnParticles). */
-  | { kind: "particles"; pos: Vec2; dir: Vec2; burst: ParticleBurst; z: number; heft: number }
+   *  sound by comparing ids — the sim no longer knows who the local player is.
+   *  `round` = landed by a round in flight, which a client predicting its own
+   *  shots has already shown (so it skips the server's copy). */
+  | { kind: "hit"; victim: number; attacker: number | null; round?: true }
+  /** Debris / blood / smoke thrown from `pos` along `dir` (see spawnParticles).
+   *  `by` (here and on decal and blood) = the shooter whose round it was, for
+   *  the same reason as a sound's. */
+  | { kind: "particles"; pos: Vec2; dir: Vec2; burst: ParticleBurst; z: number; heft: number; by?: number }
   /** A bullet hole on `on`, for a round that reached `near` (see stampBulletHole). */
-  | { kind: "decal"; near: Vec2; on: Obstacle; z: number; heft: number }
+  | { kind: "decal"; near: Vec2; on: Obstacle; z: number; heft: number; by?: number }
   /** A blast's scorch mark, `size` px wide at `opacity`, on the floors at `pos` (see stampScorch). */
   | { kind: "scorch"; pos: Vec2; z: number; size: number; opacity: number }
   /** Blood on the ground from a hit of raw `damage` that landed at `pos`,
    *  sprayed along `dir` (see stampBloodSplatter). */
-  | { kind: "blood"; pos: Vec2; dir: Vec2; z: number; damage: number };
+  | { kind: "blood"; pos: Vec2; dir: Vec2; z: number; damage: number; by?: number };
 
 /** Append a positioned (or flat) sound event. */
 export function emitSound(

@@ -5,6 +5,7 @@ import { interpGrip, NOSCOPE_SPEED_RATIO, type GunSpec } from "./guns.ts";
 import { add, angleOf, deg2rad, dist, mid, perp, rotate, scale, sub, type Vec2 } from "../engine/vec.ts";
 import { meleeSwing, spawnBullet, spawnProjectile, type Hittable, type World } from "../world/world.ts";
 import { emitSound, type GameEvent } from "../engine/events.ts";
+import type { Rng } from "../engine/rng.ts";
 import { nextEntityId } from "../engine/ids.ts";
 
 /** Firing sound played for a gun with no `fireSound` of its own. */
@@ -34,8 +35,8 @@ function drawBar(
   ctx.restore();
 }
 
-function sampleNormal(mu: number, sigma: number) {
-  return mu + sigma * Math.sqrt(-2 * Math.log(Math.max(1e-9, Math.random()))) * Math.cos(2 * Math.PI * Math.random());
+function sampleNormal(mu: number, sigma: number, rng: Rng = Math.random) {
+  return mu + sigma * Math.sqrt(-2 * Math.log(Math.max(1e-9, rng()))) * Math.cos(2 * Math.PI * rng());
 }
 
 /**
@@ -401,6 +402,10 @@ export class Gun implements Droppable {
      *  against the gun alone. Defaults to speedRatio for callers with no body
      *  behind the trigger, like a vehicle turret. */
     speedFraction = speedRatio,
+    /** Where the shot's randomness comes from: spread, a shotgun's scatter.
+     *  A human's online shot passes a seeded one so their client can predict
+     *  it exactly (see engine/rng.ts). */
+    rng: Rng = Math.random,
   ): boolean {
     // Per-round guns (pump shotguns): a trigger pull interrupts an in-progress
     // top-off so you can fire right away, as long as at least one round is
@@ -437,7 +442,7 @@ export class Gun implements Droppable {
 
     // Project from the head center (not the muzzle) so shots can't originate past
     // objects/walls in front of the shooter.
-    const dir = rotate(forward, this.shoot(speedRatio));
+    const dir = rotate(forward, this.shoot(speedRatio, rng));
     const m = this.spec.muzzle;
     const muzzleLen = m ? Math.hypot(m.f, m.l) : 0;
     // Hide the bullet until it has cleared the muzzle.
@@ -493,7 +498,7 @@ export class Gun implements Droppable {
       );
     } else {
       for (let i = 0; i < this.spec.shotgunPellets; i++) {
-        const pellet_dir = rotate(dir, sampleNormal(0, deg2rad(this.spec.shotgunSpread)))
+        const pellet_dir = rotate(dir, sampleNormal(0, deg2rad(this.spec.shotgunSpread), rng));
         spawnBullet(
           world,
           origin,
@@ -536,35 +541,12 @@ export class Gun implements Droppable {
   }
 
   /**
-   * A trigger pull with nothing fired: fire()'s gate and all its bookkeeping —
-   * cooldown, magazine, recoil spray, kick, muzzle flash, the punch, the report
-   * and the cycle sound — but no bullet, projectile or swing. A networked client
-   * runs this for its own player the instant the trigger is pulled, so the shot
-   * is seen and heard at once; the server fires the real one moments later, and
-   * the client skips the server's echo of these sounds (see `by`). Returns true
-   * if the gun would have fired.
-   */
-  fireCosmetic(events: GameEvent[], origin: Vec2, owner: { id: number; z: number }, speedRatio: number): boolean {
-    if (this.reloading && this.spec.fire?.perBullet && this.mag > 0) this.cancelReload();
-    if (!this.canFire) return false;
-    this.emitShot(events, origin, owner);
-    if (this.spec.melee) {
-      this.startPunch();
-      this.fireCooldown = this.spec.fire!.delay;
-      this.idleTicks = 0;
-      return true;
-    }
-    this.shoot(speedRatio); // magazine, spray, cooldown, kick, flash
-    return true;
-  }
-
-  /**
    * Register a shot. `speedRatio` = shooter speed / max speed (0..~1). Returns
    * the aim offset (radians) to add to the shot direction.
    *
    * Caller must check `canFire` first.
    */
-  shoot(speedRatio: number): number {
+  shoot(speedRatio: number, rng: Rng = Math.random): number {
     const s = this.spec;
     const f = s.fire!;
 
@@ -575,13 +557,13 @@ export class Gun implements Droppable {
     let recoilForPattern = this.currentRecoil;
     if (this.currentRecoil === 0) {
       const { movingFirstShotRecoilMin: lo, movingFirstShotRecoilMax: hi } = s;
-      recoilForPattern = speedRatio * (lo + Math.random() * (hi - lo));
+      recoilForPattern = speedRatio * (lo + rng() * (hi - lo));
     }
 
     // Deterministic spray pattern (a widening sinusoidal wobble) + random spread,
     // with the random part scaled up by the movement penalty.
     const pattern = this.patternBound(recoilForPattern) * Math.sin(recoilForPattern);
-    const random = (Math.random() * 2 - 1) * this.randomBound(speedRatio);
+    const random = (rng() * 2 - 1) * this.randomBound(speedRatio);
 
     this.mag -= 1; // melee returned above; nothing else fires for free
 
@@ -661,12 +643,12 @@ export class EnemyGun extends Gun {
   }
 
   /** Fire with a constant uniform spread in [-spread, +spread]; never runs dry. */
-  shoot(_speedRatio: number): number {
+  shoot(_speedRatio: number, rng: Rng = Math.random): number {
     this.fireCooldown = this.delay;
     // set = visualRecoil, prevents hands/gun going into robot
     this.kickback = this.spec.visualRecoil;
     this.flashTicks = FLASH_TICKS;
-    return (Math.random() * 2 - 1) * this.spreadRad;
+    return (rng() * 2 - 1) * this.spreadRad;
   }
 
   /** Flat uniform spread, so the bound is simply that spread. */

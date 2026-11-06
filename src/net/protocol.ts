@@ -27,7 +27,7 @@ import type { DeathMark } from "../ui/minimap.ts";
 import { vec } from "../engine/vec.ts";
 
 /** Bumped whenever a message shape changes; a mismatch is rejected at join. */
-export const PROTOCOL = 3;
+export const PROTOCOL = 4;
 /** Sim ticks per second, both sides. */
 export const SIM_HZ = 60;
 /** Snapshots per second the server sends by default (every other tick). */
@@ -86,8 +86,11 @@ export type ClientMsg =
   /** The player's intent for one tick: sent every client tick, `seq` climbing
    *  by one each time. The server applies exactly one per tick, in order, and
    *  each snapshot names the last it applied (SnapMsg.seq): what lets a client
-   *  predict its own player and replay the rest (see net/client.ts). */
-  | { t: "input"; seq: number; in: PlayerInput }
+   *  predict its own player and replay the rest (see net/client.ts). `vt` is
+   *  the server tick the client was drawing everyone else at: a shot this
+   *  input fires meets its targets there (lag compensation, capped; see
+   *  Bullet.rewind). */
+  | { t: "input"; seq: number; in: PlayerInput; vt?: number }
   /** Respawn-screen picks (see Gamemode.setPlayerLoadout / randomize / respawn). */
   | { t: "loadout"; loadout: PlayerLoadout }
   | { t: "random" }
@@ -268,7 +271,7 @@ export interface ProjSnap {
  *  obstacle list (both sides load the same level), everything else as is. */
 export type WireEvent =
   | Exclude<GameEvent, { kind: "decal" }>
-  | { kind: "decal"; near: Vec2; oi: number; z: number; heft: number };
+  | { kind: "decal"; near: Vec2; oi: number; z: number; heft: number; by?: number };
 
 /** A kill-feed line as sent: the gun by spec key. */
 export type WireFeed = Omit<KillFeedEntry, "gun"> & { gun: string | null };
@@ -316,6 +319,9 @@ export interface WelcomeMsg {
   meta: LevelMeta;
   tick: number;
   snapHz: number;
+  /** Seeds the match's shot randomness, so we can predict our own shots
+   *  exactly (see engine/rng.ts). */
+  salt: number;
 }
 
 export type ServerMsg =
@@ -445,8 +451,11 @@ export function parseClientMsg(raw: unknown): ClientMsg | null {
         token: raw.token as string | undefined, password: raw.password as string | undefined,
       };
     case "input":
-      if (!onlyKeys(raw, ["t", "seq", "in"]) || !isNum(raw.seq) || !isInput(raw.in)) return null;
-      return { t: "input", seq: raw.seq, in: sanitizeInput(raw.in) };
+      if (!onlyKeys(raw, ["t", "seq", "in", "vt"]) || !isNum(raw.seq) || !isInput(raw.in)) return null;
+      if (raw.vt !== undefined && !isNum(raw.vt)) return null;
+      return raw.vt === undefined
+        ? { t: "input", seq: raw.seq, in: sanitizeInput(raw.in) }
+        : { t: "input", seq: raw.seq, in: sanitizeInput(raw.in), vt: raw.vt };
     case "loadout": {
       const l = raw.loadout;
       if (!onlyKeys(raw, ["t", "loadout"]) || !isObj(l) || !onlyKeys(l, ["primary", "secondary", "armor"])) return null;
