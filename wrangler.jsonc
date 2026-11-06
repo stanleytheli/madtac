@@ -19,8 +19,13 @@
   // SQLite-backed, which the free plan requires. (The match keeps nothing in
   // storage; a room that empties starts fresh.)
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MatchRoom"] }],
+  // PvP only: TDM on arena-teamfight, and no bots on either side (the level's
+  // own troop counts, 6 a side, are for playing it locally against bots).
   "vars": {
-    "LEVEL": "dom-arena-big-fix",
+    "LEVEL": "arena-teamfight-tdm",
+    "MODE": "tdm",
+    "BLUE_TROOPS": "0",
+    "RED_TROOPS": "0",
     "MAX_PLAYERS": "16",
     "MAX_PER_ADDR": "8"
   },
