@@ -1,0 +1,28 @@
+// The game server on Cloudflare: a Worker routing to one Durable Object per
+// room (worker/index.ts). The website stays on Vercel; players put this
+// Worker's address (madtac.<subdomain>.workers.dev) in the landing page's
+// Server box.
+//
+//   npx wrangler dev                       # run it locally (Cloudflare's runtime)
+//   npx wrangler deploy                    # or connect the repo in the dashboard
+//   npx wrangler secret put MADTAC_PASSWORD   # optional join password
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "madtac",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-11-04",
+  // node:crypto (hashing the join password, reconnect tokens) for server/host.ts.
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": {
+    "bindings": [{ "name": "MATCH", "class_name": "MatchRoom" }]
+  },
+  // SQLite-backed, which the free plan requires. (The match keeps nothing in
+  // storage; a room that empties starts fresh.)
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MatchRoom"] }],
+  "vars": {
+    "LEVEL": "dom-arena-big-fix",
+    "MAX_PLAYERS": "16",
+    "MAX_PER_ADDR": "8"
+  },
+  "observability": { "enabled": true }
+}

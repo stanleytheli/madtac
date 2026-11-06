@@ -9,6 +9,7 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "worker": "wrangler dev",
     "server": "esbuild server/server.ts --bundle --platform=node --format=esm --external:ws --outfile=dist-server/server.mjs --log-level=warning && node --disallow-code-generation-from-strings --permission --allow-fs-read=./dist-server/ --allow-fs-read=./src/world/levels/ --allow-fs-read=./node_modules/ws/ dist-server/server.mjs"
   },
   "devDependencies": {
@@ -16,6 +17,7 @@
     "@types/ws": "^8.18.1",
     "typescript": "^5.5.4",
     "vite": "^5.4.2",
+    "wrangler": "4.158.0",
     "ws": "^8.21.3"
   }
 }

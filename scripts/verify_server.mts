@@ -9,9 +9,12 @@
  * server must still be up.
  *
  * The server runs with the same Node flags `npm run server` gives it (read
- * from package.json), so the lockdown is what gets tested.
+ * from package.json), so the lockdown is what gets tested. With --worker the
+ * same suite runs against the Cloudflare build instead (worker/index.ts under
+ * `wrangler dev`, Cloudflare's own runtime run locally).
  *
- * Run: node scripts/verify_server.mts   (no bundling: it spawns esbuild itself)
+ * Run: node scripts/verify_server.mts            (Node; spawns esbuild itself)
+ *      node scripts/verify_server.mts --worker   (the Worker, via wrangler dev)
  */
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -26,40 +29,65 @@ const check = (name: string, ok: boolean, detail = ""): void => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const WORKER = process.argv.includes("--worker");
+console.log(`target: ${WORKER ? "the Cloudflare Worker (wrangler dev)" : "the Node server"}\n`);
 const PORT = 7000 + Math.floor(Math.random() * 900);
-const built = spawnSync("node_modules/.bin/esbuild", [
-  "server/server.ts", "--bundle", "--platform=node", "--format=esm", "--external:ws",
-  "--outfile=dist-server/server.mjs", "--log-level=warning",
-]);
-if (built.status !== 0) {
-  console.error(String(built.stderr));
-  process.exit(1);
+let NODE_FLAGS: string[] = [];
+if (!WORKER) {
+  const built = spawnSync("node_modules/.bin/esbuild", [
+    "server/server.ts", "--bundle", "--platform=node", "--format=esm", "--external:ws",
+    "--outfile=dist-server/server.mjs", "--log-level=warning",
+  ]);
+  if (built.status !== 0) {
+    console.error(String(built.stderr));
+    process.exit(1);
+  }
+  // The Node flags npm run server uses: `... && node <flags> dist-server/server.mjs`.
+  const script: string = JSON.parse(readFileSync("package.json", "utf8")).scripts.server;
+  NODE_FLAGS = (/&& node (.*?) dist-server\/server\.mjs/.exec(script)?.[1] ?? "").split(/\s+/).filter(Boolean);
+  check("npm run server locks Node down (no eval, file reads allow-listed)", NODE_FLAGS.includes("--disallow-code-generation-from-strings") && NODE_FLAGS.includes("--permission"), NODE_FLAGS.join(" "));
 }
-// The Node flags npm run server uses: `... && node <flags> dist-server/server.mjs`.
-const script: string = JSON.parse(readFileSync("package.json", "utf8")).scripts.server;
-const NODE_FLAGS = (/&& node (.*?) dist-server\/server\.mjs/.exec(script)?.[1] ?? "").split(/\s+/).filter(Boolean);
-check("npm run server locks Node down (no eval, file reads allow-listed)", NODE_FLAGS.includes("--disallow-code-generation-from-strings") && NODE_FLAGS.includes("--permission"), NODE_FLAGS.join(" "));
 
-/** Start a server; resolves once it is listening. `env` adds to the environment. */
-async function start(port: number, extra: string[], env: Record<string, string> = {}) {
-  const proc = spawn("node", [...NODE_FLAGS, "dist-server/server.mjs", "--level", "tdm-arena-big", "--port", String(port), "--blueTroops", "3", "--redTroops", "3", ...extra], {
-    stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env },
-  });
+/** Start a server; resolves once it is listening. `opts` are the match
+ *  options (as Node flags or Worker vars) and an optional password. */
+async function start(port: number, opts: { maxPerAddr?: number; password?: string } = {}) {
+  const match: Record<string, string> = { level: "tdm-arena-big", blueTroops: "3", redTroops: "3" };
+  if (opts.maxPerAddr) match.maxPerAddr = String(opts.maxPerAddr);
+  let proc;
+  if (WORKER) {
+    // Worker vars are UPPER_SNAKE (LEVEL, BLUE_TROOPS, ...); the password is
+    // passed as one too (a secret in production; here only on this test's
+    // own command line).
+    const vars = Object.entries(match).map(([k, v]) => `${k.replace(/[A-Z]/g, (c) => "_" + c).toUpperCase()}:${v}`);
+    if (opts.password) vars.push(`MADTAC_PASSWORD:${opts.password}`);
+    proc = spawn("node_modules/.bin/wrangler", [
+      "dev", "--port", String(port), "--ip", "127.0.0.1", "--persist-to", `/tmp/madtac-wrangler-${port}`,
+      "--inspector-port", String(port + 2000), "--show-interactive-dev-session=false", "--log-level", "log",
+      ...vars.flatMap((v) => ["--var", v]),
+    ], { stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
+  } else {
+    const flags = Object.entries(match).flatMap(([k, v]) => [`--${k}`, v]);
+    proc = spawn("node", [...NODE_FLAGS, "dist-server/server.mjs", "--port", String(port), ...flags], {
+      stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...(opts.password ? { MADTAC_PASSWORD: opts.password } : {}) },
+    });
+  }
   const out = { log: "", exited: null as number | null, proc };
   proc.stdout.on("data", (d) => (out.log += String(d)));
   proc.stderr.on("data", (d) => (out.log += String(d)));
   proc.on("exit", (code) => (out.exited = code ?? -1));
-  for (let i = 0; i < 100 && !out.log.includes("on ws://"); i++) await sleep(50);
+  const ready = () => (WORKER ? /Ready on/.test(out.log) : out.log.includes("on ws://"));
+  for (let i = 0; i < (WORKER ? 600 : 100) && !ready(); i++) await sleep(50);
   return out;
 }
-const main = await start(PORT, []);
+const main = await start(PORT);
 const srv = main.proc;
 const logOf = () => main.log;
 let log = "";
 srv.stdout.on("data", (d) => (log += String(d)));
 srv.stderr.on("data", (d) => (log += String(d)));
 log = logOf();
-check("the server starts on loopback only and announces its port", log.includes(`ws://127.0.0.1:${PORT}/play`) && !log.includes("listening on"), log.trim().split("\n")[0]);
+if (WORKER) check("wrangler dev serves the Worker", /Ready on http:\/\/127\.0\.0\.1:\d+/.test(log), log.split("\n").find((l) => l.includes("Ready on")) ?? log.slice(-300));
+else check("the server starts on loopback only and announces its port", log.includes(`ws://127.0.0.1:${PORT}/play`) && !log.includes("listening on"), log.trim().split("\n")[0]);
 
 const info = await fetch(`http://localhost:${PORT}/info`).then((r) => r.json());
 check("/info describes the match", info.level === "tdm-arena-big" && info.mode === "tdm" && info.players === 0, JSON.stringify(info));
@@ -247,7 +275,10 @@ for (const [what, payload] of [
   for (let i = 0; i < 2000; i++) r.ws.send(m);
   const code = await closedWithin(r, 3000);
   const pongs = r.msgs.filter((x) => x.t === "pong").length;
-  check("a flood (2000 messages at once) is cut off at the burst allowance", code === 1006 && pongs <= 241, `code=${code}, answered ${pongs}`);
+  // Node drops the TCP connection outright (1006); a Workers socket has no
+  // hard reset, so it is closed (1008).
+  // At most the 240-message burst, plus what refills (120/s) while it lands.
+  check("a flood (2000 messages at once) is cut off at the burst allowance", code === (WORKER ? 1008 : 1006) && pongs <= 260, `code=${code}, answered ${pongs}`);
   check("...and the server is still up", await alive());
 }
 {
@@ -262,11 +293,11 @@ srv.kill();
 console.log("\na server with a password and a per-address cap:");
 {
   const port = PORT + 1;
-  const locked = await start(port, ["--maxPerAddr", "3"], { MADTAC_PASSWORD: "hunter2" });
-  check("it announces that it needs one", locked.log.includes("password required"), locked.log.trim().split("\n")[0]);
+  const locked = await start(port, { maxPerAddr: 3, password: "hunter2" });
+  if (!WORKER) check("it announces that it needs one", locked.log.includes("password required"), locked.log.trim().split("\n")[0]);
   const linfo = await fetch(`http://127.0.0.1:${port}/info`).then((r) => r.json());
   check("/info says so", linfo.locked === true);
-  check("the password isn't on its command line (ps shows those)", !locked.proc.spawnargs.join(" ").includes("hunter2"));
+  if (!WORKER) check("the password isn't on its command line (ps shows those)", !locked.proc.spawnargs.join(" ").includes("hunter2"));
   const tryJoin = async (password: string | undefined, headers: Record<string, string> = {}) => {
     const r = raw(port, headers);
     await r.opened;

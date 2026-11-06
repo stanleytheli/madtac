@@ -3,3 +3,5 @@ dist/
 .DS_Store
 design/
 dist-server/
+.wrangler/
+.dev.vars
