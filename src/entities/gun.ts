@@ -54,7 +54,9 @@ export class Gun implements Droppable {
 
   /** Recoil-pattern accumulator. Grows per shot, resets after `recoilDelay` idle ticks. */
   currentRecoil = 0;
-  private idleTicks = 0;
+  /** Ticks since the last shot (counts toward `recoilDelay`). Public so a
+   *  predicting client can rewind it with currentRecoil (see MeSnap). */
+  idleTicks = 0;
 
   /** Visual/firing state. */
   fireCooldown = 0; // ticks until the next shot is allowed

@@ -672,6 +672,29 @@ console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
     check("a shotgun blast scatters the same 9 pellets on our screen and on the server", same, `ours ${mine.length}, the server's ${theirs.length}`);
   }
 
+  // 1b) A held spray: every round on our screen where the server's went. Each
+  // snapshot replays our unacked shots, so the rewind must reset the spray
+  // (currentRecoil) too, or it climbs by every unacked shot per snapshot.
+  for (const move of [vec(0, 0), vec(0, 1)]) {
+    const a = arena({ vt: true, gun: "M16" });
+    const angle = (b: { vel: Vec2 }) => Math.atan2(b.vel.y, b.vel.x);
+    const own = () => (a.net as unknown as { ownBullets: { vel: Vec2 }[] }).ownBullets;
+    const mine: number[] = [];
+    const theirs: number[] = [];
+    const seen = new Set<number>();
+    for (let i = 0; i < 160; i++) {
+      const firing = i < 140;
+      const before = new Set(own());
+      a.step({ ...idleInput(), aim: vec(1, 0), move, fire: firing, firePressed: i === 0 });
+      for (const b of own()) if (!before.has(b)) mine.push(angle(b));
+      for (const b of a.game.world.bullets) if (b.owner === a.me && !seen.has(b.id)) { seen.add(b.id); theirs.push(angle(b)); }
+    }
+    const worst = Math.max(...mine.map((v, i) => Math.abs(v - (theirs[i] ?? Infinity))));
+    check(`a held spray${move.y ? " on the move" : ""}: each of our rounds flies where the server's did`,
+      mine.length >= 15 && mine.length === theirs.length && worst < 0.001,
+      `ours ${mine.length}, the server's ${theirs.length}, worst ${(worst * 180 / Math.PI).toFixed(3)}°`);
+  }
+
   // 2) A standing target: the hit shows the tick our round reaches it.
   {
     const a = arena({ vt: true, gun: "AWM" });

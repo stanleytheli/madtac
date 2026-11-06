@@ -384,6 +384,10 @@ export class ClientMirror {
       co: me.gun.fireCooldown,
       re: me.gun.reloadTicks,
       dr: me.gun.drawTicks,
+      // Exact: the spray pattern is sin(currentRecoil), and the shot the client
+      // predicts must come out where the server's does.
+      rc: me.gun.currentRecoil,
+      ri: me.gun.idleTicks,
       us: me.useTicks,
     };
 

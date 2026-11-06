@@ -27,7 +27,7 @@ import type { DeathMark } from "../ui/minimap.ts";
 import { vec } from "../engine/vec.ts";
 
 /** Bumped whenever a message shape changes; a mismatch is rejected at join. */
-export const PROTOCOL = 4;
+export const PROTOCOL = 5;
 /** Sim ticks per second, both sides. */
 export const SIM_HZ = 60;
 /** Snapshots per second the server sends by default (every other tick). */
@@ -172,7 +172,8 @@ export interface MeSnap {
    *  where a predicting client rewinds to before replaying the inputs it has
    *  sent since. Position (0.01 px) and velocity (0.001 px/tick), level,
    *  stagger (ticks left, speed factor), the slot in hand, the held gun's fire
-   *  cooldown / reload / draw ticks, and the utility use ticks left. */
+   *  cooldown / reload / draw ticks, its spray (currentRecoil, exact, and the
+   *  idle ticks toward its reset), and the utility use ticks left. */
   px: number;
   py: number;
   vx: number;
@@ -184,6 +185,8 @@ export interface MeSnap {
   co: number;
   re: number;
   dr: number;
+  rc: number;
+  ri: number;
   us: number;
 }
 

@@ -903,6 +903,11 @@ export class NetSession implements Session {
     g.fireCooldown = me.co;
     g.reloadTicks = me.re;
     g.drawTicks = me.dr;
+    // The spray too: the replay below fires the unacked shots again, and each
+    // adds to currentRecoil, so without this it would climb by every unacked
+    // shot on every snapshot and our predicted rounds spray far past the real.
+    g.currentRecoil = me.rc;
+    g.idleTicks = me.ri;
     g.mag = me.mag;
     g.reserveMags = me.res;
     c.setUseTimer(me.us, Math.max(me.us, c.useTotalTicks));
