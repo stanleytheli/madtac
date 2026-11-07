@@ -102,8 +102,17 @@ export class Oracle extends Robot {
    *  plan lasted. */
   private planFor: Character | null = null;
   /** The goal node of the last plan (nearest node that sees the chase), or
-   *  -1. Kept so blind facing can look up the hop after the waypoint. */
+   *  -1: where plannedRoute ends, and where the string-pull stops. */
   private goal = -1;
+  /** The committed route as the last plan saw it: node ids from the waypoint
+   *  to the goal, read on the plan's own metric (our own route off the
+   *  congestion field). The string-pull and blind facing walk this list rather
+   *  than asking route() again: by then our route is back on the field, so a
+   *  fresh query routes around ourselves, and on a walkway with stairs at both
+   *  ends it pointed back the way we came. The pull followed it onto the node
+   *  we stood on, every replan re-chose the same hop, and the bot froze there
+   *  (see skipReachableHops). */
+  private plannedRoute: number[] = [];
   private replanIn = 0;
   /** Route length the string-pull may still cut on the current commitment (see
    *  SKIP_AHEAD_DIST). */
@@ -244,28 +253,21 @@ export class Oracle extends Robot {
   /** Where blind movement points the gun: the farthest node within
    *  FACE_NEXT_DISTANCE of walking along the planned route — the leg to the
    *  committed waypoint spends budget first, then edge by edge toward the
-   *  goal. NOTE route().dist is the TOTAL remaining path length, not a hop
-   *  cost, so each edge is measured between its own two nodes. */
+   *  goal along plannedRoute. */
   private lookahead(nav: NavGraph | null, dest: Vec2): Vec2 {
-    const MAX_HOPS = 5; // route() is O(1); this just bounds the walk per tick
-    if (
-      !nav ||
-      this.waypoint < 0 ||
-      this.goal < 0 ||
-      this.goal >= nav.nodes.length ||
-      this.waypoint === this.goal
-    ) {
-      return dest;
-    }
+    const MAX_HOPS = 5; // bounds the walk per tick
+    if (!nav || this.waypoint < 0 || this.waypoint === this.goal) return dest;
+    let at = this.plannedRoute.indexOf(this.waypoint);
+    if (at < 0) return dest;
     let remaining = FACE_NEXT_DISTANCE - dist(this.pos, dest);
     let curr = this.waypoint;
-    for (let hops = 0; hops < MAX_HOPS && curr !== this.goal; hops++) {
-      const step = nav.route(curr, this.goal, this.team);
-      if (!step) break;
-      const edge = dist(nav.nodes[curr].pos, nav.nodes[step.next].pos);
+    for (let hops = 0; hops < MAX_HOPS && at + 1 < this.plannedRoute.length; hops++) {
+      const next = this.plannedRoute[at + 1];
+      const edge = dist(nav.nodes[curr].pos, nav.nodes[next].pos);
       if (edge > remaining) break; // the next node is past the look distance
       remaining -= edge;
-      curr = step.next;
+      curr = next;
+      at += 1;
     }
     return nav.nodes[curr].pos;
   }
@@ -326,17 +328,26 @@ export class Oracle extends Robot {
    *  rather than first detouring out to a node we can already see past. Bounded
    *  per tick and, across ticks, by SKIP_AHEAD_DIST of route per commitment; runs forward
    *  only (toward the goal), so it can't oscillate. Stops at the goal node, where
-   *  the existing arrival/atGoalNode flow takes over. */
+   *  the existing arrival/atGoalNode flow takes over.
+   *
+   *  "The hop after" is read off plannedRoute, the route the plan chose, never a
+   *  fresh route() query. A fresh query runs with our own route stamped on the
+   *  congestion field, so it can prefer a different way round — one passing back
+   *  through where we stand. Following that, the pull walked the waypoint back
+   *  onto our own node; arriving there re-planned the same first hop, the pull
+   *  undid it again, and the bot stood still with enemies alive (arena-teamfight's
+   *  side walkways, stairs at both ends, two near-equal ways to anywhere). */
   private skipReachableHops(nav: NavGraph, world: World): void {
     if (this.atGoalNode || this.goal < 0) return;
     for (let hop = 0; hop < MAX_SKIP && this.waypoint >= 0 && this.waypoint !== this.goal; hop++) {
-      const step = nav.route(this.waypoint, this.goal, this.team);
-      if (!step) return;
-      const next = nav.nodes[step.next];
+      const at = this.plannedRoute.indexOf(this.waypoint);
+      if (at < 0 || at + 1 >= this.plannedRoute.length) return;
+      const nextId = this.plannedRoute[at + 1];
+      const next = nav.nodes[nextId];
       const cut = dist(nav.nodes[this.waypoint].pos, next.pos); // route length this skip jumps past
       if (cut > this.skipLeft) return;
       if (!walkable(world, this.pos, this.z, next.pos, next.z)) return;
-      this.waypoint = step.next;
+      this.waypoint = nextId;
       this.skipLeft -= cut;
     }
   }
@@ -358,21 +369,23 @@ export class Oracle extends Robot {
       // string-pull allowance; a replan that keeps the same hop does not, or the
       // waypoint would creep forward without limit one replan at a time.
       if (this.waypoint !== committed) this.skipLeft = SKIP_AHEAD_DIST;
+      // Keep the route as planned (still on the plan's metric: our own route is
+      // off the field until the line below), for the string-pull and facing.
+      this.plannedRoute = this.routeNodes(nav);
       // Declare the new route whatever happened, including the early returns
       // that leave us with no waypoint at all (which declares nothing).
-      nav.setRoute(this, this.routeNodes(nav), this.team);
+      const stamp = this.plannedRoute;
+      nav.setRoute(this, stamp.length > ROUTE_STAMP_HOPS + 1 ? stamp.slice(0, ROUTE_STAMP_HOPS + 1) : stamp, this.team);
     }
   }
 
-  /** The committed route's nodes, for the congestion field — built in ONE query
-   *  (not one per hop) and capped at ROUTE_STAMP_HOPS edges (currently no cap:
-   *  the whole route — see ROUTE_STAMP_HOPS). */
+  /** The committed route's nodes, waypoint first, goal last — built in ONE
+   *  query (not one per hop). The congestion stamp is this capped at
+   *  ROUTE_STAMP_HOPS edges (currently no cap: the whole route). */
   private routeNodes(nav: NavGraph): number[] {
     if (this.waypoint < 0 || this.goal < 0) return [];
     const rp = nav.routePath(this.waypoint, this.goal, this.team);
-    if (!rp) return [this.waypoint];
-    const path = rp.nodes;
-    return path.length > ROUTE_STAMP_HOPS + 1 ? path.slice(0, ROUTE_STAMP_HOPS + 1) : path;
+    return rp ? rp.nodes : [this.waypoint];
   }
 
   private planInner(nav: NavGraph, world: World, chase: Character): void {

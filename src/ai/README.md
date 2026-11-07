@@ -212,6 +212,13 @@ plan (one path query):
   can't oscillate). This is why paths look smooth instead of node-to-node zig-zag.
 - **`lookahead`** points the gun at the farthest node within `FACE_NEXT_DISTANCE`
   along the route, so the muzzle clears a corner before the body does.
+- Both read "the hop after" off **`plannedRoute`**, the route `plan` committed to
+  (stored while our own route is still off the congestion field), never a fresh
+  `route()` query. After `plan` the bot's own route is back on the field, so a
+  fresh query routes around itself — and where two ways round are near-equal
+  (arena-teamfight's walkways, stairs at both ends) it pointed back through the
+  node the bot stood on. The pull followed it there, every replan re-chose the
+  same hop, and the bot froze (`scripts/verify_walkway.mts`).
 
 `standoffFor(chase)` is the beeline stop distance (default `DEFAULT_STANDOFF`); a
 subclass overrides it to walk right onto a destination instead of hovering short.
@@ -955,6 +962,7 @@ Behaviour you see, and the specific decision that produces it.
 | Bot peeks out, shoots, ducks back, repeats | Working as designed: the burst/cover cycle. `lambda` controls how long each peek's burst lasts. |
 | Bot walks a weird dogleg instead of straight | Sticky hop (`SWITCH_MARGIN`) holding a committed waypoint, or the graph genuinely has no direct link (check `MOVE_RADIUS` node spacing). |
 | Bot oscillates at a doorway / stair | The anti-flicker rules are being defeated — check `atGoalNode`, and that the direct-step stair guard is firing. |
+| Bot stands on a node, nobody in sight, enemies alive, not holding | Was the string-pull walking the waypoint back onto the node it stood on (a fresh `route()` read with its own route on the congestion field). Fixed: the pull follows `plannedRoute`. If it returns, check nothing else re-queries `route()` from the waypoint after `plan`. |
 | Bot walks into a wall near stairs | `plan`'s fallback to `curr` when the next hop isn't straight-walkable. |
 | Bot ignores a capture point it's standing next to | `bestChase` only runs when **nothing is visible**; a seen enemy always wins. For combat *on* the point, that's `biasObjective` + `OBJ_PULL_MARGIN`. |
 | Bots bunch up / shove each other | Body-space only: `separateCharacters` (squishy, no steering) + `blockingMate`/`sidestep` on approach. Route-level spreading is the **per-team** congestion field — it thins shared *corridors* but can't split a shared *destination*, so 2+ pileups on one spot are expected; the routine pairwise bumping is what per-team improved. |
