@@ -555,8 +555,16 @@ coast(ai):
   if mode==hold:  followHold + faceHold and return   ← keeps walking/aiming, never re-plans
   if standToShoot(...): return                                              ← mirrors act's plant
   if strafeTarget: step toward it; return                                   ← finish the committed slide
-  else: sidestep around a blocking mate, else coastStep (one more hop, no path query)
+  else: sidestep around a mate blocking the lane to moveChase, else coastStep (one more hop, no path query)
 ```
+
+`moveChase` is whatever the last `act` decided to walk toward (`chaseOf`: target,
+focus, best blind chase, or a domination objective marker) — the lane coast
+clears has to be the lane `act` cleared. It used to be `target ?? focus`, which
+misses the last two: `act` sidestepped a teammate (skipping `navChase`, so the
+waypoint stayed put), then coast saw no lane and walked back onto the waypoint,
+four ticks in five. A bot stood behind a teammate on its way to a capture point
+for as long as the teammate stayed (`scripts/verify_sidestep.mts`).
 
 So: gun bookkeeping and posture are **per-tick**; target choice, candidate
 scoring, and path queries are **per-plan-tick**. If a bot reacts to its own mag
@@ -963,6 +971,7 @@ Behaviour you see, and the specific decision that produces it.
 | Bot walks a weird dogleg instead of straight | Sticky hop (`SWITCH_MARGIN`) holding a committed waypoint, or the graph genuinely has no direct link (check `MOVE_RADIUS` node spacing). |
 | Bot oscillates at a doorway / stair | The anti-flicker rules are being defeated — check `atGoalNode`, and that the direct-step stair guard is firing. |
 | Bot stands on a node, nobody in sight, enemies alive, not holding | Was the string-pull walking the waypoint back onto the node it stood on (a fresh `route()` read with its own route on the congestion field). Fixed: the pull follows `plannedRoute`. If it returns, check nothing else re-queries `route()` from the waypoint after `plan`. |
+| Bot jitters in place behind a teammate (one step out every plan tick, back between them) | Was `coast` clearing the lane to `target ?? focus` while `act` cleared it to the chase it walked toward. Fixed: both use `moveChase`. |
 | Bot walks into a wall near stairs | `plan`'s fallback to `curr` when the next hop isn't straight-walkable. |
 | Bot ignores a capture point it's standing next to | `bestChase` only runs when **nothing is visible**; a seen enemy always wins. For combat *on* the point, that's `biasObjective` + `OBJ_PULL_MARGIN`. |
 | Bots bunch up / shove each other | Body-space only: `separateCharacters` (squishy, no steering) + `blockingMate`/`sidestep` on approach. Route-level spreading is the **per-team** congestion field — it thins shared *corridors* but can't split a shared *destination*, so 2+ pileups on one spot are expected; the routine pairwise bumping is what per-team improved. |

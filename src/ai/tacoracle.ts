@@ -663,6 +663,15 @@ export class TacOracle extends Oracle {
   /** Cached route-nearest hostile for blind navigation (see bestChase). */
   private chaseCache: Character | null = null;
   private chaseEvalIn = 0;
+  /** Who the last plan tick decided to walk toward (act's chaseOf: the target,
+   *  the remembered focus, the best blind chase, or a subclass's objective).
+   *  coast() clears teammates out of the lane to this SAME character. It used
+   *  `target ?? focus`, which misses a chase from bestChase or an objective
+   *  marker: act sidestepped a teammate in the lane (skipping navChase, so the
+   *  waypoint never advanced), then the four coast ticks saw no lane, walked
+   *  back onto the stale waypoint, and the bot stood behind a teammate on a
+   *  capture point for as long as they stayed (dom-arena's basement point). */
+  private moveChase: Character | null = null;
   /** A throwaway waypoint parked on the ground gun this bot is fetching while out
    *  of ammo (never in the world/roster), so navChase can steer toward it. */
   private rearmMarker: Character | null = null;
@@ -703,6 +712,7 @@ export class TacOracle extends Oracle {
     // Out of sight, the last engaged enemy stays the concern (cover is scored
     // against them, the chase heads back at them) until memory lapses.
     const chase = this.chaseOf(ai, target);
+    this.moveChase = chase;
     // Contact metrics, minimised over ALL hostiles. In an active fight (in visual
     // contact with the chased enemy) we're exposed and close, so both are ~0 —
     // skip the full scan; only pay for it when out of contact (approaching /
@@ -829,7 +839,8 @@ export class TacOracle extends Oracle {
     // Keep clearing a teammate's firing lane between plan ticks too (drive
     // straight if boxed — squishy collision phases through rather than freezing).
     // Only where there IS a lane, as in act() — see blockingMate.
-    const chase = target ?? this.focus;
+    // The same chase act() walked toward (see moveChase), not `target ?? focus`.
+    const chase = this.moveChase && this.moveChase.hp > 0 ? this.moveChase : null;
     const blocker = chase ? this.blockingMate(ai, chase) : null;
     if (!chase || !blocker || !this.sidestep(ai, chase, blocker)) this.coastStep(ai);
   }
