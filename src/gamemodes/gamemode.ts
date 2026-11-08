@@ -163,6 +163,10 @@ export interface Gamemode {
   /** Ticks a death-dropped weapon/armor lingers before it despawns (undefined =
    *  never). Authored level pickups are never stamped, so they always persist. */
   readonly itemTtl?: number;
+  /** Ticks a blood splatter stays on the floor before it fades (undefined =
+   *  never; only the splatter cap clears the oldest). Cosmetic and drawn by each
+   *  client (see engine/bloodsplat.ts), which reads it off World.bloodTtl. */
+  readonly bloodTtl?: number;
   /** Assign teams and do the initial spawns. Called once per match start. */
   init(ctx: GameCtx): void;
   /** Per-tick rule evaluation, run right after the dead are reaped. */

@@ -577,6 +577,10 @@ export interface World {
   decals: Decal[];
   scorches: Scorch[]; // blast marks on the floors (same ownership as decals)
   bloodSplats: BloodSplat[]; // hits' blood on the floors (likewise)
+  /** How long a blood splatter stays, ticks: the gamemode's bloodTtl, set by the
+   *  Game (or, online, from the server's welcome). Absent = it never fades;
+   *  only the splatter cap clears the oldest. */
+  bloodTtl?: number;
   /** What happened this tick, for whoever runs the sim to react to: sounds,
    *  impacts, hits. Cleared at the start of every Game.update (see engine/events.ts). */
   events: GameEvent[];

@@ -770,6 +770,27 @@ console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
   check("an input's view tick must be a number", parseClientMsg({ t: "input", seq: 1, in: idleInput(), vt: "5" }) === null && parseClientMsg(roundTrip({ t: "input", seq: 1, in: idleInput(), vt: 12.5 })) !== null);
 }
 
+console.log("\nblood on our floor lasts as long as the server's gamemode says:");
+{
+  const cases: [string, string, string, number | undefined][] = [
+    ["tdm", "tdm-arena-big", readFileSync("src/world/levels/tdm-arena-big.json", "utf8"), 720],
+    ["sandbox", "open", `{ "version": 1, "entities": [] }`, undefined],
+  ];
+  for (const [mode, levelName, levelText, want] of cases) {
+    const host = new MatchHost({ levelName, levelText, mode, overrides: { blueTroops: 0, redTroops: 0 }, manual: true });
+    const sent: string[] = [];
+    const conn = host.connect({ open: true, send: (t) => sent.push(t), close: () => {}, terminate: () => {} }, "198.51.100.9")!;
+    host.message(conn, JSON.stringify({ t: "join", protocol: PROTOCOL, name: "Me" }));
+    const welcome = sent.map((t) => JSON.parse(t)).find((m) => m.t === "welcome");
+    const net = new NetSession("localhost:1", "Me", false);
+    net.outbox = () => {};
+    if (welcome) net.receive(welcome, 0);
+    check(`${mode}: ${want === undefined ? "for good, as the mode keeps its bodies" : `${want} ticks, as the mode's bodies`}`,
+      !!welcome && net.world.bloodTtl === want && host.match!.gamemode.bloodTtl === want,
+      `ours ${net.world.bloodTtl}, the server's mode ${host.match?.gamemode.bloodTtl}`);
+  }
+}
+
 console.log("\nserver addresses:");
 {
   const a = serverUrls("example.com:7777", false);

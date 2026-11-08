@@ -169,6 +169,9 @@ export class Game implements GameCtx {
     opts: GameOptions = {},
   ) {
     this.world = level.world;
+    // The client's blood splatters last as long as this mode says (see
+    // Gamemode.bloodTtl; absent = for good, like its bodies).
+    this.world.bloodTtl = gamemode.bloodTtl;
     this.initialItems = level.world.items.slice();
     // Snapshot the authored vehicles, then clear the live list BEFORE the nav
     // graph is built: the CCH baseline must be the vehicle-free map, so each

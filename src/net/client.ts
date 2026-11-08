@@ -393,6 +393,8 @@ export class NetSession implements Session {
       this.world.grid = new ObstacleGrid(this.world.obstacles);
       this.grid = this.world.grid;
     }
+    // Blood on the floor lasts as long as the server's gamemode says.
+    this.world.bloodTtl = m.bloodTtl;
     this.world.items.length = 0;
     this.world.vehicles.length = 0;
     this.world.bullets = [];

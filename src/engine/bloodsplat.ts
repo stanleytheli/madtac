@@ -20,7 +20,7 @@ export interface BloodSplat extends MarkSurfaces {
   size: number; // drawn width = height of the sprite, world px
   angle: number; // random spin, for variety between marks
   image: number; // index into BLOOD_SPLAT_IMAGES
-  life: number; // ticks remaining
+  life: number | null; // ticks remaining; null = stays until the cap clears it
 }
 
 /** The splatter art in /assets (round red stains on transparent). */
@@ -31,10 +31,10 @@ export const BLOOD_SPLAT_IMAGES = [
   "blood_splatter_round_4.png",
   "blood_splatter_round_5.png",
 ];
-/** How long a splatter stays: as long as a corpse does in the team modes
- *  (TeamMatchMode.bodyTtl, ~12 s), so the blood goes with the bodies. */
-export const BLOOD_SPLAT_LIFE = 720;
-/** The last stretch of that life fades out instead of blinking away. */
+/* How long a splatter stays is the gamemode's (Gamemode.bloodTtl, read off
+ * World.bloodTtl), like a corpse's or a dropped gun's: ~12 s in the team modes,
+ * with the bodies; for good in the sandbox, where the bodies stay too. */
+/** The last stretch of a splatter's life fades out instead of blinking away. */
 const BLOOD_SPLAT_FADE = 120;
 /** Most splatters kept at once; past this the oldest go first, whatever their age. */
 const MAX_BLOOD_SPLATS = 256;
@@ -112,7 +112,8 @@ function spreadOut(
 /**
  * Splatter blood for a hit of `damage` that landed at `at` on level `z`, sprayed
  * along `dir` (unit): the round's travel for a bullet, outward from the centre for
- * a blast. Each splatter picks its art at random — never the same as the one
+ * a blast. Each splatter lasts `life` ticks (the gamemode's bloodTtl), or for
+ * good when that's null. Each splatter picks its art at random — never the same as the one
  * stamped just before it — and its own spin, and is nudged off any older one it
  * would land right on top of (see spreadOut). A splatter with no floor under it
  * (flung off a deck) is dropped; the rest of the trail still lands.
@@ -125,6 +126,7 @@ export function stampBloodSplatter(
   dir: Vec2,
   z: number,
   damage: number,
+  life: number | null,
 ): void {
   let pos = at;
   const own: BloodSplat[] = [];
@@ -140,18 +142,18 @@ export function stampBloodSplatter(
     let image = Math.floor(Math.random() * (BLOOD_SPLAT_IMAGES.length - (prev >= 0 ? 1 : 0)));
     if (prev >= 0 && image >= prev) image++; // skip the last one's art
     if (out.length >= MAX_BLOOD_SPLATS) out.splice(0, out.length - MAX_BLOOD_SPLATS + 1);
-    const splat: BloodSplat = { pos, z, size, angle: Math.random() * Math.PI * 2, image, ...under, life: BLOOD_SPLAT_LIFE };
+    const splat: BloodSplat = { pos, z, size, angle: Math.random() * Math.PI * 2, image, ...under, life };
     out.push(splat);
     own.push(splat);
   });
 }
 
-/** Age all splatters one tick; drop the expired ones. */
+/** Age all splatters one tick; drop the expired ones (a null life never ages). */
 export function updateBloodSplats(splats: BloodSplat[]): BloodSplat[] {
   const alive: BloodSplat[] = [];
   for (const s of splats) {
-    s.life -= 1;
-    if (s.life > 0) alive.push(s);
+    if (s.life !== null) s.life -= 1;
+    if (s.life === null || s.life > 0) alive.push(s);
   }
   return alive;
 }
@@ -168,7 +170,7 @@ export function drawBloodSplats(
   for (const s of splats) {
     const img = imgs[s.image];
     if (!img || !inView(s.pos, s.size / 2) || !beginMarkPass(ctx, s, z)) continue;
-    ctx.globalAlpha = SPLAT_OPACITY * (s.life >= BLOOD_SPLAT_FADE ? 1 : s.life / BLOOD_SPLAT_FADE);
+    ctx.globalAlpha = SPLAT_OPACITY * (s.life === null || s.life >= BLOOD_SPLAT_FADE ? 1 : s.life / BLOOD_SPLAT_FADE);
     ctx.translate(s.pos.x, s.pos.y);
     ctx.rotate(s.angle);
     ctx.drawImage(img, -s.size / 2, -s.size / 2, s.size, s.size);

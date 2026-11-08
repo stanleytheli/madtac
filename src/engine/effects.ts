@@ -26,7 +26,7 @@ export function spawnEffects(w: World): void {
     if (e.kind === "particles") spawnParticles(w.particles, e.pos, e.dir, e.burst, e.z, e.heft);
     else if (e.kind === "decal") stampBulletHole(w.decals, e.near, e.on, e.z, e.heft);
     else if (e.kind === "scorch") stampScorch(w.scorches, w.floors, w.stairs, e.pos, e.z, e.size, e.opacity);
-    else if (e.kind === "blood") stampBloodSplatter(w.bloodSplats, w.floors, w.stairs, e.pos, e.dir, e.z, e.damage);
+    else if (e.kind === "blood") stampBloodSplatter(w.bloodSplats, w.floors, w.stairs, e.pos, e.dir, e.z, e.damage, w.bloodTtl ?? null);
   }
 }
 

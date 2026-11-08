@@ -27,7 +27,7 @@ import type { DeathMark } from "../ui/minimap.ts";
 import { vec } from "../engine/vec.ts";
 
 /** Bumped whenever a message shape changes; a mismatch is rejected at join. */
-export const PROTOCOL = 5;
+export const PROTOCOL = 6;
 /** Sim ticks per second, both sides. */
 export const SIM_HZ = 60;
 /** Snapshots per second the server sends by default (every other tick). */
@@ -325,6 +325,9 @@ export interface WelcomeMsg {
   /** Seeds the match's shot randomness, so we can predict our own shots
    *  exactly (see engine/rng.ts). */
   salt: number;
+  /** How long blood stays on the floor here, ticks: the gamemode's bloodTtl.
+   *  Absent = for good (see World.bloodTtl). */
+  bloodTtl?: number;
 }
 
 export type ServerMsg =

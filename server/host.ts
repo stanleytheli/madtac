@@ -410,6 +410,7 @@ export class MatchHost {
       tick: game.tick,
       snapHz: this.snapHz,
       salt: this.salt,
+      bloodTtl: game.gamemode.bloodTtl,
     });
     // What this client saw before (if anything) is stale after a rebuild.
     c.mirror = new ClientMirror(game, this.sight);

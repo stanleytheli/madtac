@@ -2,15 +2,15 @@
  * Verifies blood splatters on the ground: how many a hit throws and how big
  * (by damage), where they land (a trail along the spray), which art they use
  * (random, never the same twice running), that they need floor under them, age
- * out, and fade. Then end to end: a bullet, a blast and a punch each emit one,
- * sprayed the right way, and the client turns it into marks.
+ * out, and fade — over the gamemode's bloodTtl, like its bodies, or never where
+ * the mode keeps those for good. Then end to end: a bullet, a blast and a punch
+ * each emit one, sprayed the right way, and the client turns it into marks.
  *
  * Run: node_modules/.bin/esbuild scripts/verify_bloodsplat.mts --bundle --platform=node
  *   --format=esm --outfile=<tmp>/vbs.mjs && node <tmp>/vbs.mjs
  */
 import {
   BLOOD_SPLAT_IMAGES,
-  BLOOD_SPLAT_LIFE,
   MAX_SPLATS_PER_HIT,
   SPLAT_FULL_DAMAGE,
   SPLAT_JITTER,
@@ -30,6 +30,15 @@ import { stepEffects } from "../src/engine/effects.ts";
 import { toWire } from "../src/net/snapshot.ts";
 import { explode, makeFloor, meleeSwing, spawnBullet, updateBullets, type World } from "../src/world/world.ts";
 import { dist, norm, sub, vec, type Vec2 } from "../src/engine/vec.ts";
+import { readFileSync } from "node:fs";
+import { Game } from "../src/game.ts";
+import { loadLevel } from "../src/world/level.ts";
+import { SandboxMode } from "../src/gamemodes/sandbox.ts";
+import { TeamDeathmatchMode } from "../src/gamemodes/tdm.ts";
+import { DominationMode } from "../src/gamemodes/domination.ts";
+
+/** The team modes' splatter life (TeamMatchMode.bloodTtl), for the stamps below. */
+const LIFE = 720;
 
 let passed = 0;
 let failed = 0;
@@ -82,7 +91,7 @@ console.log("\nwhere they land:");
   let ok = true;
   for (let i = 0; i < 300; i++) {
     const out: BloodSplat[] = [];
-    stampBloodSplatter(out, [ground], [], vec(10, 20), vec(1, 0), 0, 100);
+    stampBloodSplatter(out, [ground], [], vec(10, 20), vec(1, 0), 0, 100, LIFE);
     if (out.length !== 3 || out[0].pos.x !== 10 || out[0].pos.y !== 20) ok = false;
     for (let k = 1; k < out.length; k++) {
       const along = out[k].pos.x - out[k - 1].pos.x;
@@ -98,7 +107,7 @@ console.log("\nwhere they land:");
   check("...and the jitter is really there", worstOff > SPLAT_JITTER / 2, `worst sideways ${worstOff.toFixed(1)} px`);
 
   const back: BloodSplat[] = [];
-  stampBloodSplatter(back, [ground], [], vec(0, 0), vec(0, -1), 0, 100);
+  stampBloodSplatter(back, [ground], [], vec(0, 0), vec(0, -1), 0, 100, LIFE);
   check("the trail follows the spray's direction, whatever it is", back[2].pos.y < back[1].pos.y && back[1].pos.y < 0);
 }
 
@@ -108,14 +117,14 @@ console.log("\nfresh blood spreads off old blood instead of piling on it:");
   // in x can only have come from the nudge.
   const old = (): BloodSplat[] => {
     const out: BloodSplat[] = [];
-    stampBloodSplatter(out, [ground], [], vec(0, 0), vec(1, 0), 0, SPLAT_FULL_DAMAGE);
+    stampBloodSplatter(out, [ground], [], vec(0, 0), vec(1, 0), 0, SPLAT_FULL_DAMAGE, LIFE);
     return out;
   };
   const reach = SPLAT_SPREAD * SPLAT_MAX_SIZE; // two full splatters' threshold
   const upstairs = makeFloor(vec(0, 0), 8000, 8000, "#555", { level: 1, infinite: true });
   const landAt = (at: Vec2, z = 0): Vec2 => {
     const out = old();
-    stampBloodSplatter(out, [ground, upstairs], [], at, vec(0, 1), z, SPLAT_FULL_DAMAGE);
+    stampBloodSplatter(out, [ground, upstairs], [], at, vec(0, 1), z, SPLAT_FULL_DAMAGE, LIFE);
     return out[1].pos;
   };
   const p = landAt(vec(5, 0));
@@ -135,7 +144,7 @@ console.log("\nfresh blood spreads off old blood instead of piling on it:");
   // would sit exactly on each other; the nudge leaves a handful at most (worst
   // of 2000 trials: 7), so a tenth is a regression, not bad luck.
   const pile: BloodSplat[] = [];
-  for (let i = 0; i < 20; i++) stampBloodSplatter(pile, [ground], [], vec(0, 0), vec(1, 0), 0, SPLAT_FULL_DAMAGE);
+  for (let i = 0; i < 20; i++) stampBloodSplatter(pile, [ground], [], vec(0, 0), vec(1, 0), 0, SPLAT_FULL_DAMAGE, LIFE);
   let stacked = 0;
   for (let i = 0; i < pile.length; i++)
     for (let j = i + 1; j < pile.length; j++) if (dist(pile[i].pos, pile[j].pos) < 1) stacked++;
@@ -150,7 +159,7 @@ console.log("\nfresh blood spreads off old blood instead of piling on it:");
 console.log("\nwhich art, which way up:");
 {
   const out: BloodSplat[] = [];
-  for (let i = 0; i < 400; i++) stampBloodSplatter(out, [ground], [], vec(0, 0), vec(1, 0), 0, 100);
+  for (let i = 0; i < 400; i++) stampBloodSplatter(out, [ground], [], vec(0, 0), vec(1, 0), 0, 100, LIFE);
   let repeats = 0;
   for (let i = 1; i < out.length; i++) if (out[i].image === out[i - 1].image) repeats++;
   check("never the same splatter twice in a row", repeats === 0, `${repeats} repeats in ${out.length}`);
@@ -173,7 +182,7 @@ console.log("\nit needs ground to land on:");
   let cutShort = 0;
   for (let i = 0; i < 200; i++) {
     const out: BloodSplat[] = [];
-    stampBloodSplatter(out, [ground, deck], [], vec(100, 0), vec(1, 0), 1, 100);
+    stampBloodSplatter(out, [ground, deck], [], vec(100, 0), vec(1, 0), 1, 100, LIFE);
     if (out.length === 0 || out[0].pos.x !== 100) firstKept = false;
     if (!out.every((s) => s.floors?.includes(deck))) allOnDeck = false;
     if (out.length < full) cutShort++;
@@ -182,14 +191,14 @@ console.log("\nit needs ground to land on:");
   check("every one that lands is on the deck", allOnDeck);
   check("the ones flung clear of it are dropped", cutShort > 0, `${cutShort}/200 trails cut short`);
   const mid: BloodSplat[] = [];
-  stampBloodSplatter(mid, [deck], [], vec(5000, 0), vec(1, 0), 1, 100);
+  stampBloodSplatter(mid, [deck], [], vec(5000, 0), vec(1, 0), 1, 100, LIFE);
   check("a hit over nothing leaves nothing", mid.length === 0);
 }
 
 console.log("\nthey age out, fading at the end:");
 {
   let out: BloodSplat[] = [];
-  stampBloodSplatter(out, [ground], [], vec(0, 0), vec(1, 0), 0, 20);
+  stampBloodSplatter(out, [ground], [], vec(0, 0), vec(1, 0), 0, 20, LIFE);
   const alphas: number[] = [];
   const ctx = {
     globalAlpha: 1, save() {}, restore() {}, clip() {}, translate() {}, rotate() {},
@@ -198,7 +207,7 @@ console.log("\nthey age out, fading at the end:");
   const imgs = BLOOD_SPLAT_IMAGES.map(() => ({}) as CanvasImageSource);
   drawBloodSplats(ctx, out, imgs, 0, () => true);
   check("at full SPLAT_OPACITY while fresh", alphas.length === 1 && alphas[0] === SPLAT_OPACITY, `alpha ${alphas[0]}`);
-  for (let i = 0; i < BLOOD_SPLAT_LIFE - 30; i++) out = updateBloodSplats(out);
+  for (let i = 0; i < LIFE - 30; i++) out = updateBloodSplats(out);
   drawBloodSplats(ctx, out, imgs, 0, () => true);
   check("fading near the end", out.length === 1 && alphas[1] > 0 && alphas[1] < SPLAT_OPACITY, `alpha ${alphas[1]?.toFixed(2)}`);
   drawBloodSplats(ctx, out, [null, null, null, null, null], 0, () => true);
@@ -207,6 +216,34 @@ console.log("\nthey age out, fading at the end:");
   check("not drawn in another level's pass", alphas.length === 2);
   for (let i = 0; i < 40; i++) out = updateBloodSplats(out);
   check("gone after its life", out.length === 0);
+
+  let kept: BloodSplat[] = [];
+  stampBloodSplatter(kept, [ground], [], vec(0, 0), vec(1, 0), 0, 20, null);
+  for (let i = 0; i < 100_000; i++) kept = updateBloodSplats(kept);
+  const before = alphas.length;
+  drawBloodSplats(ctx, kept, imgs, 0, () => true);
+  check("with no life set (null) it never fades or goes", kept.length === 1 && alphas.length === before + 1 && alphas[before] === SPLAT_OPACITY,
+    `after 100000 ticks: ${kept.length} left, alpha ${alphas[before]}`);
+}
+
+console.log("\nhow long they last is the gamemode's, like its bodies:");
+{
+  const level = (name: string): ReturnType<typeof loadLevel> => loadLevel(readFileSync(`src/world/levels/${name}.json`, "utf8"));
+  const tdm = new Game(level("arena-teamfight-tdm"), new TeamDeathmatchMode());
+  check("team deathmatch: blood lasts as long as a body", tdm.world.bloodTtl === tdm.gamemode.bloodTtl && tdm.world.bloodTtl === tdm.gamemode.bodyTtl,
+    `blood ${tdm.world.bloodTtl}, bodies ${tdm.gamemode.bodyTtl}`);
+  const dom = new Game(level("dom-arena-big-fix"), new DominationMode());
+  check("domination: likewise", dom.world.bloodTtl === dom.gamemode.bodyTtl, `blood ${dom.world.bloodTtl}, bodies ${dom.gamemode.bodyTtl}`);
+  const sand = new Game(level("arena-teamfight"), new SandboxMode());
+  check("sandbox: blood stays for good, like its bodies", sand.world.bloodTtl === undefined && sand.gamemode.bodyTtl === undefined);
+  // What the client stamps from a hit takes the world's setting (the same step
+  // then ages it one tick).
+  for (const [name, g, want] of [["team deathmatch", tdm, tdm.gamemode.bloodTtl! - 1], ["sandbox", sand, null]] as const) {
+    g.world.events.push({ kind: "blood", pos: vec(0, 400), dir: vec(1, 0), z: 0, damage: 20 });
+    stepEffects(g.world);
+    const s = g.world.bloodSplats[0];
+    check(`${name}: a hit's splatter gets that life`, !!s && s.life === want, s ? `life ${s.life}` : "no splatter");
+  }
 }
 
 console.log("\nend to end — every way of getting hurt bleeds:");
