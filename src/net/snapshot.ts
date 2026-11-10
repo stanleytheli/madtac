@@ -38,6 +38,7 @@ import type {
   WireEvent,
   WireFeed,
 } from "./protocol.ts";
+import { DEFAULT_SNAP_HZ } from "./protocol.ts";
 
 /** How far from a player anything is worth sending at all (world px). Also the
  *  reach of their sight polygon. Wider than any screen at any zoom. */
@@ -46,7 +47,7 @@ export const CULL_R = 3000;
 /** Every this many snapshots each visible character's pose is sent whether it
  *  changed or not (once a second at the default rate), so a client whose
  *  local timers drifted from a standing character's is put right. */
-export const POSE_REFRESH = 30;
+export const POSE_REFRESH = DEFAULT_SNAP_HZ;
 
 const r1 = (n: number): number => Math.round(n * 10) / 10;
 const r2 = (n: number): number => Math.round(n * 100) / 100;
@@ -221,8 +222,8 @@ export class ClientMirror {
   }
 
   /** Everything `slot`'s client should learn about the tick. `events` are the
-   *  world's since the last snapshot (the server accumulates them; a snapshot
-   *  is every other tick). `seq` is the last input seq applied for this slot. */
+   *  world's since the last snapshot (the server accumulates them; at the
+   *  default rate a snapshot is every tick). `seq` is the last input seq applied for this slot. */
   encode(game: Game, slot: PlayerSlot, seq: number, events: readonly GameEvent[]): SnapMsg {
     const me = slot.char;
     const w = game.world;

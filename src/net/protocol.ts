@@ -30,8 +30,10 @@ import { vec } from "../engine/vec.ts";
 export const PROTOCOL = 6;
 /** Sim ticks per second, both sides. */
 export const SIM_HZ = 60;
-/** Snapshots per second the server sends by default (every other tick). */
-export const DEFAULT_SNAP_HZ = 30;
+/** Snapshots per second the server sends by default: every tick. (It was
+ *  every other tick, 30; matching the tick rate takes a tick's wait for the next
+ *  snapshot off how late everyone else is drawn, for about twice the download.) */
+export const DEFAULT_SNAP_HZ = 60;
 /** Default listen port, and the websocket route on it. */
 export const DEFAULT_PORT = 7777;
 export const WS_PATH = "/play";

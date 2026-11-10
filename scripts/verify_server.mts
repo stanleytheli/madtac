@@ -134,7 +134,9 @@ check("snapshots flow, listing our character with a full record", !!meIn(snap1)?
 check("...and the private block", typeof snap1.me?.mag === "number");
 await sleep(200);
 const rate = a.msgs.filter((m) => m.t === "snap").length;
-check("at about 30 a second", rate >= 4 && rate <= 9, `${rate} in 200ms`);
+// At the rate the welcome announces (snapHz), give or take timer jitter.
+const want = (welcome.snapHz ?? 30) * 0.2;
+check(`at about the welcome's ${welcome.snapHz} a second`, rate >= want * 0.6 && rate <= want * 1.5, `${rate} in 200ms`);
 
 // Drive: hold D for half a second, expect to have moved right.
 const x0 = lastMe(a.msgs).x;
