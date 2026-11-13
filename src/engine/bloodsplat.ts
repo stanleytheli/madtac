@@ -44,12 +44,12 @@ export const MAX_SPLATS_PER_HIT = 3;
 /** Damage taken (after armour) that fills one splatter to SPLAT_MAX_SIZE. A
  *  heavier hit spills the rest into the next splatter along, up to
  *  MAX_SPLATS_PER_HIT. */
-export const SPLAT_FULL_DAMAGE = 35;
+export const SPLAT_FULL_DAMAGE = 30;
 /** A full splatter's width, world px (about a body across). */
-export const SPLAT_MAX_SIZE = 110;
+export const SPLAT_MAX_SIZE = 115;
 /** The narrowest any splatter is drawn, world px, however small its share of
  *  the damage — a graze or a hit's last drop of spill-over still shows. */
-export const SPLAT_MIN_SIZE = 65;
+export const SPLAT_MIN_SIZE = 55;
 /** How far each next splatter lands past the one before, along the spray, world px. */
 export const SPLAT_STEP = 50;
 /** Each next splatter is also knocked up to this far off the line, world px. */
