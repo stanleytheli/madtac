@@ -483,6 +483,10 @@ export interface Hittable {
   /** Optional: take a movement stagger (a staggering weapon hit). Optional so
    *  non-character Hittables (test dummies, future props) simply ignore it. */
   applyStagger?(mul: number, ticks: number): void;
+  /** Optional: how much of a hit of raw `damage` would reach the body, after
+   *  armor (see Character.bodyDamage); a hit's blood on the floor is sized by
+   *  it. Asked before registerHit, which may shatter the armor. Absent = all. */
+  bodyDamage?(damage: number, armorPen: ArmorPen): number;
 }
 
 /** A weapon's movement stagger, carried on a bullet / projectile from the firing
@@ -619,8 +623,9 @@ function emitDecal(w: World, near: Vec2, on: Obstacle, z: number, heft = 1, by?:
   w.events.push(by === undefined ? { kind: "decal", near, on, z, heft } : { kind: "decal", near, on, z, heft, by });
 }
 
-/** Blood on the ground for a hit of raw `damage` that landed at `at`, sprayed
- *  along `dir`, as an event (the client stamps it — see stampBloodSplatter). */
+/** Blood on the ground for a hit that landed at `at` and cost the body
+ *  `damage` (after armor: see Hittable.bodyDamage), sprayed along `dir`, as an
+ *  event (the client stamps it — see stampBloodSplatter). */
 function emitBlood(w: World, at: Vec2, dir: Vec2, z: number, damage: number, by?: number): void {
   w.events.push(by === undefined ? { kind: "blood", pos: at, dir, z, damage } : { kind: "blood", pos: at, dir, z, damage, by });
 }
@@ -1278,6 +1283,7 @@ export function updateBullets(w: World, targets: readonly Hittable[], past?: Pas
         if (dist(sample, tp.pos) < BODY_RADIUS) {
           // A round that came through a wall arrives with less left in it.
           const damage = b.damage * wallbangDamageMul(b);
+          const taken = t.bodyDamage?.(damage, b.armorPen) ?? damage; // before the hit can shatter armor
           t.registerHit(fwd, sample, damage, b.armorPen, b.owner, b.gun, {
             throughWall: (b.penUsed || 0) > 0, // came through a wall: the feed says so
             noscope: b.noscope,
@@ -1289,7 +1295,7 @@ export function updateBullets(w: World, targets: readonly Hittable[], past?: Pas
           // the only sign you connected, so a tracerless punch still shows one.
           emitParticles(w, at, backDir, BLOOD, b.z, Math.max(BLOOD_MIN_HEFT, grit), by);
           // ...and leaves some on the ground, sprayed on the way the round was going.
-          emitBlood(w, at, fwd, b.z, damage, by);
+          emitBlood(w, at, fwd, b.z, taken, by);
           consumed = true;
           break;
         }
@@ -1361,12 +1367,13 @@ export function meleeSwing(
   if (struck) {
     const dir = norm(sub(struck.pos, owner.pos));
     const at = add(struck.pos, scale(dir, -BODY_RADIUS)); // the side it landed on
+    const taken = struck.bodyDamage?.(opts.damage, opts.armorPen) ?? opts.damage;
     struck.registerHit(dir, at, opts.damage, opts.armorPen, owner, opts.gun ?? null);
     if (opts.stagger) struck.applyStagger?.(opts.stagger.mul, opts.stagger.ticks);
     hitFeedback(w, struck, owner);
     emitParticles(w, at, scale(dir, -1), BLOOD, owner.z,
       Math.max(BLOOD_MIN_HEFT, opts.heft));
-    emitBlood(w, at, dir, owner.z, opts.damage);
+    emitBlood(w, at, dir, owner.z, taken);
     return true;
   }
 
@@ -1507,6 +1514,7 @@ export function explode(
 
     const dir = d > 1e-6 ? norm(sub(t.pos, at)) : vec(1, 0); // knockback points outward
     const dealt = damage * frac * (v / 9); // raw: armour's cut is registerHit's business
+    const taken = t.bodyDamage?.(dealt, armorPen) ?? dealt; // ...and the blood's
     t.registerHit(dir, t.pos, dealt, armorPen, owner, gun, undefined, heading);
     hitFeedback(w, t, owner);
     // Blood off the side facing the blast, thrown back toward it — the same way a
@@ -1515,7 +1523,7 @@ export function explode(
     const facing = add(t.pos, scale(toBlast, BODY_RADIUS));
     emitParticles(w, facing, toBlast, BLOOD, z, blastBloodHeft(dealt));
     // On the ground it sprays outward from the blast, the way it threw the body.
-    emitBlood(w, facing, dir, z, dealt);
+    emitBlood(w, facing, dir, z, taken);
     // Anyone the blast damaged at all (any distance in range, any sliver of
     // visibility) is staggered — this is past the frac<=0 / v===0 discards above.
     if (stagger) t.applyStagger?.(stagger.mul, stagger.ticks);

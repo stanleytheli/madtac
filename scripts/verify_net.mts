@@ -36,6 +36,7 @@ import { makeWall } from "../src/world/world.ts";
 import { Gun } from "../src/entities/gun.ts";
 import { GUN_SPECS } from "../src/entities/specs.ts";
 import { GunItem } from "../src/entities/item.ts";
+import { Armor } from "../src/entities/armor.ts";
 import { DEFAULT_FIRE_SOUND } from "../src/entities/gun.ts";
 
 let passed = 0;
@@ -619,7 +620,7 @@ console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
   // Us and a target on an open level, the real server host on a manual clock,
   // us 3 ticks away each way. `vt` = whether our inputs say what we're seeing
   // (with it stripped, the server can't rewind for us: the control).
-  const arena = (opts: { vt: boolean; gun: string; targetMove?: Vec2 }) => {
+  const arena = (opts: { vt: boolean; gun: string; targetMove?: Vec2; targetArmor?: string }) => {
     const host = new MatchHost({ levelName: "open", levelText: `{ "version": 1, "entities": [] }`, mode: "sandbox", manual: true });
     let tick = 0;
     const toClient: { at: number; text: string }[] = [];
@@ -639,6 +640,7 @@ console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
     const target = game.humans[1].char;
     me.pos = vec(0, 0);
     target.pos = vec(320, opts.targetMove ? -160 : 0);
+    if (opts.targetArmor) target.armor = new Armor(ARMOR_SPECS[opts.targetArmor]);
     me.slots.primary = new Gun(GUN_SPECS[opts.gun]);
     me.equip("primary");
     const ms = (t: number) => t * (1000 / 60);
@@ -721,6 +723,27 @@ console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
       `shown ${shownAt - firedAt} ticks after the shot, blood ${blood}`);
     check("...the server dealt the damage", serverHitAt > 0, `target hp ${a.target.hp.toFixed(0)}`);
     check("...and the hit plays once (the server's copy isn't played again)", hits === 1, `${hits} hit sounds`);
+  }
+
+  // 2b) The same through armour: the blood our predicted round leaves on the
+  // floor is sized, like the server's, by what got past the armour.
+  {
+    const a = arena({ vt: true, gun: "M16", targetArmor: "ARMOR_L3" });
+    const aim = norm(sub(a.drawn().pos, a.net.player.pos));
+    a.step({ ...idleInput(), aim, fire: true, firePressed: true });
+    const mine: number[] = [];
+    const theirs: number[] = [];
+    for (let i = 0; i < 40; i++) {
+      for (const e of a.net.world.events) if (e.kind === "blood") mine.push(e.damage);
+      for (const e of a.game.world.events) if (e.kind === "blood") theirs.push(e.damage);
+      a.step(idleInput());
+    }
+    const raw = GUN_SPECS.M16.damage;
+    const lost = 100 - a.target.hp;
+    check("through armour, our predicted blood is the size of the server's: what the hit cost the body",
+      a.drawn().armor?.spec === ARMOR_SPECS.ARMOR_L3 && mine.length === 1 && theirs.length === 1 &&
+        Math.abs(mine[0] - theirs[0]) < 1e-9 && Math.abs(theirs[0] - lost) < 1e-9 && lost < raw,
+      `ours ${mine.map((d) => d.toFixed(2))}, the server's ${theirs.map((d) => d.toFixed(2))}, hp lost ${lost.toFixed(2)} of a ${raw} round`);
   }
 
   // 3) A target walking across our line of fire, aimed at where we see it.

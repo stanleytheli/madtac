@@ -41,8 +41,9 @@ const MAX_BLOOD_SPLATS = 256;
 
 /** Most splatters one hit throws; the least is one. */
 export const MAX_SPLATS_PER_HIT = 3;
-/** Raw damage that fills one splatter to SPLAT_MAX_SIZE. A heavier hit spills
- *  the rest into the next splatter along, up to MAX_SPLATS_PER_HIT. */
+/** Damage taken (after armour) that fills one splatter to SPLAT_MAX_SIZE. A
+ *  heavier hit spills the rest into the next splatter along, up to
+ *  MAX_SPLATS_PER_HIT. */
 export const SPLAT_FULL_DAMAGE = 35;
 /** A full splatter's width, world px (about a body across). */
 export const SPLAT_MAX_SIZE = 110;
@@ -63,7 +64,8 @@ export const SPLAT_SPREAD = 0.5;
 export const SPLAT_MAX_NUDGE = 30;
 
 /**
- * The widths of the splatters a hit of `damage` (raw, before armour) throws, in
+ * The widths of the splatters a hit that cost the body `damage` (what got past
+ * the armour: see Character.bodyDamage) throws, in
  * order. The first fills toward SPLAT_MAX_SIZE as the damage grows to
  * SPLAT_FULL_DAMAGE; whatever is left over starts the next, and so on. Width goes
  * as the square root of a splatter's share, so the AREA stained tracks the damage,

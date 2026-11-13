@@ -36,6 +36,12 @@ import { loadLevel } from "../src/world/level.ts";
 import { SandboxMode } from "../src/gamemodes/sandbox.ts";
 import { TeamDeathmatchMode } from "../src/gamemodes/tdm.ts";
 import { DominationMode } from "../src/gamemodes/domination.ts";
+import { Character } from "../src/entities/actor.ts";
+import { Armor } from "../src/entities/armor.ts";
+import { Gun } from "../src/entities/gun.ts";
+import { UNARMED } from "../src/entities/guns.ts";
+import { ARMOR_SPECS } from "../src/entities/specs.ts";
+import { DEFAULT_SKIN } from "../src/entities/character.ts";
 
 /** The team modes' splatter life (TeamMatchMode.bloodTtl), for the stamps below. */
 const LIFE = 720;
@@ -292,6 +298,57 @@ console.log("\nend to end — every way of getting hurt bleeds:");
   meleeSwing(wm, puncher, vec(1, 0), [dummy(vec(0, 0))], { reach: 145, coneDeg: 60, damage: 20, armorPen: AP, heft: 1 });
   const me: any = wm.events.find((e) => e.kind === "blood");
   check("a punch draws blood on the ground too", !!me && near(me.dir.x, 1) && near(me.damage, 20));
+}
+
+console.log("\nsized by the damage taken, not the raw damage:");
+{
+  // A real character, maybe armoured, struck by each kind of hit; the blood it
+  // leaves on the floor should be what it lost off its health.
+  const PEN = { l1: 0.4, l2: 0.4, l3: 0.4, l4: 0.4 }; // 40% gets past any armour
+  const spec = Object.values(ARMOR_SPECS).find((a) => a.level <= 4)!;
+  const body = (armor: "none" | "on" | "shatters"): Character => {
+    const c = new Character(vec(0, 0), DEFAULT_SKIN, { hand: new Gun(UNARMED) });
+    c.hp = 1000; // no hit here kills: what it lost is all it took
+    if (armor !== "none") c.armor = new Armor(spec);
+    if (armor === "shatters") c.armor!.hp = 1; // this hit breaks it
+    return c;
+  };
+  const blood = (w: World): any => w.events.find((e) => e.kind === "blood");
+  const shoot = (c: Character): any => {
+    const w = world();
+    spawnBullet(w, vec(-200, 0), vec(1, 0), 60, 30, 0, null, 50, 4, 20, "#fff", PEN, 0);
+    for (let i = 0; i < 6 && !blood(w); i++) {
+      updateBullets(w, [c]);
+      if (!blood(w)) w.events.length = 0;
+    }
+    return blood(w);
+  };
+  for (const armor of ["none", "on", "shatters"] as const) {
+    const c = body(armor);
+    const ev = shoot(c);
+    const lost = 1000 - c.hp;
+    const want = armor === "none" ? 50 : 20;
+    check(`a 50-damage round, ${armor === "none" ? "no armour" : armor === "on" ? "through armour" : "shattering the armour"}: blood of ${want}, what the body lost`,
+      !!ev && near(ev.damage, lost) && near(lost, want), ev ? `blood ${ev.damage.toFixed(2)}, lost ${lost.toFixed(2)}` : "no blood");
+  }
+  {
+    const c = body("on");
+    const w = world();
+    explode(w, vec(-100, 0), 0, 80, 300, PEN, null, [c]);
+    const ev = blood(w);
+    const lost = 1000 - c.hp;
+    check("a blast through armour: blood of what the body lost", !!ev && lost > 0 && near(ev.damage, lost),
+      ev ? `blood ${ev.damage.toFixed(2)}, lost ${lost.toFixed(2)}` : "no blood");
+  }
+  {
+    const c = body("on");
+    const w = world();
+    meleeSwing(w, dummy(vec(-60, 0)), vec(1, 0), [c], { reach: 145, coneDeg: 60, damage: 20, armorPen: PEN, heft: 1 });
+    const ev = blood(w);
+    const lost = 1000 - c.hp;
+    check("a punch through armour: blood of what the body lost", !!ev && near(lost, 8) && near(ev.damage, lost),
+      ev ? `blood ${ev.damage.toFixed(2)}, lost ${lost.toFixed(2)}` : "no blood");
+  }
 }
 
 console.log(`\n${failed === 0 ? "ALL PASS" : "FAILURES"}: ${passed} passed, ${failed} failed`);

@@ -40,8 +40,8 @@ export type GameEvent =
   | { kind: "decal"; near: Vec2; on: Obstacle; z: number; heft: number; by?: number }
   /** A blast's scorch mark, `size` px wide at `opacity`, on the floors at `pos` (see stampScorch). */
   | { kind: "scorch"; pos: Vec2; z: number; size: number; opacity: number }
-  /** Blood on the ground from a hit of raw `damage` that landed at `pos`,
-   *  sprayed along `dir` (see stampBloodSplatter). */
+  /** Blood on the ground from a hit that landed at `pos` and cost the body
+   *  `damage` (after armor), sprayed along `dir` (see stampBloodSplatter). */
   | { kind: "blood"; pos: Vec2; dir: Vec2; z: number; damage: number; by?: number };
 
 /** Append a positioned (or flat) sound event. */

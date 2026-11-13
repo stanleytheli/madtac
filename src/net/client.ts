@@ -1103,12 +1103,14 @@ export class NetSession implements Session {
   }
 
   /** Everyone else, for our predicted rounds to hit: where they're drawn, as
-   *  stand-ins that take no harm (the server decides the damage). */
+   *  stand-ins that take no harm (the server decides the damage), but whose
+   *  armor still cuts what the hit would cost them, which our predicted blood
+   *  on the floor is sized by, as the server's is. */
   private asDrawn(): Hittable[] {
     const out: Hittable[] = [];
     for (const c of this.characters) {
       if (c === this.player || c.hp <= 0) continue;
-      out.push({ id: c.id, pos: c.pos, z: c.z, registerHit: () => {} });
+      out.push({ id: c.id, pos: c.pos, z: c.z, registerHit: () => {}, bodyDamage: (d, ap) => c.bodyDamage(d, ap) });
     }
     return out;
   }

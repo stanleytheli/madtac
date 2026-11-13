@@ -632,16 +632,21 @@ export class Character {
     this.lastAttackerMarks = marks;
     if (damage > 0) this.noteDamageFrom(angleOf(scale(heading, -1)));
 
-    let toBody = damage;
+    // The body only takes the fraction that penetrates the armor...
+    const toBody = this.bodyDamage(damage, armorPen);
+    // ...while the armor soaks the full bullet damage, and may shatter.
     const armor = this.armor;
-    if (armor && !armor.destroyed) {
-      // The body only takes the fraction that penetrates this armor's level...
-      const pen = armorPen[`l${armor.level}` as keyof ArmorPen];
-      toBody = damage * pen;
-      // ...while the armor soaks the full bullet damage, and may shatter.
-      if (armor.absorb(damage)) this.armor = null;
-    }
+    if (armor && !armor.destroyed && armor.absorb(damage)) this.armor = null;
     this.hp = Math.max(0, this.hp - toBody);
+  }
+
+  /** How much of a hit of raw `damage` reaches the body: all of it, or the
+   *  fraction `armorPen` gets through the armor worn. What registerHit takes
+   *  off hp, and what a hit's blood on the floor is sized by. */
+  bodyDamage(damage: number, armorPen: ArmorPen): number {
+    const armor = this.armor;
+    if (!armor || armor.destroyed) return damage;
+    return damage * armorPen[`l${armor.level}` as keyof ArmorPen];
   }
 
   _takeDamage(damage: number): void {
