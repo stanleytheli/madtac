@@ -466,6 +466,9 @@ export interface Hittable {
   readonly id: number;
   pos: Vec2;
   z: number;
+  /** Optional: health left. At 0 or below it is dead, and nothing strikes it
+   *  any more (see down). Absent = never dies (a test dummy). */
+  hp?: number;
   registerHit(
     dir: Vec2,
     point: Vec2,
@@ -637,6 +640,16 @@ function hitFeedback(w: World, victim: Hittable, attacker: Hittable | null, roun
   const e: GameEvent = { kind: "hit", victim: victim.id, attacker: attacker ? attacker.id : null };
   if (round) e.round = true;
   w.events.push(e);
+}
+
+/**
+ * Dead already, so no round, swing, rocket or blast touches it again. The dead
+ * stay in a tick's target list until the tick's reap, so without this a burst
+ * that killed with its first pellets spent the rest on the body (each one
+ * re-crediting the kill to its shooter) instead of flying on past it.
+ */
+function down(t: Hittable): boolean {
+  return t.hp !== undefined && t.hp <= 0;
 }
 
 /** Where a character was `ticksAgo` ticks back (fractional), or null if it
@@ -1277,7 +1290,7 @@ export function updateBullets(w: World, targets: readonly Hittable[], past?: Pas
 
       // Then characters on this level (never the shooter).
       for (const t of targets) {
-        if (t === b.owner) continue;
+        if (t === b.owner || down(t)) continue;
         const tp = poseOf(t);
         if (!tp || tp.z !== b.z) continue;
         if (dist(sample, tp.pos) < BODY_RADIUS) {
@@ -1353,7 +1366,7 @@ export function meleeSwing(
   let struck: Hittable | null = null;
   let nearest = Infinity;
   for (const t of targets) {
-    if (t === owner || t.z !== owner.z) continue;
+    if (t === owner || t.z !== owner.z || down(t)) continue;
     const to = sub(t.pos, owner.pos);
     const d = len(to);
     if (d > opts.reach || d < 1e-6 || d >= nearest) continue;
@@ -1499,7 +1512,7 @@ export function explode(
   for (const t of targets) {
     // Cheap discards first, before any raycasting: wrong level, or too far for the
     // range falloff to leave anything (near edge at/beyond the radius => frac <= 0).
-    if (t.z !== z) continue;
+    if (t.z !== z || down(t)) continue;
     const d = dist(at, t.pos);
     const edge = Math.max(0, d - BODY_RADIUS);
     if (edge >= radius) continue;
@@ -1602,7 +1615,7 @@ export function updateProjectiles(w: World, targets: readonly Hittable[]): void 
 
       // A body other than the shooter detonates it on contact.
       for (const t of targets) {
-        if (t === p.owner || t.z !== p.z) continue;
+        if (t === p.owner || t.z !== p.z || down(t)) continue;
         if (dist(sample, t.pos) < BODY_RADIUS + p.bodyRadius) {
           explode(w, sample, p.z, p.damage, p.radius, p.armorPen, p.owner, targets, p.explosion, p.stagger, p.gun, norm(p.vel));
           detonated = true;

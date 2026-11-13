@@ -746,6 +746,25 @@ console.log("\nour shots: seeded alike, hits shown at once, lag compensated:");
       `ours ${mine.map((d) => d.toFixed(2))}, the server's ${theirs.map((d) => d.toFixed(2))}, hp lost ${lost.toFixed(2)} of a ${raw} round`);
   }
 
+  // 2c) A shotgun blast into a target with less health than the blast carries:
+  // the pellets past the kill fly on, on our screen as on the server.
+  {
+    const a = arena({ vt: true, gun: "MP220" });
+    a.target.hp = 20; // two 11-damage pellets
+    for (let i = 0; i < 10; i++) a.step(idleInput()); // until our copy of it says so
+    const aim = norm(sub(a.drawn().pos, a.net.player.pos));
+    a.step({ ...idleInput(), aim, fire: true, firePressed: true });
+    let mine = 0;
+    let theirs = 0;
+    for (let i = 0; i < 40; i++) {
+      for (const e of a.net.world.events) if (e.kind === "blood") mine++;
+      for (const e of a.game.world.events) if (e.kind === "blood") theirs++;
+      a.step(idleInput());
+    }
+    check("a shotgun blast that kills with its first pellets: the rest pass, on our screen as on the server",
+      a.target.hp <= 0 && theirs === 2 && mine === 2, `ours ${mine} hits, the server's ${theirs}`);
+  }
+
   // 3) A target walking across our line of fire, aimed at where we see it.
   const walk = (vt: boolean) => {
     const a = arena({ vt, gun: "AWM", targetMove: vec(0, 1) });

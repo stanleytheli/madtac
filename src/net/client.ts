@@ -145,6 +145,10 @@ const MAX_PENDING = 120;
 const SNAP_DIST = 80;
 /** Fraction of a correction still showing after each tick (gone in ~100 ms). */
 const SMOOTH_KEEP = 0.85;
+/** How long past a round trip plus the playout delay we wait for the server to
+ *  report the health our predicted rounds left someone, before deciding it
+ *  never will (a hit it says we missed), ms. See NetSession.predictedHp. */
+const PREDICTED_HP_SLACK_MS = 150;
 
 const AP = { l1: 1, l2: 1, l3: 1, l4: 1 };
 
@@ -294,6 +298,12 @@ export class NetSession implements Session {
    *  flown here against everyone as we draw them, impacts and all. The
    *  server's copies of them, and of what they hit, aren't shown. */
   private ownBullets: Bullet[] = [];
+  /** By id, the health our predicted rounds left someone, held until the
+   *  server's snapshots report them that low (or lower) or `until` (ms) passes.
+   *  Our rounds see them that hurt meanwhile (see asDrawn): a volley whose
+   *  pellets reach a body over two frames goes past it after the kill, though
+   *  the server's word of the kill is still on its way. */
+  private predictedHp = new Map<number, { hp: number; until: number }>();
 
   /** `host` is "host:port" or a full ws:// URL; `name` is what to join as;
    *  `password` the server's join password, if it has one. `connect` = false
@@ -378,6 +388,7 @@ export class NetSession implements Session {
     this.snapMs = 1000 / (m.snapHz || DEFAULT_SNAP_HZ);
     this.salt = m.salt;
     this.ownBullets = [];
+    this.predictedHp.clear();
     const rejoin = this.myId === m.id && this.meta !== null;
     this.myId = m.id;
     this.meta = m.meta;
@@ -1063,7 +1074,7 @@ export class NetSession implements Session {
     if (this.ownBullets.length) {
       this.placeEveryone(nowMs);
       const fw: World = { ...this.world, bullets: this.ownBullets, events: this.world.events };
-      updateBullets(fw, this.asDrawn());
+      updateBullets(fw, this.asDrawn(nowMs));
       this.ownBullets = fw.bullets;
     }
 
@@ -1105,12 +1116,29 @@ export class NetSession implements Session {
   /** Everyone else, for our predicted rounds to hit: where they're drawn, as
    *  stand-ins that take no harm (the server decides the damage), but whose
    *  armor still cuts what the hit would cost them, which our predicted blood
-   *  on the floor is sized by, as the server's is. */
-  private asDrawn(): Hittable[] {
+   *  on the floor is sized by, as the server's is. Each counts down the
+   *  health our rounds have left it (see predictedHp), so once they would have
+   *  killed it the rest fly on past it, as the server's do. */
+  private asDrawn(nowMs: number): Hittable[] {
+    for (const [id, held] of this.predictedHp) {
+      const c = this.mirrors.get(id);
+      if (!c || c.hp <= held.hp || nowMs > held.until) this.predictedHp.delete(id);
+    }
     const out: Hittable[] = [];
     for (const c of this.characters) {
       if (c === this.player || c.hp <= 0) continue;
-      out.push({ id: c.id, pos: c.pos, z: c.z, registerHit: () => {}, bodyDamage: (d, ap) => c.bodyDamage(d, ap) });
+      const s: Hittable & { hp: number } = {
+        id: c.id,
+        pos: c.pos,
+        z: c.z,
+        hp: Math.min(c.hp, this.predictedHp.get(c.id)?.hp ?? Infinity),
+        registerHit: (_dir, _at, damage, ap) => {
+          s.hp -= c.bodyDamage(damage, ap);
+          this.predictedHp.set(c.id, { hp: s.hp, until: nowMs + this.ping + this.delay + PREDICTED_HP_SLACK_MS });
+        },
+        bodyDamage: (d, ap) => c.bodyDamage(d, ap),
+      };
+      out.push(s);
     }
     return out;
   }

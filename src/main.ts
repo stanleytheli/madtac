@@ -589,9 +589,15 @@ function mixColor(a: string, b: string, t: number): string {
   return `rgb(${ch(0)}, ${ch(2)}, ${ch(4)})`;
 }
 
+/** The line across a flight's midpoint, where a body crossing it changes level
+ *  (see stairZ): its color and width in world px. */
+const STAIR_MIDLINE_COLOR = "rgba(0, 0, 0, 0.55)";
+const STAIR_MIDLINE_WIDTH = 4;
+
 // Stairs render as a run of step rectangles blending from `color` at the low-z
 // end to `color2` at the high-z end (legacy single-color stairs lighten toward
-// white instead), so the climb reads at a glance.
+// white instead), so the climb reads at a glance, with a line across the
+// midpoint where the level changes.
 function drawStairs(s: Stairs): void {
   ctx.save();
   ctx.globalAlpha = s.alpha;
@@ -613,6 +619,18 @@ function drawStairs(s: Stairs): void {
       ctx.fillRect(minx, miny + (i * s.h) / s.steps, s.w, s.h / s.steps + 0.5);
     }
   }
+  // The midpoint is the local origin: a line across the climb axis there.
+  ctx.strokeStyle = STAIR_MIDLINE_COLOR;
+  ctx.lineWidth = STAIR_MIDLINE_WIDTH;
+  ctx.beginPath();
+  if (s.axis === "x") {
+    ctx.moveTo(0, miny);
+    ctx.lineTo(0, -miny);
+  } else {
+    ctx.moveTo(minx, 0);
+    ctx.lineTo(-minx, 0);
+  }
+  ctx.stroke();
   ctx.restore();
 }
 
